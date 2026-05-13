@@ -2,133 +2,138 @@
 
 ## Overview
 
-Service Officer is a Windows system-tray application that lets you monitor and control Windows services directly from the taskbar notification area.
+Service Officer is a Windows system-tray application that lets you monitor and
+control Windows services directly from the taskbar notification area. It ships
+as a single executable with the `requireAdministrator` manifest embedded — a
+UAC prompt appears once at launch.
 
 ---
 
-## Prerequisites
+## End-user Install (recommended)
 
-| Requirement | Version | Notes |
+Run the installer produced by Inno Setup:
+
+```
+dist\ServiceOfficerSetup.exe
+```
+
+The wizard offers two optional tasks:
+
+| Task | Default | Effect |
 |---|---|---|
-| Windows | 10 / 11 | 64-bit |
-| Python | 3.10 or newer | https://www.python.org/downloads/ — check **"Add Python to PATH"** |
-| pip | bundled with Python | updated automatically during install |
+| **Windows başladığında otomatik başlat** | ✅ checked | Creates a per-user shortcut in the Startup folder (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Service Officer.lnk`). Because the exe is admin-manifested, Windows shows the UAC prompt at each logon. |
+| **Masaüstü kısayolu oluştur** | ☐ unchecked | Creates `Service Officer.lnk` on the public desktop. |
 
----
+The auto-start option can also be toggled later from **Settings** in the tray
+menu — checkbox **"Windows başladığında otomatik başlat"**.
 
-## Quick Install (recommended)
-
-1. Double-click **`install.bat`** in the app folder.
-2. Accept the UAC prompt when Windows asks for administrator permission.
-3. The installer will:
-   - Check that Python is available
-   - Install all Python dependencies (`pystray`, `Pillow`, `pywin32`)
-   - Create a **startup shortcut** in your Windows Startup folder so the app launches automatically at login with administrator rights
-   - Launch the app immediately — look for the **gear icon** in your system tray
-
----
-
-## Manual Install
-
-If you prefer to install manually or `install.bat` fails:
-
-```bat
-REM 1. Open a command prompt in the app folder
-cd "C:\...\Service Officer"
-
-REM 2. Install dependencies
-py -m pip install -r requirements.txt
-
-REM 3. Run the app (Python script, no console window)
-pythonw service_officer.py
-```
-
----
-
-## Building the Standalone Executable
-
-The compiled `ServiceOfficer.exe` is self-contained and does not require Python to be installed on other machines.
-
-1. Double-click **`build.bat`**.
-2. The script will:
-   - Install PyInstaller if it is not already present
-   - Generate `icon.ico` (the gear icon at multiple resolutions)
-   - Compile `service_officer.py` into `ServiceOfficer.exe` using PyInstaller
-   - Copy the finished exe to the app root folder
-3. Build time: approximately 1–2 minutes.
-
-After a successful build the app folder will contain:
-
-```
-ServiceOfficer.exe    ← run this directly, or use run.bat
-icon.ico              ← the gear icon used by the exe
-```
-
-> **Note:** `build.bat` must be run at least once to produce the exe. The exe is not included in the source files.
-
----
-
-## Startup at Login
-
-`install.bat` creates:
-
-```
-%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\ServiceOfficer.lnk
-```
-
-This shortcut points to `run.bat` and has the **"Run as administrator"** flag set, so the app starts elevated automatically after every login.
-
-If you use the compiled exe directly (without `run.bat`), the exe itself also requests administrator rights via its embedded manifest — no shortcut flag needed.
-
----
-
-## Running the App
-
-| Method | Command / Action |
-|---|---|
-| Compiled exe | Double-click `ServiceOfficer.exe` |
-| Via launcher | Double-click `run.bat` |
-| Python (dev) | `pythonw service_officer.py` in a terminal |
-
-`run.bat` automatically prefers `ServiceOfficer.exe` if it exists, and falls back to `pythonw` otherwise.
+Install location: `C:\Program Files\Service Officer\`.
 
 ---
 
 ## Uninstall
 
-1. Right-click the tray icon → **Quit**
-2. Delete the startup shortcut:
-   ```
-   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\ServiceOfficer.lnk
-   ```
-3. Delete the configuration data (optional):
-   ```
-   %APPDATA%\ServiceOfficer\
-   ```
-4. Delete the app folder.
+Use **Settings → Apps → Service Officer → Uninstall**, or run the uninstaller
+from the install folder. This removes:
+
+- `C:\Program Files\Service Officer\`
+- Start Menu / Desktop / Startup shortcuts
+
+The configuration file at `%APPDATA%\ServiceOfficer\services.json` is **not**
+deleted by the uninstaller; delete it manually if you also want to clear your
+service list and auto-start preference.
 
 ---
 
-## File Structure
+## Building from Source
+
+### Prerequisites
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Windows | 10 / 11 | 64-bit |
+| Python | 3.10 or newer | Check **"Add Python to PATH"** during install |
+| Inno Setup | 6.x | https://jrsoftware.org/isdl.php — only needed to build the installer |
+
+### Step 1 — Build the executable
+
+From the project root:
+
+```bat
+build.bat
+```
+
+This will:
+
+1. Install/upgrade `pip`, the runtime dependencies in `requirements.txt`, and
+   PyInstaller.
+2. Wipe any previous `build\`, `dist\`, and `.spec` artefacts.
+3. Compile `service_officer.py` into a single-file `ServiceOfficer.exe` with
+   `--uac-admin` so Windows requests elevation automatically.
+4. Copy the finished `ServiceOfficer.exe` to the project root (the installer
+   script picks it up from there).
+
+### Step 2 — Build the installer
+
+Compile `installer.iss` either with the Inno Setup IDE (open and press F9) or
+from the command line:
+
+```bat
+iscc installer.iss
+```
+
+Output: `dist\ServiceOfficerSetup.exe`.
+
+---
+
+## Running from Source (dev mode)
+
+```bat
+py -m pip install -r requirements.txt
+pythonw service_officer.py
+```
+
+In dev mode the settings window is launched via `pythonw.exe`. In a frozen
+build it is launched by re-running the exe with the `--settings` flag, so the
+target machine does **not** need Python installed.
+
+---
+
+## File Layout (after install)
+
+```
+C:\Program Files\Service Officer\
+├── ServiceOfficer.exe   ← admin-manifested, single-file build
+├── icon.ico
+├── README.md
+└── unins000.exe         ← Inno Setup uninstaller
+```
+
+Config (created on first save):
+
+```
+%APPDATA%\ServiceOfficer\services.json
+```
+
+---
+
+## Source Layout
 
 ```
 Service Officer\
-├── service_officer.py        Main application
+├── service_officer.py        Main application + tray icon
 ├── service_control.py        Windows SCM (start/stop/restart/query)
 ├── settings_dialog.py        Settings GUI (tkinter)
+├── autostart.py              Startup-folder shortcut management
 ├── config.py                 JSON config read/write
-├── generate_icon.py          Build helper: renders icon.ico
-├── service_officer.manifest  Windows UAC manifest (requireAdministrator)
+├── _icon_data.py             Embedded gear-icon PNGs (base64)
+├── _select_service.py        Helper: select a row in services.msc
+├── service_officer.manifest  Reference manifest (PyInstaller uses --uac-admin)
 ├── requirements.txt          Python dependencies
-├── install.bat               Install + startup shortcut creator
-├── build.bat                 Compile to ServiceOfficer.exe
-├── run.bat                   Launcher (prefers exe, falls back to pythonw)
-├── ServiceOfficer.spec       PyInstaller spec (auto-generated)
-├── icon.ico                  Generated gear icon (created by build.bat)
-├── ServiceOfficer.exe        Compiled executable (created by build.bat)
+├── build.bat                 Build ServiceOfficer.exe
+├── installer.iss             Inno Setup script
+├── icon.ico                  Gear icon used by exe and installer
 └── docs\
     ├── INSTALLATION.md       This file
     └── USAGE.md              User guide
 ```
-
-Config file location: `%APPDATA%\ServiceOfficer\services.json`

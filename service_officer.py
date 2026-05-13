@@ -221,12 +221,12 @@ def _open_services() -> None:
 
 def _restart_app(icon: pystray.Icon) -> None:
     """Stop the tray icon then relaunch elevated via ShellExecute runas."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    exe = os.path.join(script_dir, "ServiceOfficer.exe")
-
-    if os.path.exists(exe):
-        program, args = exe, ""
+    if getattr(sys, "frozen", False):
+        program = os.path.abspath(sys.executable)
+        args = ""
+        script_dir = os.path.dirname(program)
     else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
         program = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
         if not os.path.exists(program):
             program = sys.executable
@@ -251,6 +251,12 @@ def _restart_app(icon: pystray.Icon) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
+    # Frozen exe re-launches itself with --settings to open the settings dialog
+    # (avoids needing a separate Python install on the target machine).
+    if "--settings" in sys.argv[1:]:
+        settings_dialog._run_settings_dialog()
+        return
+
     _refresh_cache()
 
     icon = pystray.Icon(

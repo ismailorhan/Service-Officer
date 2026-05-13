@@ -100,6 +100,14 @@ Open via **Right-click → Settings**.
 1. Click a service row to select it.
 2. Click **Remove Selected** and confirm.
 
+### Auto-start at Windows logon
+
+The settings window also exposes a **"Windows başladığında otomatik başlat"**
+checkbox under the *Startup* section. When enabled, Service Officer creates a
+shortcut in your user Startup folder; when disabled, it removes that shortcut.
+The checkbox is on by default and matches whatever the installer placed on
+disk during setup.
+
 ### Saving
 
 Click **Save** to persist changes and close the window.
@@ -126,8 +134,8 @@ Example: "Print Spooler" has the service name `Spooler`.
 
 Service Officer **requires administrator rights** to start and stop services.
 
-- The compiled `ServiceOfficer.exe` automatically requests elevation via a Windows manifest — a UAC prompt appears once when you launch it.
-- The startup shortcut created by `install.bat` also has the "Run as administrator" flag set, so it prompts at login.
+- The compiled `ServiceOfficer.exe` automatically requests elevation via an embedded Windows manifest (`--uac-admin` PyInstaller flag) — a UAC prompt appears once when you launch it.
+- The Startup-folder shortcut created by the installer (or by the in-app auto-start checkbox) points directly at the admin-manifested exe, so Windows shows the same UAC prompt at logon.
 - If a service action fails (e.g. "Access Denied") it means the app is not running elevated. Use **Right-click → Restart App** to relaunch with full admin rights.
 
 ---

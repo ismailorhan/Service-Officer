@@ -5,6 +5,7 @@ import threading
 import tkinter as tk
 from tkinter import messagebox
 
+import autostart
 import config
 import service_control
 
@@ -24,20 +25,20 @@ def open_settings():
     def _run():
         global _settings_open
         try:
-            # When frozen (compiled exe), sys.executable is ServiceOfficer.exe
-            # and __file__ is an internal path inside the archive.
-            # The .py source files live next to the exe on disk.
             if getattr(sys, "frozen", False):
-                app_dir = os.path.dirname(os.path.abspath(sys.executable))
+                # Re-launch the frozen exe in settings mode. CreateProcess inherits
+                # the parent's elevation token, so no extra UAC prompt is shown.
+                exe = os.path.abspath(sys.executable)
+                args = [exe, "--settings"]
+                cwd = os.path.dirname(exe)
             else:
-                app_dir = os.path.dirname(os.path.abspath(__file__))
+                here = os.path.dirname(os.path.abspath(__file__))
+                script = os.path.join(here, "settings_dialog.py")
+                pythonw = _find_pythonw()
+                args = [pythonw, script, "--standalone"]
+                cwd = here
 
-            script = os.path.join(app_dir, "settings_dialog.py")
-            pythonw = _find_pythonw()
-            proc = subprocess.Popen(
-                [pythonw, script, "--standalone"],
-                cwd=app_dir,
-            )
+            proc = subprocess.Popen(args, cwd=cwd)
             proc.wait()
         finally:
             _settings_open = False
@@ -92,7 +93,7 @@ def _find_pythonw() -> str:
 def _run_settings_dialog():
     root = tk.Tk()
     root.title("Service Officer \u2014 Settings")
-    root.geometry("480x460")
+    root.geometry("480x520")
     root.resizable(False, False)
 
     # Bring to front reliably
@@ -264,12 +265,34 @@ def _run_settings_dialog():
     tk.Button(btn_row, text="Remove Selected", command=remove_selected).pack(side=tk.LEFT)
     tk.Button(btn_row, text="Cancel Edit", command=reset_form).pack(side=tk.LEFT, padx=(6, 0))
 
+    # -- Startup option --
+    options_frame = tk.LabelFrame(root, text="Startup", padx=8, pady=6)
+    options_frame.pack(fill=tk.X, padx=12, pady=(10, 0))
+
+    auto_start_var = tk.BooleanVar(value=config.load_auto_start())
+    tk.Checkbutton(
+        options_frame,
+        text="Windows başladığında otomatik başlat",
+        variable=auto_start_var,
+        anchor="w",
+    ).pack(fill=tk.X)
+
     # -- Save / Cancel --
     save_frame = tk.Frame(root)
     save_frame.pack(pady=10)
 
     def save_and_close():
         config.save_services(_services)
+        enabled = bool(auto_start_var.get())
+        config.save_auto_start(enabled)
+        try:
+            autostart.apply(enabled)
+        except Exception as e:
+            messagebox.showwarning(
+                "Service Officer",
+                f"Otomatik başlatma ayarı uygulanamadı:\n{e}",
+                parent=root,
+            )
         root.destroy()
 
     tk.Button(save_frame, text="Save", command=save_and_close, width=10).pack(
