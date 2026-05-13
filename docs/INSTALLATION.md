@@ -121,19 +121,17 @@ Config (created on first save):
 
 ```
 Service Officer\
-├── service_officer.py        Main application + tray icon
-├── service_control.py        Windows SCM (start/stop/restart/query)
-├── settings_dialog.py        Settings GUI (tkinter)
-├── autostart.py              Startup-folder shortcut management
-├── config.py                 JSON config read/write
-├── _icon_data.py             Embedded gear-icon PNGs (base64)
-├── _select_service.py        Helper: select a row in services.msc
-├── service_officer.manifest  Reference manifest (PyInstaller uses --uac-admin)
-├── requirements.txt          Python dependencies
-├── build.bat                 Build ServiceOfficer.exe
-├── installer.iss             Inno Setup script
-├── icon.ico                  Gear icon used by exe and installer
+├── service_officer.py    Main application + tray icon
+├── service_control.py    Windows SCM (start/stop/restart/query)
+├── settings_dialog.py    Settings GUI (tkinter)
+├── autostart.py          Startup-folder shortcut management
+├── config.py             JSON config read/write
+├── _icon_data.py         Embedded gear-icon PNGs (base64)
+├── requirements.txt      Python dependencies
+├── build.bat             Build ServiceOfficer.exe (PyInstaller --uac-admin)
+├── installer.iss         Inno Setup script
+├── icon.ico              Gear icon used by exe and installer
 └── docs\
-    ├── INSTALLATION.md       This file
-    └── USAGE.md              User guide
+    ├── INSTALLATION.md   This file
+    └── USAGE.md          User guide
 ```

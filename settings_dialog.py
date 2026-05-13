@@ -48,11 +48,7 @@ def open_settings():
 
 
 def _find_pythonw() -> str:
-    """Return path to pythonw.exe (no console window).
-
-    When running as a compiled exe, sys.executable is ServiceOfficer.exe so we
-    cannot rely on its directory.  Search multiple locations in order.
-    """
+    """Return path to pythonw.exe — dev-mode only (frozen exe uses --settings)."""
     import shutil
 
     # 1. Alongside the real Python interpreter (works when running as .py)

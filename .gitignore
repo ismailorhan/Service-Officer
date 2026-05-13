@@ -3,3 +3,9 @@ build/
 __pycache__/
 *.spec
 *.pyc
+
+# Build output — produced by build.bat, repackaged by installer.iss
+ServiceOfficer.exe
+
+# Claude Code worktrees and per-session files
+.claude/
