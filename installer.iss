@@ -48,7 +48,7 @@ Name: "autostart"; Description: "{cm:AutoStartTask}"; GroupDescription: "{cm:Add
 Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "ServiceOfficer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\ServiceOfficer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.ico";          DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";         DestDir: "{app}"; Flags: ignoreversion isreadme
 
@@ -59,7 +59,7 @@ Name: "{commondesktop}\{#MyAppName}";    Filename: "{app}\{#MyAppExeName}"; Icon
 Name: "{userstartup}\{#MyAppName}";      Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: shellexec nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Remove the per-user Startup shortcut even if it was created later via the
