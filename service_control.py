@@ -31,3 +31,31 @@ def stop_service(service_name: str) -> None:
 
 def restart_service(service_name: str) -> None:
     win32serviceutil.RestartService(service_name)
+
+
+def list_all_services() -> list:
+    """Enumerate every installed Win32 service.
+
+    Returns a list of {"name", "display", "status"} dicts sorted by display
+    name. Used by the settings service picker so the user can choose a service
+    instead of typing its short name.
+    """
+    scm = win32service.OpenSCManager(
+        None, None, win32service.SC_MANAGER_ENUMERATE_SERVICE
+    )
+    try:
+        raw = win32service.EnumServicesStatus(
+            scm, win32service.SERVICE_WIN32, win32service.SERVICE_STATE_ALL
+        )
+    finally:
+        win32service.CloseServiceHandle(scm)
+
+    services = []
+    for name, display, status in raw:
+        services.append({
+            "name": name,
+            "display": display,
+            "status": _STATUS_MAP.get(status[1], "Unknown"),
+        })
+    services.sort(key=lambda s: s["display"].lower())
+    return services
