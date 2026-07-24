@@ -278,6 +278,28 @@ def _run_panel():
     }
     VERB = {"start": "Start", "stop": "Stop", "restart": "Restart"}
 
+    ROW_H = 50
+    MIN_ROWS = 3
+    _chrome = [None]  # measured height of everything except the scrolling list
+
+    def _list_height():
+        """List height: at least MIN_ROWS, growing with the service count up to
+        as many rows as fit on screen above the tray (then it scrolls)."""
+        n = len(services)
+        if not n:
+            return 140
+        work = ctypes.wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0):
+            avail = work.bottom - work.top
+        else:
+            avail = win.winfo_screenheight()
+        chrome = _chrome[0] if _chrome[0] else 230
+        TOP_GAP, BOTTOM_GAP = 40, 14   # keep a gap from the screen top and tray
+        usable = avail - chrome - TOP_GAP - BOTTOM_GAP
+        max_rows = max(MIN_ROWS, usable // ROW_H)
+        visible = max(MIN_ROWS, min(n, max_rows))
+        return int(visible * ROW_H)
+
     def _build_rows():
         """(Re)build one row per configured service. Called on open and again
         whenever the configured list changes (add / remove / rename in Settings)."""
@@ -337,18 +359,8 @@ def _run_panel():
                      bg=BG, fg=FG2, font=("Segoe UI", 10), justify="center",
                      pady=24).pack(fill="x")
 
-        # Size the list: keep a comfortable minimum height even with one or two
-        # services, and cap it at ~8 rows (anything beyond that scrolls).
-        ROW_H = 50
-        MIN_ROWS = 3
-        if services:
-            visible = max(MIN_ROWS, min(len(services), 8))
-            canvas.config(height=visible * ROW_H)
-        else:
-            canvas.config(height=140)
+        canvas.config(height=_list_height())
         canvas.yview_moveto(0)
-
-    _build_rows()
 
     # ── status rendering ──────────────────────────────────────────────────────
     def _set_chip(chip, category, text):
@@ -452,6 +464,13 @@ def _run_panel():
     _fbtn("↻  Refresh", _poll)
     _fbtn("\U0001F5C2  Services", _open_services)
     _fbtn("⚙  Settings", _open_settings)
+
+    # Measure the fixed chrome (everything except the scrolling list) now that
+    # the footer exists, so _list_height can size the list to fit the screen.
+    canvas.config(height=200)
+    win.update_idletasks()
+    _chrome[0] = win.winfo_reqheight() - 200
+    _build_rows()
 
     # ── anchor to work-area bottom-right (like a native tray flyout) ───────────
     def _anchor():

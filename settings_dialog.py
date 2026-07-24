@@ -365,9 +365,21 @@ def _run_settings_dialog():
             del _services[i]
             _refresh()
 
+    def _move(delta):
+        sel = listbox.curselection()
+        if not sel:
+            return
+        i = sel[0]
+        j = i + delta
+        if 0 <= j < len(_services):
+            _services[i], _services[j] = _services[j], _services[i]
+            _refresh(j)  # keep the selection on the moved row
+
     _dark_button(actions, "  + Add service  ", _add, accent=_ACCENT).pack(side="left")
     _dark_button(actions, "Rename", _rename).pack(side="left", padx=(6, 0))
     _dark_button(actions, "Remove", _remove, accent=_DANGER).pack(side="left", padx=(6, 0))
+    _dark_button(actions, "↓", lambda: _move(1)).pack(side="right")
+    _dark_button(actions, "↑", lambda: _move(-1)).pack(side="right", padx=(0, 6))
     listbox.bind("<Double-Button-1>", lambda e: _rename())
 
     tk.Frame(root, bg=LINE, height=1).pack(fill="x", padx=16, pady=(2, 0))
