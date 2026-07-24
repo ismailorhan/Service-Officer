@@ -7,20 +7,19 @@ import subprocess
 import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import messagebox
 
 import pystray
-import pywintypes
 from PIL import Image
 
 import config
+import panel
 import service_control
 import settings_dialog
 import _icon_data
 
 # ---------------------------------------------------------------------------
-# Status cache — updated by the background poller; read by menu lambdas
+# Status cache — updated by the background poller; drives the tray icon
+# colour and the hover tooltip.
 # ---------------------------------------------------------------------------
 _status_cache: dict = {}
 _cache_lock = threading.Lock()
@@ -33,11 +32,6 @@ def _refresh_cache() -> None:
     with _cache_lock:
         _status_cache.clear()
         _status_cache.update(new_cache)
-
-
-def _get_status(svc_name: str) -> str:
-    with _cache_lock:
-        return _status_cache.get(svc_name, "Unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -87,54 +81,6 @@ _STATUS_SYMBOLS = {
 # ---------------------------------------------------------------------------
 # Menu builders
 # ---------------------------------------------------------------------------
-def _build_service_items(icon: pystray.Icon) -> list:
-    """Service rows used for the left-click menu."""
-    services = config.load_services()
-
-    if not services:
-        return [pystray.MenuItem("No services configured", None, enabled=False)]
-
-    items = []
-    for svc in services:
-        svc_name  = svc["name"]
-        svc_label = svc.get("label") or svc["name"]
-        status    = _get_status(svc_name)
-        dot       = _STATUS_SYMBOLS.get(status, "⚪")
-        label     = f"{dot} {svc_label}  ({status})"
-
-        def make_start(s):
-            def _fn(icon, item):
-                threading.Thread(target=_run_action, args=(service_control.start_service, s, icon), daemon=True).start()
-            return _fn
-
-        def make_stop(s):
-            def _fn(icon, item):
-                threading.Thread(target=_run_action, args=(service_control.stop_service, s, icon), daemon=True).start()
-            return _fn
-
-        def make_restart(s):
-            def _fn(icon, item):
-                threading.Thread(target=_run_action, args=(service_control.restart_service, s, icon), daemon=True).start()
-            return _fn
-
-        is_running = status == "Running"
-        is_stopped = status == "Stopped"
-
-        sub = pystray.Menu(
-            pystray.MenuItem("Start",   make_start(svc_name), visible=not is_running),
-            pystray.MenuItem("Stop",    make_stop(svc_name),  visible=not is_stopped),
-            pystray.MenuItem("Restart", make_restart(svc_name)),
-        )
-        items.append(pystray.MenuItem(label, sub))
-
-    return items
-
-
-def _build_left_menu(icon: pystray.Icon) -> pystray.Menu:
-    """Left-click menu: service rows only."""
-    return pystray.Menu(*_build_service_items(icon))
-
-
 def _build_right_menu(icon: pystray.Icon) -> pystray.Menu:
     """Right-click menu: Open Services, Refresh, Settings, Restart App, Quit."""
     def refresh_action(icon, item):
@@ -154,9 +100,8 @@ def _build_right_menu(icon: pystray.Icon) -> pystray.Menu:
 # Refresh helpers
 # ---------------------------------------------------------------------------
 def _force_refresh(icon: pystray.Icon) -> None:
-    """Re-query services, rebuild menus, and update tray icon colour."""
+    """Re-query services, rebuild the menu, and update tray icon colour."""
     _refresh_cache()
-    icon._left_menu  = _build_left_menu(icon)
     icon._right_menu = _build_right_menu(icon)
     icon.menu        = icon._right_menu
     icon.icon        = create_icon_image(_icon_color_key())
@@ -196,24 +141,6 @@ def _poll_loop(icon: pystray.Icon) -> None:
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
-def _run_action(fn, service_name: str, icon: pystray.Icon) -> None:
-    """Execute a service control action, then refresh on success or show error."""
-    try:
-        fn(service_name)
-        time.sleep(1.5)  # give SCM time to settle
-        _force_refresh(icon)
-    except pywintypes.error as e:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        messagebox.showerror(
-            "Service Officer",
-            f"Could not perform action on '{service_name}':\n{e.strerror}",
-            parent=root,
-        )
-        root.destroy()
-
-
 def _open_services() -> None:
     """Open services.msc."""
     ctypes.windll.shell32.ShellExecuteW(None, "open", "services.msc", None, None, 1)
@@ -257,6 +184,11 @@ def main() -> None:
         settings_dialog._run_settings_dialog()
         return
 
+    # Frozen exe re-launches itself with --panel to open the left-click flyout.
+    if "--panel" in sys.argv[1:]:
+        panel._run_panel()
+        return
+
     _refresh_cache()
 
     icon = pystray.Icon(
@@ -265,7 +197,6 @@ def main() -> None:
         title="Service Officer",
     )
 
-    icon._left_menu  = _build_left_menu(icon)
     icon._right_menu = _build_right_menu(icon)
     icon.menu        = icon._right_menu
     _update_tooltip(icon)
@@ -303,7 +234,7 @@ def main() -> None:
 
         def _patched_on_notify(wparam, lparam):
             if lparam in (WM_LBUTTONUP, NIN_SELECT):
-                _show_menu_for(icon._left_menu)
+                panel.open_panel()
             elif lparam == WM_RBUTTONUP:
                 _show_menu_for(icon._right_menu)
 
