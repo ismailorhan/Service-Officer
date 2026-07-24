@@ -39,6 +39,20 @@ ROW_HV = "#242424"
 
 W = 466  # panel width, matching ShooApp
 
+# Keep every glyph inside the BMP. Drawing an astral (>U+FFFF) emoji such as
+# 🔍 or 🗂 makes Windows load the big colour-emoji font: measured ~600-680 ms
+# on first use in each Tk interpreter, regardless of the family named — that
+# was the panel's entire open latency. BMP symbols cost 10-20 ms, and Windows'
+# icon font (BMP range) supplies proper search/folder shapes.
+SYMBOL_FONT = "Segoe UI Symbol"     # ✕ ⚙ — BMP symbols
+# Measurements below are identical on every open, so cache them process-wide
+# and skip a full Tk layout pass (~100 ms once a couple of dozen rows exist).
+_ROW_H_CACHE = [None]
+_CHROME_CACHE = [None]
+_LOGO_IMG_CACHE = [None]  # decoded+resized PIL image (Tk conversion is per-open)
+ICON_FONT   = "Segoe MDL2 Assets"   # Windows icon font, BMP, cheap
+ICON_SEARCH = ""              # magnifier
+
 # ── status model ──────────────────────────────────────────────────────────────
 # Categories drive both the pill colour and which buttons are enabled.
 _RUNNING = {"Running"}
@@ -157,20 +171,22 @@ def _run_panel():
     hdr = tk.Frame(win, bg=BG, padx=14, pady=10)
     hdr.pack(fill="x")
     try:
-        _logo_img = ImageTk.PhotoImage(
-            Image.open(io.BytesIO(base64.b64decode(_icon_data.ICON_GREEN)))
-            .convert("RGBA").resize((20, 20), Image.LANCZOS))
+        if _LOGO_IMG_CACHE[0] is None:
+            _LOGO_IMG_CACHE[0] = (
+                Image.open(io.BytesIO(base64.b64decode(_icon_data.ICON_GREEN)))
+                .convert("RGBA").resize((20, 20), Image.LANCZOS))
+        _logo_img = ImageTk.PhotoImage(_LOGO_IMG_CACHE[0])
         _logo = tk.Label(hdr, image=_logo_img, bg=BG)
         _logo.image = _logo_img  # keep a reference so it isn't garbage-collected
     except Exception:
         # Fall back to a glyph if the image backend is unavailable.
-        _logo = tk.Label(hdr, text="⚙", bg=BG, fg="#8ff0ad", font=("Segoe UI", 13))
+        _logo = tk.Label(hdr, text="⚙", bg=BG, fg="#8ff0ad", font=(SYMBOL_FONT, 13))
     _logo.pack(side="left", padx=(0, 7))
     tk.Label(hdr, text="Service Officer", bg=BG, fg=FG,
              font=("Segoe UI", 12, "bold")).pack(side="left")
 
     close_btn = tk.Label(hdr, text="✕", bg=BG, fg=FG2,
-                         font=("Segoe UI", 11), padx=8, pady=2, cursor="hand2")
+                         font=(SYMBOL_FONT, 11), padx=8, pady=2, cursor="hand2")
     close_btn.pack(side="right")
     close_btn.bind("<Button-1>", _close)
     close_btn.bind("<Enter>", lambda e: close_btn.config(fg="#ff6b6b", bg=BG2))
@@ -191,7 +207,7 @@ def _run_panel():
     # ── search ────────────────────────────────────────────────────────────────
     sf = tk.Frame(win, bg=BG2, padx=10, pady=6)
     sf.pack(fill="x", padx=10, pady=(0, 4))
-    tk.Label(sf, text="\U0001F50D", bg=BG2, fg=FG2, font=("Segoe UI", 9)).pack(side="left")
+    tk.Label(sf, text=ICON_SEARCH, bg=BG2, fg=FG2, font=(ICON_FONT, 9)).pack(side="left")
     search_var = tk.StringVar()
     entry = tk.Entry(sf, textvariable=search_var, bg=BG2, fg=FG,
                      insertbackground=FG, relief="flat", font=("Segoe UI", 10), bd=0)
@@ -385,11 +401,17 @@ def _run_panel():
                      pady=24).pack(fill="x")
 
         # Measure a real row (two-line content + padding) instead of guessing,
-        # so the list caps at whole rows and nothing is half-clipped.
-        inner.update_idletasks()
-        row_h = rows[0]["frame"].winfo_reqheight() if rows else ROW_H
-        if row_h < 30:            # not laid out yet — fall back
-            row_h = ROW_H
+        # so the list caps at whole rows and nothing is half-clipped. The height
+        # never changes, so measure once per process and reuse it after that.
+        if _ROW_H_CACHE[0]:
+            row_h = _ROW_H_CACHE[0]
+        else:
+            inner.update_idletasks()
+            row_h = rows[0]["frame"].winfo_reqheight() if rows else ROW_H
+            if row_h < 30:        # not laid out yet — fall back
+                row_h = ROW_H
+            elif rows:
+                _ROW_H_CACHE[0] = row_h
         canvas.config(height=_list_height(row_h))
         canvas.yview_moveto(0)
 
@@ -471,10 +493,10 @@ def _run_panel():
     fbar = tk.Frame(footer, bg=BG3, padx=10, pady=10)
     fbar.pack(fill="x")
 
-    def _fbtn(text, cmd):
+    def _fbtn(text, cmd, font_family="Segoe UI"):
         b = tk.Button(fbar, text=text, bg=BTN, fg=FG2, activebackground=BTN_HV,
                       activeforeground=FG, relief="flat", bd=0,
-                      font=("Segoe UI", 9), padx=10, pady=6, cursor="hand2",
+                      font=(font_family, 9), padx=10, pady=6, cursor="hand2",
                       takefocus=False, command=cmd)
         b.pack(side="left", fill="x", expand=True, padx=3)
         b.bind("<Enter>", lambda e: b.config(bg=BTN_HV, fg=FG))
@@ -491,14 +513,18 @@ def _run_panel():
         _close()
 
     _fbtn("↻  Refresh", _poll)
-    _fbtn("\U0001F5C2  Services", _open_services)
-    _fbtn("⚙  Settings", _open_settings)
+    _fbtn("▤  Services", _open_services)
+    _fbtn("⚙  Settings", _open_settings, SYMBOL_FONT)
 
     # Measure the fixed chrome (everything except the scrolling list) now that
     # the footer exists, so _list_height can size the list to fit the screen.
-    canvas.config(height=200)
-    win.update_idletasks()
-    _chrome[0] = win.winfo_reqheight() - 200
+    # Cached process-wide — it's the same on every open.
+    if _CHROME_CACHE[0]:
+        _chrome[0] = _CHROME_CACHE[0]
+    else:
+        canvas.config(height=200)
+        win.update_idletasks()
+        _chrome[0] = _CHROME_CACHE[0] = win.winfo_reqheight() - 200
     _build_rows()
 
     # ── anchor to work-area bottom-right (like a native tray flyout) ───────────

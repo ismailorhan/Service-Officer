@@ -20,7 +20,8 @@ from tkinter import messagebox
 import autostart
 import config
 import service_control
-from panel import BG, BG2, BG3, FG, FG2, FG3, LINE, BTN, BTN_HV
+from panel import (BG, BG2, BG3, FG, FG2, FG3, LINE, BTN, BTN_HV,
+                   ICON_FONT, ICON_SEARCH)
 
 _ACCENT = "#40c463"
 _DANGER = "#e5534b"
@@ -158,7 +159,7 @@ def _pick_service(parent, taken_names):
 
     sf = tk.Frame(dlg, bg=BG2)
     sf.pack(fill="x", padx=14, pady=(8, 6))
-    tk.Label(sf, text="\U0001F50D", bg=BG2, fg=FG2, font=("Segoe UI", 9),
+    tk.Label(sf, text=ICON_SEARCH, bg=BG2, fg=FG2, font=(ICON_FONT, 9),
              padx=8, pady=6).pack(side="left")
     search_var = tk.StringVar()
     entry = tk.Entry(sf, textvariable=search_var, bg=BG2, fg=FG,
