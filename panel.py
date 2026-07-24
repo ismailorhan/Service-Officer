@@ -117,10 +117,12 @@ def _run_panel():
     win.attributes("-topmost", True)
     win.withdraw()  # stay hidden until positioned, so it never flashes at 0,0
 
-    # suppress the focus-out auto-close while we own a modal dialog
+    # suppress the auto-close while we own a modal dialog
     _suppress_close = [False]
     _poll_id = [None]
     _drain_id = [None]
+    _watch_id = [None]
+    _seen_fg = [False]   # has the panel ever held the foreground?
 
     # Worker threads must never touch tkinter directly (it isn't thread-safe).
     # They push a zero-arg callable here; _drain runs it on the main thread.
@@ -139,7 +141,7 @@ def _run_panel():
         _drain_id[0] = root.after(80, _drain)
 
     def _close(*_):
-        for after_id in (_poll_id[0], _drain_id[0]):
+        for after_id in (_poll_id[0], _drain_id[0], _watch_id[0]):
             try:
                 if after_id:
                     root.after_cancel(after_id)
@@ -459,14 +461,12 @@ def _run_panel():
 
     def _open_services():
         ctypes.windll.shell32.ShellExecuteW(None, "open", "services.msc", None, None, 1)
+        _close()  # the panel's job is done; close it so it isn't left stuck open
 
     def _open_settings():
-        _suppress_close[0] = True
-        try:
-            import settings_dialog
-            settings_dialog.open_settings()
-        finally:
-            root.after(400, lambda: _suppress_close.__setitem__(0, False))
+        import settings_dialog
+        settings_dialog.open_settings()
+        _close()
 
     _fbtn("↻  Refresh", _poll)
     _fbtn("\U0001F5C2  Services", _open_services)
@@ -520,19 +520,23 @@ def _run_panel():
         except Exception:
             pass
 
-    # ── close on focus loss (keep open if a search query is typed) ─────────────
-    # Use focus_displayof(): it returns None only when focus has left this app
-    # entirely, which is robust regardless of which child widget had focus.
-    def _on_focus_out(_e):
-        if _suppress_close[0] or search_var.get().strip():
-            return
-        def _check():
-            try:
-                if not win.focus_displayof():
-                    _close()
-            except Exception:
-                pass
-        win.after(60, _check)
+    # ── close when another window takes the foreground ────────────────────────
+    # Poll the foreground window instead of relying on <FocusOut>: the event
+    # only fires if the panel currently holds focus, so returning from Settings
+    # (or never focusing the panel) would leave it stuck open. Polling closes it
+    # whenever the foreground moves elsewhere — but only after the panel has
+    # actually been foreground once (so a failed foregrounding can't insta-close).
+    def _watch():
+        try:
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if fg == win.winfo_id():
+                _seen_fg[0] = True
+            elif _seen_fg[0] and not _suppress_close[0] and not search_var.get().strip():
+                _close()
+                return
+        except Exception:
+            pass
+        _watch_id[0] = root.after(350, _watch)
 
     win.bind("<Escape>", _close)
     win.lift()
@@ -540,7 +544,7 @@ def _run_panel():
     win.focus_force()
     _force_foreground()
     entry.focus_set()
-    win.after(250, lambda: win.bind("<FocusOut>", _on_focus_out))
+    _watch_id[0] = root.after(500, _watch)  # small grace so foregrounding settles
 
     _drain()   # start the main-thread work queue
     _poll()    # first status query
