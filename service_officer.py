@@ -184,11 +184,6 @@ def main() -> None:
         settings_dialog._run_settings_dialog()
         return
 
-    # Frozen exe re-launches itself with --panel to open the left-click flyout.
-    if "--panel" in sys.argv[1:]:
-        panel._run_panel()
-        return
-
     _refresh_cache()
 
     icon = pystray.Icon(

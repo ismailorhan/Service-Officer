@@ -2,23 +2,23 @@
 
 A dark, ShooApp-style flyout anchored to the tray. Each configured service is
 shown on one row with its live status and inline Start / Stop / Restart buttons —
-no nested submenus. Runs in its own process so tkinter always gets a clean main
-thread (pystray owns the tray process's message loop).
+no nested submenus.
+
+Runs on a dedicated daemon thread inside the tray process (not a subprocess):
+that makes it open instantly and, because the tray process owns the foreground
+after the click, lets the window take focus so clicking away closes it. All Tk
+calls stay on that one thread; worker results marshal back through a queue.
 """
 
 import ctypes
 import ctypes.wintypes
-import os
 import queue
-import subprocess
-import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox
 
 import config
 import service_control
-from settings_dialog import _find_pythonw
 
 # ── palette (lifted verbatim from ShooApp's _show_panel) ──────────────────────
 BG     = "#1e1e1e"
@@ -79,39 +79,19 @@ def _button_states(status: str) -> dict:
     return {"start": False, "stop": False, "restart": False}
 
 
-# ── process launcher (mirrors settings_dialog.open_settings) ──────────────────
-_panel_open = False
+# ── launcher (in-process daemon thread) ───────────────────────────────────────
+_panel_thread = None
 _lock = threading.Lock()
 
 
 def open_panel():
-    """Spawn the panel in a separate process. A guard prevents duplicates."""
-    global _panel_open
+    """Open the flyout on a dedicated thread. A guard prevents duplicates."""
+    global _panel_thread
     with _lock:
-        if _panel_open:
+        if _panel_thread is not None and _panel_thread.is_alive():
             return
-        _panel_open = True
-
-    def _run():
-        global _panel_open
-        try:
-            if getattr(sys, "frozen", False):
-                # Re-launch the frozen exe in panel mode. CreateProcess inherits
-                # the parent's elevation token, so no extra UAC prompt appears.
-                exe = os.path.abspath(sys.executable)
-                args = [exe, "--panel"]
-                cwd = os.path.dirname(exe)
-            else:
-                here = os.path.dirname(os.path.abspath(__file__))
-                script = os.path.join(here, "panel.py")
-                pythonw = _find_pythonw()
-                args = [pythonw, script, "--standalone"]
-                cwd = here
-            subprocess.Popen(args, cwd=cwd).wait()
-        finally:
-            _panel_open = False
-
-    threading.Thread(target=_run, daemon=True).start()
+        _panel_thread = threading.Thread(target=_run_panel, daemon=True)
+        _panel_thread.start()
 
 
 # ── the flyout ────────────────────────────────────────────────────────────────
@@ -454,7 +434,16 @@ def _run_panel():
             _close()
 
     win.bind("<Escape>", _close)
+
+    # Force the window to the foreground so it actually holds focus — otherwise
+    # <FocusOut> never fires and clicking away wouldn't close it.
+    win.lift()
+    win.attributes("-topmost", True)
     win.focus_force()
+    try:
+        ctypes.windll.user32.SetForegroundWindow(win.winfo_id())
+    except Exception:
+        pass
     entry.focus_set()
     win.after(250, lambda: win.bind("<FocusOut>", _on_focus_out))
 
