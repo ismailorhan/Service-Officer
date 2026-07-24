@@ -212,14 +212,36 @@ def _run_panel():
     list_wrap.pack(fill="both", expand=True, padx=2)
 
     canvas = tk.Canvas(list_wrap, bg=BG, highlightthickness=0, bd=0)
-    scrollbar = tk.Scrollbar(list_wrap, bg=BG2, troughcolor=BG,
-                             activebackground=BTN_HV, relief="flat", bd=0, width=8)
     inner = tk.Frame(canvas, bg=BG)
     inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-    scrollbar.config(command=canvas.yview)
     canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
+
+    # Custom dark scrollbar — the native tk.Scrollbar renders light grey on
+    # Windows and ignores its colour options. This is a thin overlaid thumb,
+    # sized to the visible fraction and draggable.
+    _SB_COL, _SB_HOVER = "#5a5a5a", "#7a7a7a"
+    sb = tk.Frame(list_wrap, bg=_SB_COL, width=7, cursor="hand2")
+
+    def _sb_update(first, last):
+        first, last = float(first), float(last)
+        if first <= 0.0 and last >= 1.0:
+            sb.place_forget()          # everything fits — no scrollbar
+            return
+        ch = canvas.winfo_height()
+        top = int(first * ch)
+        height = max(30, int((last - first) * ch))
+        sb.place(in_=list_wrap, relx=1.0, x=-9, y=top, width=7, height=height, anchor="nw")
+
+    canvas.configure(yscrollcommand=_sb_update)
+
+    def _sb_drag(event):
+        ch = canvas.winfo_height() or 1
+        y = event.y_root - canvas.winfo_rooty()
+        canvas.yview_moveto(min(1.0, max(0.0, y / ch)))
+    sb.bind("<B1-Motion>", _sb_drag)
+    sb.bind("<Button-1>", _sb_drag)
+    sb.bind("<Enter>", lambda e: sb.config(bg=_SB_HOVER))
+    sb.bind("<Leave>", lambda e: sb.config(bg=_SB_COL))
 
     def _on_inner_config(_):
         canvas.configure(scrollregion=canvas.bbox("all"))
@@ -497,6 +519,7 @@ def _run_panel():
 
     _anchor()
     win.deiconify()  # positioned while hidden — appears in place, no 0,0 flash
+    win.after(60, lambda: _sb_update(*canvas.yview()))  # sync the scrollbar thumb
 
     # ── take the foreground reliably ──────────────────────────────────────────
     # Opening from a background thread, Windows' foreground lock often makes a
