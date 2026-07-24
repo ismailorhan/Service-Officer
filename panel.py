@@ -426,7 +426,12 @@ def _run_panel():
     else:
         x = win.winfo_screenwidth() - W - MARGIN
         y = win.winfo_screenheight() - h - MARGIN
-    win.geometry(f"{W}x{h}+{max(x, 0)}+{max(y, 0)}")
+    _geo = f"{W}x{h}+{max(x, 0)}+{max(y, 0)}"
+    win.geometry(_geo)
+    # An override-redirect window ignores the geometry set before it's mapped
+    # and shows at 0,0; re-assert once it's realized so it lands by the tray.
+    win.after(20, lambda: win.geometry(_geo))
+    win.after(120, lambda: win.geometry(_geo))
 
     # ── close on focus loss (keep open if a search query is typed) ─────────────
     def _on_focus_out(e):
