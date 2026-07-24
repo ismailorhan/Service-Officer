@@ -9,7 +9,7 @@ import threading
 import time
 
 import pystray
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import config
 import panel
@@ -64,6 +64,76 @@ def create_icon_image(color_key: str = "green") -> Image.Image:
 
 
 # ---------------------------------------------------------------------------
+# Spinner — an amber arc sweeping around the tray icon while the SCM is still
+# starting/stopping something, so a transition is visible without opening the
+# panel. Frames are pre-rendered once and then cycled.
+# ---------------------------------------------------------------------------
+_SPIN_FRAMES: list = []
+_spin_stop = threading.Event()
+_spin_thread = None
+_spin_lock = threading.Lock()
+
+
+def _spin_frames() -> list:
+    """Pre-render the rotating-arc frames (lazily, once)."""
+    if _SPIN_FRAMES:
+        return _SPIN_FRAMES
+    base = create_icon_image("yellow")
+    w, h = base.size
+    inset = max(1, w // 32)
+    box = (inset, inset, w - inset - 1, h - inset - 1)
+    width = max(2, w // 12)
+    for angle in range(0, 360, 30):
+        frame = base.copy()
+        draw = ImageDraw.Draw(frame)
+        # A 100-degree arc; sweeping its start angle reads as a spinner.
+        draw.arc(box, start=angle, end=angle + 100, fill=(227, 179, 65, 255),
+                 width=width)
+        _SPIN_FRAMES.append(frame)
+    return _SPIN_FRAMES
+
+
+def _pending_count() -> int:
+    with _cache_lock:
+        return sum(1 for s in _status_cache.values() if s in _PENDING_STATUSES)
+
+
+def _spin_loop(icon: pystray.Icon) -> None:
+    frames = _spin_frames()
+    i = 0
+    while not _spin_stop.is_set():
+        try:
+            icon.icon = frames[i % len(frames)]
+        except Exception:
+            break
+        i += 1
+        _spin_stop.wait(0.12)
+    # Settled — hand the icon back to the steady state.
+    try:
+        icon.icon = create_icon_image(_icon_color_key())
+    except Exception:
+        pass
+
+
+def _spinning() -> bool:
+    return _spin_thread is not None and _spin_thread.is_alive()
+
+
+def _sync_spinner(icon: pystray.Icon) -> None:
+    """Start the spinner while anything is pending; stop it once settled."""
+    global _spin_thread
+    with _spin_lock:
+        if _pending_count():
+            if not _spinning():
+                _spin_stop.clear()
+                _spin_thread = threading.Thread(target=_spin_loop, args=(icon,),
+                                                daemon=True)
+                _spin_thread.start()
+        elif _spinning():
+            _spin_stop.set()
+
+
+# ---------------------------------------------------------------------------
 # Status symbols — shared by menu items and tooltip
 # ---------------------------------------------------------------------------
 _STATUS_SYMBOLS = {
@@ -76,6 +146,9 @@ _STATUS_SYMBOLS = {
     "Resuming": "🟡",
     "Not Found":"⚪",
 }
+
+# Statuses that mean "the SCM is still working on it".
+_PENDING_STATUSES = {"Starting", "Stopping", "Resuming", "Pausing"}
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +177,15 @@ def _force_refresh(icon: pystray.Icon) -> None:
     _refresh_cache()
     icon._right_menu = _build_right_menu(icon)
     icon.menu        = icon._right_menu
-    icon.icon        = create_icon_image(_icon_color_key())
+    _sync_spinner(icon)
+    if not _spinning():          # don't fight the spinner for the icon
+        icon.icon = create_icon_image(_icon_color_key())
     _update_tooltip(icon)
+
+
+def _utf16_len(text: str) -> int:
+    """Length in UTF-16 code units — what the Windows szTip buffer counts."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
 
 
 def _clip_utf16(text: str, max_units: int = 120) -> str:
@@ -134,20 +214,40 @@ def _update_tooltip(icon: pystray.Icon) -> None:
         return
 
     label_map = {svc["name"]: svc.get("label") or svc["name"] for svc in services}
-    lines = ["Service Officer"]
-    for svc_name, status in snapshot.items():
-        symbol   = _STATUS_SYMBOLS.get(status, "?")
-        friendly = label_map.get(svc_name, svc_name)
-        lines.append(f"  {symbol} {friendly}: {status}")
+    total   = len(snapshot)
+    running = sum(1 for s in snapshot.values() if s == "Running")
 
-    # Windows szTip holds 128 UTF-16 units; clip by units (emoji take two).
+    # szTip is only 128 UTF-16 units, so a full list can't fit once there are
+    # more than a handful of services. Lead with a summary, then spend the
+    # remaining room on the services that need attention (anything not Running)
+    # — those are what you actually want from a hover.
+    head = f"Service Officer — {running}/{total} running"
+    attention = [(label_map.get(n, n), s) for n, s in snapshot.items() if s != "Running"]
+
+    if not attention:
+        icon.title = _clip_utf16(head + "\nAll services running")
+        return
+
+    lines, shown = [head], 0
+    for friendly, status in attention:
+        # "•" is one UTF-16 unit; the status emoji are astral (two each).
+        candidate = "\n".join(lines + [f"• {friendly}: {status}"])
+        if _utf16_len(candidate) > 116:   # leave room for the "+N more" line
+            break
+        lines.append(f"• {friendly}: {status}")
+        shown += 1
+
+    remaining = len(attention) - shown
+    if remaining:
+        lines.append(f"+{remaining} more")
     icon.title = _clip_utf16("\n".join(lines))
 
 
 def _poll_loop(icon: pystray.Icon) -> None:
-    """Background thread: refresh every 10 seconds."""
+    """Background thread: refresh every 10s, or every 1.5s while a service is
+    mid-transition so the spinner tracks it and stops promptly once settled."""
     while True:
-        time.sleep(10)
+        time.sleep(1.5 if _pending_count() else 10)
         _force_refresh(icon)
 
 
