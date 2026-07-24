@@ -340,6 +340,8 @@ def _run_settings_dialog():
     def _rename():
         sel = listbox.curselection()
         if not sel:
+            messagebox.showinfo("Service Officer",
+                                "Select a service in the list first.", parent=root)
             return
         i = sel[0]
         new = _prompt_label(root, _services[i].get("label") or _services[i]["name"])
@@ -350,6 +352,8 @@ def _run_settings_dialog():
     def _remove():
         sel = listbox.curselection()
         if not sel:
+            messagebox.showinfo("Service Officer",
+                                "Select a service in the list first.", parent=root)
             return
         i = sel[0]
         svc = _services[i]
@@ -405,6 +409,8 @@ def _run_settings_dialog():
     save_btn.pack(side="right", padx=(0, 8))
 
     _refresh()
+    if _services:
+        listbox.selection_set(0)  # so Remove/Rename have a target right away
     root.mainloop()
 
 

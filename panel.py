@@ -98,6 +98,10 @@ def open_panel():
 def _run_panel():
     services = config.load_services()
 
+    def _sig(lst):
+        """Identity of the configured list — name + label per service."""
+        return [(s["name"], s.get("label") or s["name"]) for s in lst]
+
     root = tk.Tk()
     root.withdraw()
     root.overrideredirect(True)
@@ -261,67 +265,77 @@ def _run_panel():
     }
     VERB = {"start": "Start", "stop": "Stop", "restart": "Restart"}
 
-    for svc in services:
-        svc_name  = svc["name"]
-        svc_label = svc.get("label") or svc_name
+    def _build_rows():
+        """(Re)build one row per configured service. Called on open and again
+        whenever the configured list changes (add / remove / rename in Settings)."""
+        for child in inner.winfo_children():
+            child.destroy()
+        rows.clear()
 
-        rf = tk.Frame(inner, bg=BG)
-        rf.pack(fill="x")
-        rf.bind("<Enter>", lambda e, f=rf: f.config(bg=ROW_HV))
-        rf.bind("<Leave>", lambda e, f=rf: f.config(bg=BG))
+        for svc in services:
+            svc_name  = svc["name"]
+            svc_label = svc.get("label") or svc_name
 
-        inner_pad = tk.Frame(rf, bg=BG)
-        inner_pad.pack(fill="x", padx=14, pady=9)
+            rf = tk.Frame(inner, bg=BG)
+            rf.pack(fill="x")
+            rf.bind("<Enter>", lambda e, f=rf: f.config(bg=ROW_HV))
+            rf.bind("<Leave>", lambda e, f=rf: f.config(bg=BG))
 
-        # name + service id
-        meta = tk.Frame(inner_pad, bg=BG)
-        meta.pack(side="left", fill="x", expand=True)
-        tk.Label(meta, text=svc_label, bg=BG, fg=FG, font=("Segoe UI", 10),
-                 anchor="w").pack(fill="x")
-        tk.Label(meta, text=svc_name, bg=BG, fg=FG3, font=("Consolas", 8),
-                 anchor="w").pack(fill="x")
+            inner_pad = tk.Frame(rf, bg=BG)
+            inner_pad.pack(fill="x", padx=14, pady=9)
 
-        # actions (packed right-to-left so order reads start/stop/restart)
-        actions = tk.Frame(inner_pad, bg=BG)
-        actions.pack(side="right")
-        chip = tk.Label(inner_pad, text="…", font=("Segoe UI", 8, "bold"),
-                        bg=_CHIP["none"][0], fg=_CHIP["none"][1],
-                        padx=8, pady=2, width=9)
-        chip.pack(side="right", padx=(0, 10))
+            # name + service id
+            meta = tk.Frame(inner_pad, bg=BG)
+            meta.pack(side="left", fill="x", expand=True)
+            tk.Label(meta, text=svc_label, bg=BG, fg=FG, font=("Segoe UI", 10),
+                     anchor="w").pack(fill="x")
+            tk.Label(meta, text=svc_name, bg=BG, fg=FG3, font=("Consolas", 8),
+                     anchor="w").pack(fill="x")
 
-        row = {"name": svc_name, "chip": chip, "btns": {}, "frame": rf,
-               "meta": meta, "label": svc_label, "status": None}
+            # actions (packed right-to-left so order reads start/stop/restart)
+            actions = tk.Frame(inner_pad, bg=BG)
+            actions.pack(side="right")
+            chip = tk.Label(inner_pad, text="…", font=("Segoe UI", 8, "bold"),
+                            bg=_CHIP["none"][0], fg=_CHIP["none"][1],
+                            padx=8, pady=2, width=9)
+            chip.pack(side="right", padx=(0, 10))
 
-        for action in ("start", "stop", "restart"):
-            # start disabled/dim; the first poll enables the valid actions,
-            # so there's no misleading "all actions available" flash on open.
-            b = tk.Button(actions, text=SYMBOL[action], bg=BTN, fg="#4a4a4a",
-                          activebackground=BTN_HV, activeforeground=FG,
-                          relief="flat", bd=0, font=("Segoe UI", 10), width=2,
-                          cursor="hand2", takefocus=False, state="disabled")
-            b.pack(side="left", padx=2)
-            b.config(command=_make_action(ACTION_FN[action], svc_name,
-                                          VERB[action], row))
-            row["btns"][action] = b
-            _hover(b, action, (lambda a=action, r=row:
-                               _button_states(r["status"] or "Unknown")[a]))
+            row = {"name": svc_name, "chip": chip, "btns": {}, "frame": rf,
+                   "meta": meta, "label": svc_label, "status": None}
 
-        rows.append(row)
+            for action in ("start", "stop", "restart"):
+                # start disabled/dim; the first poll enables the valid actions,
+                # so there's no misleading "all actions available" flash on open.
+                b = tk.Button(actions, text=SYMBOL[action], bg=BTN, fg="#4a4a4a",
+                              activebackground=BTN_HV, activeforeground=FG,
+                              relief="flat", bd=0, font=("Segoe UI", 10), width=2,
+                              cursor="hand2", takefocus=False, state="disabled")
+                b.pack(side="left", padx=2)
+                b.config(command=_make_action(ACTION_FN[action], svc_name,
+                                              VERB[action], row))
+                row["btns"][action] = b
+                _hover(b, action, (lambda a=action, r=row:
+                                   _button_states(r["status"] or "Unknown")[a]))
 
-    if not services:
-        tk.Label(inner, text="No services configured.\nAdd some from Settings.",
-                 bg=BG, fg=FG2, font=("Segoe UI", 10), justify="center",
-                 pady=24).pack(fill="x")
+            rows.append(row)
 
-    # Size the list: keep a comfortable minimum height even with one or two
-    # services, and cap it at ~8 rows (anything beyond that scrolls).
-    ROW_H = 50
-    MIN_ROWS = 3
-    if services:
-        visible = max(MIN_ROWS, min(len(services), 8))
-        canvas.config(height=visible * ROW_H)
-    else:
-        canvas.config(height=140)
+        if not services:
+            tk.Label(inner, text="No services configured.\nAdd some from Settings.",
+                     bg=BG, fg=FG2, font=("Segoe UI", 10), justify="center",
+                     pady=24).pack(fill="x")
+
+        # Size the list: keep a comfortable minimum height even with one or two
+        # services, and cap it at ~8 rows (anything beyond that scrolls).
+        ROW_H = 50
+        MIN_ROWS = 3
+        if services:
+            visible = max(MIN_ROWS, min(len(services), 8))
+            canvas.config(height=visible * ROW_H)
+        else:
+            canvas.config(height=140)
+        canvas.yview_moveto(0)
+
+    _build_rows()
 
     # ── status rendering ──────────────────────────────────────────────────────
     def _set_chip(chip, category, text):
@@ -359,9 +373,20 @@ def _run_panel():
 
     def _poll():
         def work():
+            # Re-read config each cycle so Settings changes (add/remove/rename)
+            # show up live without reopening the panel.
+            fresh = config.load_services()
             result = {s["name"]: service_control.query_status(s["name"])
-                      for s in services}
-            _q.put(lambda: _apply(result))
+                      for s in fresh}
+
+            def done():
+                if _sig(fresh) != _sig(services):
+                    services[:] = fresh
+                    _build_rows()
+                    _filter()      # keep the current search applied
+                    _anchor()      # window height may have changed
+                _apply(result)
+            _q.put(done)
         threading.Thread(target=work, daemon=True).start()
         # Reschedule a single recurring poll (cancel any pending one first, so
         # action-triggered polls don't stack up extra timers).
@@ -416,18 +441,22 @@ def _run_panel():
     _fbtn("⚙  Settings", _open_settings)
 
     # ── anchor to work-area bottom-right (like a native tray flyout) ───────────
-    win.update_idletasks()
-    h = win.winfo_reqheight()
-    MARGIN = 12
-    work = ctypes.wintypes.RECT()
-    if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0):
-        x = work.right - W - MARGIN
-        y = work.bottom - h - MARGIN
-    else:
-        x = win.winfo_screenwidth() - W - MARGIN
-        y = win.winfo_screenheight() - h - MARGIN
-    _geo = f"{W}x{h}+{max(x, 0)}+{max(y, 0)}"
-    win.geometry(_geo)
+    def _anchor():
+        win.update_idletasks()
+        h = win.winfo_reqheight()
+        MARGIN = 12
+        work = ctypes.wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0):
+            x = work.right - W - MARGIN
+            y = work.bottom - h - MARGIN
+        else:
+            x = win.winfo_screenwidth() - W - MARGIN
+            y = win.winfo_screenheight() - h - MARGIN
+        geo = f"{W}x{h}+{max(x, 0)}+{max(y, 0)}"
+        win.geometry(geo)
+        return geo
+
+    _geo = _anchor()
     # An override-redirect window ignores the geometry set before it's mapped
     # and shows at 0,0; re-assert once it's realized so it lands by the tray.
     win.after(20, lambda: win.geometry(_geo))
