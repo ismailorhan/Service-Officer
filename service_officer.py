@@ -175,6 +175,13 @@ _STATUS_SYMBOLS = {
 # Statuses that mean "the SCM is still working on it".
 _PENDING_STATUSES = {"Starting", "Stopping", "Resuming", "Pausing"}
 
+# szTip is a WCHAR[128] buffer, so 127 units plus the terminator.
+_TIP_MAX = 127
+
+# Most-worrying first, so the tooltip spends its budget on what matters.
+_SEVERITY = ["Stopped", "Not Found", "Paused", "Stopping", "Pausing",
+             "Starting", "Resuming", "Unknown"]
+
 
 # ---------------------------------------------------------------------------
 # Menu builders
@@ -213,7 +220,7 @@ def _utf16_len(text: str) -> int:
     return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
 
 
-def _clip_utf16(text: str, max_units: int = 120) -> str:
+def _clip_utf16(text: str, max_units: int = _TIP_MAX) -> str:
     """Clip to at most max_units UTF-16 code units without splitting a
     surrogate pair. The Windows tray tooltip (szTip) is a 128-WCHAR buffer, and
     status emoji outside the BMP each take TWO units — so counting Python chars
@@ -247,24 +254,43 @@ def _update_tooltip(icon: pystray.Icon) -> None:
     # remaining room on the services that need attention (anything not Running)
     # — those are what you actually want from a hover.
     head = f"Service Officer — {running}/{total} running"
-    attention = [(label_map.get(n, n), s) for n, s in snapshot.items() if s != "Running"]
 
-    if not attention:
+    groups: dict = {}
+    for name, status in snapshot.items():
+        if status != "Running":
+            groups.setdefault(status, []).append(label_map.get(name, name))
+
+    if not groups:
         icon.title = _clip_utf16(head + "\nAll services running")
         return
 
-    lines, shown = [head], 0
-    for friendly, status in attention:
-        dot = _STATUS_SYMBOLS.get(status, "⚪")
-        line = f"{dot} {friendly}: {status}"
-        if _utf16_len("\n".join(lines + [line])) > 114:  # room for "+N more"
-            break
-        lines.append(line)
-        shown += 1
+    def _build(reserve: int):
+        """Group by status ("🔴 Stopped: a, b, c") — naming each status once
+        instead of per service fits several times as many names in szTip.
+        reserve leaves room for a trailing "+N more" line."""
+        lines, omitted = [head], 0
+        for status in sorted(groups, key=lambda s: _SEVERITY.index(s)
+                             if s in _SEVERITY else len(_SEVERITY)):
+            labels = groups[status]
+            prefix = f"{_STATUS_SYMBOLS.get(status, '⚪')} {status}: "
+            line = None
+            for i, lab in enumerate(labels):
+                candidate = f"{line}, {lab}" if line else prefix + lab
+                if _utf16_len("\n".join(lines + [candidate])) + reserve > _TIP_MAX:
+                    omitted += len(labels) - i
+                    break
+                line = candidate
+            if line:
+                lines.append(line)
+            else:
+                omitted += len(labels)
+        return lines, omitted
 
-    remaining = len(attention) - shown
-    if remaining:
-        lines.append(f"+{remaining} more")
+    lines, omitted = _build(0)
+    if omitted:                      # need a "+N more" line — rebuild with room
+        lines, omitted = _build(12)
+        if omitted:
+            lines.append(f"+{omitted} more")
     icon.title = _clip_utf16("\n".join(lines))
 
 
