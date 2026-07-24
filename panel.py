@@ -10,13 +10,18 @@ after the click, lets the window take focus so clicking away closes it. All Tk
 calls stay on that one thread; worker results marshal back through a queue.
 """
 
+import base64
 import ctypes
 import ctypes.wintypes
+import io
 import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox
 
+from PIL import Image, ImageTk
+
+import _icon_data
 import config
 import service_control
 
@@ -148,8 +153,16 @@ def _run_panel():
     # ── header ────────────────────────────────────────────────────────────────
     hdr = tk.Frame(win, bg=BG, padx=14, pady=10)
     hdr.pack(fill="x")
-    tk.Label(hdr, text="⚙", bg=BG, fg="#8ff0ad",
-             font=("Segoe UI", 13)).pack(side="left", padx=(0, 7))
+    try:
+        _logo_img = ImageTk.PhotoImage(
+            Image.open(io.BytesIO(base64.b64decode(_icon_data.ICON_GREEN)))
+            .convert("RGBA").resize((20, 20), Image.LANCZOS))
+        _logo = tk.Label(hdr, image=_logo_img, bg=BG)
+        _logo.image = _logo_img  # keep a reference so it isn't garbage-collected
+    except Exception:
+        # Fall back to a glyph if the image backend is unavailable.
+        _logo = tk.Label(hdr, text="⚙", bg=BG, fg="#8ff0ad", font=("Segoe UI", 13))
+    _logo.pack(side="left", padx=(0, 7))
     tk.Label(hdr, text="Service Officer", bg=BG, fg=FG,
              font=("Segoe UI", 12, "bold")).pack(side="left")
 

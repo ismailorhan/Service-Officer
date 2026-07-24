@@ -40,6 +40,7 @@ py -m PyInstaller ^
     --hidden-import=win32com ^
     --hidden-import=win32com.client ^
     --hidden-import=pywintypes ^
+    --hidden-import=PIL.ImageTk ^
     service_officer.py
 
 if errorlevel 1 (
