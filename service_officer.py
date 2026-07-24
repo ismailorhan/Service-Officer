@@ -98,6 +98,16 @@ def _pending_count() -> int:
         return sum(1 for s in _status_cache.values() if s in _PENDING_STATUSES)
 
 
+# Actions started from the panel raise this while they run. Polling alone can't
+# be trusted to notice: a restart often finishes between two poll ticks, so the
+# transition would never be seen and the icon would never spin.
+_action_active = [0]
+
+
+def _should_spin() -> bool:
+    return _action_active[0] > 0 or _pending_count() > 0
+
+
 def _spin_loop(icon: pystray.Icon) -> None:
     frames = _spin_frames()
     i = 0
@@ -120,10 +130,10 @@ def _spinning() -> bool:
 
 
 def _sync_spinner(icon: pystray.Icon) -> None:
-    """Start the spinner while anything is pending; stop it once settled."""
+    """Start the spinner while anything is in flight; stop it once settled."""
     global _spin_thread
     with _spin_lock:
-        if _pending_count():
+        if _should_spin():
             if not _spinning():
                 _spin_stop.clear()
                 _spin_thread = threading.Thread(target=_spin_loop, args=(icon,),
@@ -131,6 +141,21 @@ def _sync_spinner(icon: pystray.Icon) -> None:
                 _spin_thread.start()
         elif _spinning():
             _spin_stop.set()
+
+
+def _make_action_hook(icon: pystray.Icon):
+    """Hook handed to the panel: spin for exactly as long as an action runs."""
+    def hook(phase: str) -> None:
+        if phase == "start":
+            _action_active[0] += 1
+            _sync_spinner(icon)
+        else:
+            _action_active[0] = max(0, _action_active[0] - 1)
+            # Re-query now so the icon colour/tooltip reflect the new state,
+            # then drop the spinner if nothing else is pending.
+            threading.Thread(target=_force_refresh, args=(icon,),
+                             daemon=True).start()
+    return hook
 
 
 # ---------------------------------------------------------------------------
@@ -230,11 +255,11 @@ def _update_tooltip(icon: pystray.Icon) -> None:
 
     lines, shown = [head], 0
     for friendly, status in attention:
-        # "•" is one UTF-16 unit; the status emoji are astral (two each).
-        candidate = "\n".join(lines + [f"• {friendly}: {status}"])
-        if _utf16_len(candidate) > 116:   # leave room for the "+N more" line
+        dot = _STATUS_SYMBOLS.get(status, "⚪")
+        line = f"{dot} {friendly}: {status}"
+        if _utf16_len("\n".join(lines + [line])) > 114:  # room for "+N more"
             break
-        lines.append(f"• {friendly}: {status}")
+        lines.append(line)
         shown += 1
 
     remaining = len(attention) - shown
@@ -247,7 +272,7 @@ def _poll_loop(icon: pystray.Icon) -> None:
     """Background thread: refresh every 10s, or every 1.5s while a service is
     mid-transition so the spinner tracks it and stops promptly once settled."""
     while True:
-        time.sleep(1.5 if _pending_count() else 10)
+        time.sleep(1.5 if _should_spin() else 5)
         _force_refresh(icon)
 
 
@@ -308,6 +333,7 @@ def main() -> None:
     icon._right_menu = _build_right_menu(icon)
     icon.menu        = icon._right_menu
     _update_tooltip(icon)
+    panel.ACTION_HOOK[0] = _make_action_hook(icon)
 
     threading.Thread(target=_poll_loop, args=(icon,), daemon=True).start()
 

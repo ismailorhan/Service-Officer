@@ -50,6 +50,20 @@ SYMBOL_FONT = "Segoe UI Symbol"     # ✕ ⚙ — BMP symbols
 _ROW_H_CACHE = [None]
 _CHROME_CACHE = [None]
 _LOGO_IMG_CACHE = [None]  # decoded+resized PIL image (Tk conversion is per-open)
+
+# Set by service_officer to a callable taking "start"/"end". The tray uses it to
+# spin its icon for exactly as long as an action is in flight — polling alone
+# misses short transitions (a restart can finish between two poll ticks).
+ACTION_HOOK = [None]
+
+
+def _notify(phase: str) -> None:
+    hook = ACTION_HOOK[0]
+    if hook:
+        try:
+            hook(phase)
+        except Exception:
+            pass
 ICON_FONT   = "Segoe MDL2 Assets"   # Windows icon font, BMP, cheap
 ICON_SEARCH = ""              # magnifier
 
@@ -278,6 +292,7 @@ def _run_panel():
             for b in row["btns"].values():
                 b.config(state="disabled", fg="#4a4a4a")
             _set_chip(row["chip"], "pending", verb + "…")
+            _notify("start")   # tray spins while this runs
 
             def work():
                 err = None
@@ -285,6 +300,7 @@ def _run_panel():
                     fn(svc_name)
                 except Exception as e:  # pywintypes.error and friends
                     err = e
+                _notify("end")
                 def done():
                     _suppress_close[0] = False
                     if err is not None:
