@@ -529,7 +529,7 @@ def _run_panel():
     def _force_foreground():
         u = ctypes.windll.user32
         try:
-            hwnd = win.winfo_id()
+            hwnd = u.GetAncestor(win.winfo_id(), 2) or win.winfo_id()  # GA_ROOT
             fg = u.GetForegroundWindow()
             fg_tid = u.GetWindowThreadProcessId(fg, None)
             cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
@@ -552,14 +552,20 @@ def _run_panel():
     def _watch():
         try:
             fg = ctypes.windll.user32.GetForegroundWindow()
-            if fg == win.winfo_id():
+            pid = ctypes.wintypes.DWORD(0)
+            ctypes.windll.user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+            ours = ctypes.windll.kernel32.GetCurrentProcessId()
+            # Compare by process, not HWND: an override-redirect window's
+            # winfo_id() is a child window, not the top-level GetForegroundWindow
+            # returns, so an HWND match never held and it never closed.
+            if pid.value == ours:
                 _seen_fg[0] = True
             elif _seen_fg[0] and not _suppress_close[0] and not search_var.get().strip():
                 _close()
                 return
         except Exception:
             pass
-        _watch_id[0] = root.after(350, _watch)
+        _watch_id[0] = root.after(300, _watch)
 
     win.bind("<Escape>", _close)
     win.lift()
