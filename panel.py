@@ -278,11 +278,11 @@ def _run_panel():
     }
     VERB = {"start": "Start", "stop": "Stop", "restart": "Restart"}
 
-    ROW_H = 50
+    ROW_H = 56  # fallback row height until a real row can be measured
     MIN_ROWS = 3
     _chrome = [None]  # measured height of everything except the scrolling list
 
-    def _list_height():
+    def _list_height(row_h):
         """List height: at least MIN_ROWS, growing with the service count up to
         as many rows as fit on screen above the tray (then it scrolls)."""
         n = len(services)
@@ -296,9 +296,9 @@ def _run_panel():
         chrome = _chrome[0] if _chrome[0] else 230
         TOP_GAP, BOTTOM_GAP = 40, 14   # keep a gap from the screen top and tray
         usable = avail - chrome - TOP_GAP - BOTTOM_GAP
-        max_rows = max(MIN_ROWS, usable // ROW_H)
+        max_rows = max(MIN_ROWS, usable // row_h)
         visible = max(MIN_ROWS, min(n, max_rows))
-        return int(visible * ROW_H)
+        return int(visible * row_h)
 
     def _build_rows():
         """(Re)build one row per configured service. Called on open and again
@@ -359,7 +359,13 @@ def _run_panel():
                      bg=BG, fg=FG2, font=("Segoe UI", 10), justify="center",
                      pady=24).pack(fill="x")
 
-        canvas.config(height=_list_height())
+        # Measure a real row (two-line content + padding) instead of guessing,
+        # so the list caps at whole rows and nothing is half-clipped.
+        inner.update_idletasks()
+        row_h = rows[0]["frame"].winfo_reqheight() if rows else ROW_H
+        if row_h < 30:            # not laid out yet — fall back
+            row_h = ROW_H
+        canvas.config(height=_list_height(row_h))
         canvas.yview_moveto(0)
 
     # ── status rendering ──────────────────────────────────────────────────────
