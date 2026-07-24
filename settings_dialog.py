@@ -117,10 +117,10 @@ def _dark_button(parent, text, command, accent=None, width=None):
     return b
 
 
-def _dark_listbox(parent, height=8):
+def _dark_listbox(parent, height=8, selectmode="browse"):
     return tk.Listbox(parent, bg=BG2, fg=FG, selectbackground=BTN_HV,
                       selectforeground=FG, relief="flat", bd=0,
-                      highlightthickness=0, activestyle="none",
+                      highlightthickness=0, activestyle="none", selectmode=selectmode,
                       font=("Segoe UI", 10), height=height)
 
 
@@ -138,7 +138,8 @@ def _center_over(child, parent) -> None:
 # Service picker — choose from every installed service
 # ---------------------------------------------------------------------------
 def _pick_service(parent, taken_names):
-    """Modal picker. Returns {"name","display"} or None. Excludes taken_names."""
+    """Modal picker. Returns a list of {"name","display"} (one per selected
+    service) or None if cancelled. Excludes taken_names."""
     result = {"value": None}
 
     dlg = tk.Toplevel(parent)
@@ -173,7 +174,7 @@ def _pick_service(parent, taken_names):
     list_frame.pack(fill="both", expand=True, padx=14, pady=(2, 6))
     scrollbar = tk.Scrollbar(list_frame, relief="flat", bd=0, width=10,
                              bg=BG2, troughcolor=BG, activebackground=BTN_HV)
-    listbox = _dark_listbox(list_frame, height=14)
+    listbox = _dark_listbox(list_frame, height=14, selectmode="extended")
     listbox.config(yscrollcommand=scrollbar.set)
     scrollbar.config(command=listbox.yview)
     scrollbar.pack(side="right", fill="y")
@@ -203,8 +204,8 @@ def _pick_service(parent, taken_names):
         sel = listbox.curselection()
         if not sel:
             return
-        s = shown[sel[0]]
-        result["value"] = {"name": s["name"], "display": s["display"]}
+        result["value"] = [{"name": shown[i]["name"], "display": shown[i]["display"]}
+                           for i in sel]
         dlg.destroy()
 
     search_var.trace_add("write", _populate)
@@ -220,7 +221,7 @@ def _pick_service(parent, taken_names):
     # simple; avoids marshaling a worker thread's result back into tkinter.
     try:
         all_services.extend(service_control.list_all_services())
-        status.config(text="Double-click a service, or select it and click Add.")
+        status.config(text="Double-click one, or select several (Ctrl/Shift-click) and click Add.")
         _populate()
     except Exception as e:
         status.config(text=f"Could not list services: {e}", fg=_DANGER)
@@ -306,7 +307,7 @@ def _run_settings_dialog():
     list_frame.pack(fill="both", expand=True, padx=16)
     scrollbar = tk.Scrollbar(list_frame, relief="flat", bd=0, width=10,
                              bg=BG2, troughcolor=BG, activebackground=BTN_HV)
-    listbox = _dark_listbox(list_frame, height=9)
+    listbox = _dark_listbox(list_frame, height=9, selectmode="extended")
     listbox.config(yscrollcommand=scrollbar.set)
     scrollbar.config(command=listbox.yview)
     scrollbar.pack(side="right", fill="y")
@@ -332,16 +333,17 @@ def _run_settings_dialog():
 
     def _add():
         taken = {s["name"] for s in _services}
-        picked = _pick_service(root, taken)
+        picked = _pick_service(root, taken)  # list of {name, display}
         if picked:
-            _services.append({"name": picked["name"], "label": picked["display"]})
+            for p in picked:
+                _services.append({"name": p["name"], "label": p["display"]})
             _refresh(len(_services) - 1)
 
     def _rename():
         sel = listbox.curselection()
-        if not sel:
+        if len(sel) != 1:
             messagebox.showinfo("Service Officer",
-                                "Select a service in the list first.", parent=root)
+                                "Select one service to rename.", parent=root)
             return
         i = sel[0]
         new = _prompt_label(root, _services[i].get("label") or _services[i]["name"])
@@ -355,19 +357,19 @@ def _run_settings_dialog():
             messagebox.showinfo("Service Officer",
                                 "Select a service in the list first.", parent=root)
             return
-        i = sel[0]
-        svc = _services[i]
-        if messagebox.askyesno(
-            "Remove service",
-            f'Stop monitoring "{svc.get("label") or svc["name"]}"?',
-            parent=root,
-        ):
-            del _services[i]
+        if len(sel) == 1:
+            svc = _services[sel[0]]
+            msg = f'Stop monitoring "{svc.get("label") or svc["name"]}"?'
+        else:
+            msg = f"Stop monitoring these {len(sel)} services?"
+        if messagebox.askyesno("Remove service", msg, parent=root):
+            for i in sorted(sel, reverse=True):  # delete high indices first
+                del _services[i]
             _refresh()
 
     def _move(delta):
         sel = listbox.curselection()
-        if not sel:
+        if len(sel) != 1:  # reordering acts on a single row
             return
         i = sel[0]
         j = i + delta
