@@ -115,6 +115,7 @@ def _run_panel():
     win.overrideredirect(True)
     win.configure(bg=BG)
     win.attributes("-topmost", True)
+    win.withdraw()  # stay hidden until positioned, so it never flashes at 0,0
 
     # suppress the focus-out auto-close while we own a modal dialog
     _suppress_close = [False]
@@ -494,11 +495,8 @@ def _run_panel():
         win.geometry(geo)
         return geo
 
-    _geo = _anchor()
-    # An override-redirect window ignores the geometry set before it's mapped
-    # and shows at 0,0; re-assert once it's realized so it lands by the tray.
-    win.after(20, lambda: win.geometry(_geo))
-    win.after(120, lambda: win.geometry(_geo))
+    _anchor()
+    win.deiconify()  # positioned while hidden — appears in place, no 0,0 flash
 
     # ── take the foreground reliably ──────────────────────────────────────────
     # Opening from a background thread, Windows' foreground lock often makes a
