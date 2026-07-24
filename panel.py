@@ -500,22 +500,47 @@ def _run_panel():
     win.after(20, lambda: win.geometry(_geo))
     win.after(120, lambda: win.geometry(_geo))
 
+    # ── take the foreground reliably ──────────────────────────────────────────
+    # Opening from a background thread, Windows' foreground lock often makes a
+    # plain SetForegroundWindow silently fail — then the window never holds
+    # focus, <FocusOut> never fires, and clicking away wouldn't close it.
+    # AttachThreadInput to the current foreground thread bypasses that lock.
+    def _force_foreground():
+        u = ctypes.windll.user32
+        try:
+            hwnd = win.winfo_id()
+            fg = u.GetForegroundWindow()
+            fg_tid = u.GetWindowThreadProcessId(fg, None)
+            cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+            if fg_tid and fg_tid != cur_tid:
+                u.AttachThreadInput(fg_tid, cur_tid, True)
+                u.BringWindowToTop(hwnd)
+                u.SetForegroundWindow(hwnd)
+                u.AttachThreadInput(fg_tid, cur_tid, False)
+            else:
+                u.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
     # ── close on focus loss (keep open if a search query is typed) ─────────────
-    def _on_focus_out(e):
-        if e.widget is win and not _suppress_close[0] and not search_var.get().strip():
-            _close()
+    # Use focus_displayof(): it returns None only when focus has left this app
+    # entirely, which is robust regardless of which child widget had focus.
+    def _on_focus_out(_e):
+        if _suppress_close[0] or search_var.get().strip():
+            return
+        def _check():
+            try:
+                if not win.focus_displayof():
+                    _close()
+            except Exception:
+                pass
+        win.after(60, _check)
 
     win.bind("<Escape>", _close)
-
-    # Force the window to the foreground so it actually holds focus — otherwise
-    # <FocusOut> never fires and clicking away wouldn't close it.
     win.lift()
     win.attributes("-topmost", True)
     win.focus_force()
-    try:
-        ctypes.windll.user32.SetForegroundWindow(win.winfo_id())
-    except Exception:
-        pass
+    _force_foreground()
     entry.focus_set()
     win.after(250, lambda: win.bind("<FocusOut>", _on_focus_out))
 
