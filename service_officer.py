@@ -108,6 +108,22 @@ def _force_refresh(icon: pystray.Icon) -> None:
     _update_tooltip(icon)
 
 
+def _clip_utf16(text: str, max_units: int = 120) -> str:
+    """Clip to at most max_units UTF-16 code units without splitting a
+    surrogate pair. The Windows tray tooltip (szTip) is a 128-WCHAR buffer, and
+    status emoji outside the BMP each take TWO units — so counting Python chars
+    (len) undercounts and can overflow Shell_NotifyIcon. Count units instead."""
+    out, units = [], 0
+    for ch in text:
+        n = 2 if ord(ch) > 0xFFFF else 1
+        if units + n > max_units:
+            out.append("…")  # …
+            break
+        out.append(ch)
+        units += n
+    return "".join(out)
+
+
 def _update_tooltip(icon: pystray.Icon) -> None:
     services = config.load_services()
     with _cache_lock:
@@ -124,11 +140,8 @@ def _update_tooltip(icon: pystray.Icon) -> None:
         friendly = label_map.get(svc_name, svc_name)
         lines.append(f"  {symbol} {friendly}: {status}")
 
-    # Windows tooltip max is 127 chars
-    tooltip = "\n".join(lines)
-    if len(tooltip) > 127:
-        tooltip = tooltip[:124] + "..."
-    icon.title = tooltip
+    # Windows szTip holds 128 UTF-16 units; clip by units (emoji take two).
+    icon.title = _clip_utf16("\n".join(lines))
 
 
 def _poll_loop(icon: pystray.Icon) -> None:
