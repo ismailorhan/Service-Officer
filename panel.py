@@ -291,7 +291,7 @@ def _run_panel():
         rf.bind("<Leave>", lambda e, f=rf: f.config(bg=BG))
 
         inner_pad = tk.Frame(rf, bg=BG)
-        inner_pad.pack(fill="x", padx=14, pady=7)
+        inner_pad.pack(fill="x", padx=14, pady=9)
 
         # name + service id
         meta = tk.Frame(inner_pad, bg=BG)
@@ -333,12 +333,15 @@ def _run_panel():
                  bg=BG, fg=FG2, font=("Segoe UI", 10), justify="center",
                  pady=24).pack(fill="x")
 
-    # Cap the visible list height; anything beyond ~8 rows scrolls.
-    ROW_H = 46
+    # Size the list: keep a comfortable minimum height even with one or two
+    # services, and cap it at ~8 rows (anything beyond that scrolls).
+    ROW_H = 50
+    MIN_ROWS = 3
     if services:
-        canvas.config(height=min(len(services), 8) * ROW_H)
+        visible = max(MIN_ROWS, min(len(services), 8))
+        canvas.config(height=visible * ROW_H)
     else:
-        canvas.config(height=80)
+        canvas.config(height=140)
 
     # ── status rendering ──────────────────────────────────────────────────────
     def _set_chip(chip, category, text):
