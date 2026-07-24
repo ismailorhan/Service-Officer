@@ -9,7 +9,7 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "1.0.0"
+#define MyAppVersion     "1.1.0"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyAppId          "{{A4F1F8C2-3D7B-4A8D-9E5F-1B2C3D4E5F60}}"

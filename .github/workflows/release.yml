@@ -1,0 +1,56 @@
+name: Release
+
+# Build the exe + installer and publish a GitHub Release whenever a version
+# tag (e.g. v1.1.0) is pushed. Can also be run manually from the Actions tab.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Build ServiceOfficer.exe
+        run: >
+          python -m PyInstaller
+          --noconfirm --clean --onefile --windowed --uac-admin
+          --name ServiceOfficer --icon=icon.ico
+          --hidden-import=win32com --hidden-import=win32com.client
+          --hidden-import=pywintypes --hidden-import=PIL.ImageTk
+          service_officer.py
+
+      - name: Copy exe to project root
+        run: Copy-Item -Force dist/ServiceOfficer.exe ServiceOfficer.exe
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Service Officer ${{ github.ref_name }}
+          files: |
+            dist/ServiceOfficerSetup.exe
+          generate_release_notes: true
