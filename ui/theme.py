@@ -37,11 +37,11 @@ _LIGHT = dict(
     BG_HOVER="#eceff3", BG_FOOT="#f0f2f5",
     FG="#14181c", FG2="#4b535a", FG3="#79818a", FG4="#9aa2aa",
     LINE="#e2e6ea", LINE2="#ccd2d9", BORDER="#c8ced5",
-    RUN="#1f9d4d", RUN_DIM="#e4f6ea", RUN_FG="#146c37",
-    STOP="#c8372f", STOP_DIM="#fdecea", STOP_FG="#9d2820",
-    PEND="#b07d0a", PEND_DIM="#fdf4e1", PEND_FG="#7d5806",
-    PAUSED="#a56a12", PAUSED_DIM="#fbefe0", PAUSED_FG="#7d4f0c",
-    NONE="#8a929a", NONE_DIM="#eef0f3", NONE_FG="#5c646c",
+    RUN="#158040", RUN_DIM="#dbf2e4", RUN_FG="#0d5228",
+    STOP="#b32f27", STOP_DIM="#fbe3e1", STOP_FG="#7d1d17",
+    PEND="#946609", PEND_DIM="#fcedd2", PEND_FG="#5f4204",
+    PAUSED="#8c5a0f", PAUSED_DIM="#f8e7d3", PAUSED_FG="#603905",
+    NONE="#767e86", NONE_DIM="#e7eaee", NONE_FG="#454c53",
     ACCENT="#1668c8",
     SCROLL="#b9c0c8", SCROLL_HOVER="#98a1aa",
     PRIMARY_DISABLED_FG="#a3b3a8", PRIMARY_DISABLED_BG="#eef1ee",
@@ -118,8 +118,11 @@ def chip(category: str):
 
 
 def chip_style(category: str) -> str:
-    _dot, bg, fg = chip(category)
-    return (f"background:{bg}; color:{fg}; border:1px solid {LINE2};"
+    """A status chip. In light mode the pale fill needs the status colour as its
+    border to stay legible — a grey border on near-white washed it out."""
+    dot, bg, fg = chip(category)
+    border = dot if is_light() else LINE2
+    return (f"background:{bg}; color:{fg}; border:1px solid {border};"
             f"border-radius:9px; padding:2px 9px; font-size:8pt; font-weight:600;")
 
 

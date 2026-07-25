@@ -45,12 +45,34 @@ class Scheduler:
 
     def stop(self) -> None:
         self._stop.set()
+        thread = self._thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=self._tick + 1)
 
     @property
     def alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
     # -- decisions ---------------------------------------------------------
+    @staticmethod
+    def signature(trigger) -> tuple:
+        """What "already ran" is remembered against.
+
+        Keying on the name alone was a trap: a trigger that had already run today
+        stayed blocked for the rest of the day, so moving it from 12:11 to 15:52
+        did nothing until tomorrow. Any change to the schedule itself must clear
+        that memory.
+        """
+        return (trigger.when, trigger.time_of_day, tuple(sorted(trigger.days)),
+                int(trigger.repeat_seconds or 0))
+
+    def _already_ran(self, trigger, occurrence) -> bool:
+        remembered = self._last_run.get(trigger.name)
+        if not remembered:
+            return False
+        signature, when = remembered
+        return signature == self.signature(trigger) and when == occurrence
+
     def due_at_startup(self) -> list:
         return [t for t in self._config().triggers
                 if t.enabled and t.when == "startup"]
@@ -68,20 +90,13 @@ class Scheduler:
         if now < start:
             return False
 
-        repeat = max(0, int(trigger.repeat_seconds or 0))
-        if not repeat:
-            if self._last_run.get(trigger.name) == now.date():
-                return False           # once a day, already done
-            # Fire late if we were asleep or the app was closed, but not all day.
-            return now - start <= timedelta(minutes=CATCH_UP_MINUTES)
-
-        # "at 03:00, then every 2 hours": the due moments are start + n*repeat,
-        # and we fire at the most recent one we haven't already run.
-        elapsed = (now - start).total_seconds()
-        occurrence = start + timedelta(seconds=(int(elapsed // repeat) * repeat))
-        if self._last_run.get(trigger.name) == occurrence:
+        occurrence = self.occurrence_for(trigger, now)
+        if self._already_ran(trigger, occurrence):
             return False
-        return (now - occurrence) <= timedelta(minutes=CATCH_UP_MINUTES)
+        repeat = max(0, int(trigger.repeat_seconds or 0))
+        reference = start if not repeat else occurrence
+        # Fire late if we were asleep or the app was closed, but not all day.
+        return now - reference <= timedelta(minutes=CATCH_UP_MINUTES)
 
     def occurrence_for(self, trigger, now: datetime):
         """Which scheduled moment a firing belongs to, so repeats aren't
@@ -99,8 +114,39 @@ class Scheduler:
         return [t for t in self._config().triggers if self._time_due(t, now)]
 
     def mark_ran(self, trigger, when=None) -> None:
-        self._last_run[trigger.name] = (when if when is not None
-                                        else self.occurrence_for(trigger, self._now()))
+        occurrence = (when if when is not None
+                      else self.occurrence_for(trigger, self._now()))
+        self._last_run[trigger.name] = (self.signature(trigger), occurrence)
+
+    def next_run_at(self, trigger, now: datetime = None):
+        """When this will next fire, so the UI can say so instead of the user
+        having to trust it. None for a startup trigger or a disabled one."""
+        now = now or self._now()
+        if not trigger.enabled or trigger.when != "time":
+            return None
+        try:
+            hour, minute = (int(p) for p in trigger.time_of_day.split(":"))
+        except (ValueError, AttributeError):
+            return None
+        repeat = max(0, int(trigger.repeat_seconds or 0))
+
+        def allowed(moment) -> bool:
+            return not trigger.days or moment.weekday() in trigger.days
+
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if repeat:
+            while candidate <= now:
+                candidate += timedelta(seconds=repeat)
+                if candidate.date() != now.date():
+                    candidate = candidate.replace(hour=hour, minute=minute)
+                    break
+        for _ in range(8):                     # today, then the next week
+            if allowed(candidate) and candidate > now and not self._already_ran(
+                    trigger, self.occurrence_for(trigger, candidate)):
+                return candidate
+            candidate = (candidate + timedelta(days=1)).replace(hour=hour,
+                                                                minute=minute)
+        return None
 
     # -- the loop ----------------------------------------------------------
     def run_startup_triggers(self) -> None:

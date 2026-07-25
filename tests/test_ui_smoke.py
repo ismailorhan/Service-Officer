@@ -213,12 +213,48 @@ def test_stack_detail_edits_steps(qapp, sample):
     win.stacks_page._open()
     detail = win.stacks_page.detail
     assert len(detail.stack.steps) == 2
-    detail._selected = 0
-    detail._move(1)                                   # swap the two steps
+    detail._reorder(0, 1)                             # dragged the first step down
     assert [s.service for s in detail.stack.steps] == ["AppEngine", "MSSQLSERVER"]
     detail._selected = 0
     detail._remove_step()
     assert [s.service for s in detail.stack.steps] == ["MSSQLSERVER"]
+    win.deleteLater()
+
+
+def test_steps_are_dragged_by_a_handle(qapp, sample):
+    """Every step row offers a grip, and letting go on another row moves it —
+    the editors inside the row must stay editable, which is why the whole row
+    isn't the drag source."""
+    from ui.widgets import Grip
+    win = settings_mod.SettingsWindow(sample)
+    win.stacks_page.list.setCurrentRow(0)
+    win.stacks_page._open()
+    detail = win.stacks_page.detail
+
+    grips = [g for row in detail._rows for g in row.findChildren(Grip)]
+    assert len(grips) == len(detail.stack.steps)
+    assert [g.index for g in grips] == [0, 1]
+
+    before = [s.service for s in detail.stack.steps]
+    grips[1].moved.emit(1, 0)
+    assert [s.service for s in detail.stack.steps] == list(reversed(before))
+
+    detail._show_drop(1)                               # the drop outline follows
+    assert detail._drop_at == 1
+    detail._show_drop(-1)
+    assert detail._drop_at == -1
+    win.deleteLater()
+
+
+def test_services_reorder_by_drag(qapp, sample):
+    win = settings_mod.SettingsWindow(sample)
+    page = win.services_page
+    names = [s.name for s in page.cfg().services]
+    assert len(names) >= 2
+    page.list.setCurrentRow(0)
+    page._reorder(0, 1)                                # dropped below its neighbour
+    moved = [s.name for s in page.cfg().services]
+    assert moved[:2] == [names[1], names[0]]
     win.deleteLater()
 
 

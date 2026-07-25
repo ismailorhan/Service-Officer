@@ -25,8 +25,9 @@ from core import config as cfg_mod
 from core import control, history
 from core import state as st
 from . import icons, theme
-from .widgets import (Duration, FlatEdit, FlatFactor, FlatSpin, PadSpin,
-                      SearchableList, Spin, button as _button, label as _label)
+from .widgets import (Duration, FlatEdit, FlatFactor, FlatSpin, Grip, PadSpin,
+                      ReorderList, SearchableList, Spin, button as _button,
+                      label as _label)
 
 
 def _spin(value, lo, hi, width=64, step=1):
@@ -191,12 +192,13 @@ class ServicesPage(QWidget):
         lay.addWidget(self.stack)
 
         self.list_page = _Page("Services",
-                               "These appear in the tray flyout with live status. "
-                               "Open one to set how it should recover when it stops "
-                               "on its own.")
-        self.list = QListWidget()
+                               "These appear in the tray flyout with live status, "
+                               "in this order — drag a row to move it. Open one to "
+                               "set how it should recover when it stops on its own.")
+        self.list = ReorderList()
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.itemDoubleClicked.connect(lambda _i: self._open_selected())
+        self.list.reordered.connect(self._reorder)
         self.list_page.root.addWidget(self.list, 1)
 
         bar = QHBoxLayout()
@@ -205,8 +207,6 @@ class ServicesPage(QWidget):
         bar.addWidget(_button("Open", None, self._open_selected))
         bar.addWidget(_button("Remove", "danger", self._remove))
         bar.addStretch(1)
-        bar.addWidget(_button("↑", "quiet", lambda: self._move(-1)))
-        bar.addWidget(_button("↓", "quiet", lambda: self._move(1)))
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
 
@@ -283,17 +283,13 @@ class ServicesPage(QWidget):
             del cfg.services[r]
         self._refresh_and_signal()
 
-    def _move(self, delta):
-        rows = self._selected_rows()
-        if len(rows) != 1:
-            return
-        i = rows[0]
-        j = i + delta
+    def _reorder(self, source, target):
         services = self.cfg().services
-        if 0 <= j < len(services):
-            services[i], services[j] = services[j], services[i]
-            self._refresh_and_signal()
-            self.list.setCurrentRow(j)
+        if not (0 <= source < len(services) and 0 <= target < len(services)):
+            return
+        services.insert(target, services.pop(source))
+        self._refresh_and_signal()
+        self.list.setCurrentRow(target)
 
     def _open_selected(self):
         rows = self._selected_rows()
@@ -545,7 +541,8 @@ class StackDetail(_Page):
         self.head.addWidget(_label(
             "Each step starts, then waits before the next one begins. Some "
             "services report Running before they can actually serve, so a fixed "
-            "wait is sometimes the honest answer.", "hint", wrap=True))
+            "wait is sometimes the honest answer. Drag a step by its handle to "
+            "change the order.", "hint", wrap=True))
         self.in_flyout = QCheckBox("Show in the tray panel")
         self.in_flyout.setToolTip("Offer this stack with a Run button under the "
                                   "services, next to where you notice a problem.")
@@ -564,8 +561,6 @@ class StackDetail(_Page):
 
         bar = QHBoxLayout()
         bar.addWidget(_button("Add step…", "primary", self._add_step))
-        bar.addWidget(_button("↑", "quiet", lambda: self._move(-1)))
-        bar.addWidget(_button("↓", "quiet", lambda: self._move(1)))
         bar.addWidget(_button("Remove step", "danger", self._remove_step))
         bar.addStretch(1)
         # Hand over the stack being edited, not its name: a test run has to use
@@ -577,6 +572,7 @@ class StackDetail(_Page):
 
         self._rows = []
         self._selected = -1
+        self._drop_at = -1
 
     def load(self, stack):
         self.stack = None
@@ -611,6 +607,12 @@ class StackDetail(_Page):
             rl = QHBoxLayout(row)
             rl.setContentsMargins(2, 6, 2, 6)
             rl.setSpacing(11)
+
+            grip = Grip(i - 1, lambda: [r for r in self._rows
+                                        if not isinstance(r, QLabel)])
+            grip.dragging.connect(self._show_drop)
+            grip.moved.connect(self._reorder)
+            rl.addWidget(grip)
 
             num = _label(str(i))
             num.setFixedSize(24, 24)
@@ -748,10 +750,30 @@ class StackDetail(_Page):
             if isinstance(row, QLabel):
                 continue
             on = (i == self._selected)
+            drop = (i == self._drop_at)
             row.setStyleSheet(
                 f"#steprow {{ border-left:2px solid "
-                f"{theme.RUN if on else 'transparent'}; }}"
+                f"{theme.RUN if on else 'transparent'};"
+                f"border-top:1px solid {theme.ACCENT if drop else 'transparent'};"
+                f"border-bottom:1px solid "
+                f"{theme.ACCENT if drop else 'transparent'}; }}"
                 f"#steprow:hover {{ background:{theme.BG_HOVER}; }}")
+
+    def _show_drop(self, index):
+        """Outline where a dragged step would land. -1 clears it."""
+        if index != self._drop_at:
+            self._drop_at = index
+            self._highlight()
+
+    def _reorder(self, source, target):
+        steps = self.stack.steps
+        if not (0 <= source < len(steps) and 0 <= target < len(steps)):
+            return
+        steps.insert(target, steps.pop(source))
+        self._selected = target
+        self._drop_at = -1
+        self._rebuild()
+        self.changed.emit()
 
     def _add_step(self):
         # Duplicates are allowed on purpose: a stack may legitimately touch the
@@ -775,16 +797,6 @@ class StackDetail(_Page):
         if 0 <= self._selected < len(self.stack.steps):
             del self.stack.steps[self._selected]
             self._selected = -1
-            self._rebuild()
-            self.changed.emit()
-
-    def _move(self, delta):
-        i = self._selected
-        j = i + delta
-        if 0 <= i < len(self.stack.steps) and 0 <= j < len(self.stack.steps):
-            steps = self.stack.steps
-            steps[i], steps[j] = steps[j], steps[i]
-            self._selected = j
             self._rebuild()
             self.changed.emit()
 
@@ -1251,9 +1263,21 @@ class TriggerDetail(_Page):
         self.changed.emit()
 
     def _update_summary(self):
-        if self.trigger is not None:
-            self.summary.setText("In words: " +
-                                 self.trigger.summary(self.cfg().services))
+        if self.trigger is None:
+            return
+        text = "In words: " + self.trigger.summary(self.cfg().services)
+        # Say when it will actually happen — the schedule is easy to get wrong
+        # and there is no way to tell by looking at the fields.
+        from core.schedule import Scheduler
+        probe = Scheduler(self.cfg, lambda _t: None)
+        when = probe.next_run_at(self.trigger)
+        if when is not None:
+            text += f"\nNext run: {when.strftime('%a %d %b, %H:%M')}"
+        elif self.trigger.when == "startup":
+            text += "\nNext run: the next time Windows starts"
+        elif not self.trigger.enabled:
+            text += "\nNext run: never — this trigger is switched off"
+        self.summary.setText(text)
 
 
 class HistoryPage(_Page):

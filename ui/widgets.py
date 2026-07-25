@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog,
+                               QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QPushButton,
+                               QSpinBox, QVBoxLayout, QWidget)
 
 from . import theme
 
@@ -26,6 +27,106 @@ def button(text, kind=None, slot=None) -> QPushButton:
         b.clicked.connect(slot)
     b.setCursor(Qt.PointingHandCursor)
     return b
+
+
+class ReorderList(QListWidget):
+    """A list whose rows are dragged into their order.
+
+    Rows carry item widgets, and Qt's own InternalMove takes the item away and
+    puts a bare one back — the widget goes with it. So the drop is intercepted,
+    the intended move reported, and the owner rebuilds the list from reordered
+    data. Qt still draws the insertion line for us.
+    """
+
+    reordered = Signal(int, int)      # from row, to row
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragDropMode(QListWidget.InternalMove)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setDropIndicatorShown(True)
+
+    def dropEvent(self, event):
+        source = self.currentRow()
+        point = event.position().toPoint()
+        target = self.indexAt(point).row()
+        if target < 0:                              # dropped past the last row
+            target = self.count() - 1
+        elif self.dropIndicatorPosition() == QAbstractItemView.BelowItem:
+            target += 1
+        if source >= 0 and source < target:
+            target -= 1                             # the row leaves its old slot
+        target = max(0, min(target, self.count() - 1))
+        event.setDropAction(Qt.IgnoreAction)        # we move the data, not the item
+        event.accept()
+        if source >= 0 and source != target:
+            self.reordered.emit(source, target)
+
+
+class Grip(QLabel):
+    """Drag handle for rows that aren't in a list view.
+
+    The stack's step rows hold their own editors, so the whole row can't be the
+    drag source — dragging inside a number box has to keep editing the number.
+    The handle carries its row index and reports where it was let go; the owner
+    reorders and rebuilds.
+    """
+
+    dragging = Signal(int)            # row under the cursor, -1 while idle
+    moved = Signal(int, int)          # from index, to index
+    THRESHOLD = 4                     # px before a click counts as a drag
+
+    def __init__(self, index: int, rows, parent=None):
+        super().__init__("⁝", parent)     # tricolon: a grip, and BMP-safe
+        self.index = index
+        self._rows = rows                      # callable returning the row widgets
+        self.setFixedWidth(14)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("Drag to reorder")
+        self.setStyleSheet(f"color:{theme.FG3}; font-size:13pt;")
+        self._press = None
+        self._live = False
+
+    def _row_at(self, global_y: int) -> int:
+        rows = [r for r in self._rows() if r.isVisible()]
+        if not rows:
+            return self.index
+        for i, row in enumerate(rows):
+            top = row.mapToGlobal(QPoint(0, 0)).y()
+            if top <= global_y <= top + row.height():
+                return i
+        first = rows[0].mapToGlobal(QPoint(0, 0)).y()
+        return 0 if global_y < first else len(rows) - 1
+
+    def mousePressEvent(self, event):
+        self._press = event.globalPosition().toPoint()
+        self._live = False
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._press is None:
+            return
+        here = event.globalPosition().toPoint()
+        if not self._live and abs(here.y() - self._press.y()) < self.THRESHOLD:
+            return
+        self._live = True
+        self.setCursor(Qt.ClosedHandCursor)
+        self.dragging.emit(self._row_at(here.y()))
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self.setCursor(Qt.OpenHandCursor)
+        self.dragging.emit(-1)
+        if self._press is None or not self._live:
+            self._press = None
+            event.accept()
+            return
+        self._press = None
+        target = self._row_at(event.globalPosition().toPoint().y())
+        if target != self.index:
+            self.moved.emit(self.index, target)
+        event.accept()
 
 
 class Spin(QSpinBox):

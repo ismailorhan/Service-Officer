@@ -92,6 +92,56 @@ def test_repeat_fires_on_each_interval_from_the_start_time():
     assert sched.due_now(at(20, 7, 0)) == [t]       # and again at 07:00
 
 
+def test_editing_the_time_after_it_ran_lets_it_fire_again_today():
+    """The bug this exists for: a trigger that had already run today stayed
+    blocked for the rest of the day, so moving it from 12:11 to 15:52 did
+    nothing until tomorrow — which reads exactly like a scheduler that doesn't
+    work."""
+    t = cfg_mod.Trigger(name="app", when="time", time_of_day="12:11")
+    sched, _fired, _cfg = build([t])
+
+    assert sched.due_now(at(20, 12, 11)) == [t]
+    sched.mark_ran(t, sched.occurrence_for(t, at(20, 12, 11)))
+    assert sched.due_now(at(20, 12, 12)) == []      # same schedule, done
+
+    t.time_of_day = "15:52"                        # the user moves it
+    assert sched.due_now(at(20, 15, 51)) == []      # not yet
+    assert sched.due_now(at(20, 15, 52)) == [t]     # fires, same day
+
+
+def test_editing_days_or_repeat_also_clears_the_memory():
+    t = cfg_mod.Trigger(name="app", when="time", time_of_day="03:00")
+    sched, _fired, _cfg = build([t])
+    sched.mark_ran(t, sched.occurrence_for(t, at(20, 3, 0)))
+    assert sched.due_now(at(20, 3, 5)) == []
+
+    t.days = [0]                                   # 2026-07-20 is a Monday
+    assert sched.due_now(at(20, 3, 5)) == [t]
+    sched.mark_ran(t, sched.occurrence_for(t, at(20, 3, 5)))
+    assert sched.due_now(at(20, 3, 6)) == []
+
+    t.repeat_seconds = 3600
+    assert sched.due_now(at(20, 3, 6)) == [t]
+
+
+def test_next_run_says_when_so_the_user_need_not_guess():
+    t = cfg_mod.Trigger(name="app", when="time", time_of_day="15:52")
+    sched, _fired, _cfg = build([t], now=at(20, 15, 0))
+    assert sched.next_run_at(t) == at(20, 15, 52)
+
+    # Past today's time: tomorrow.
+    assert sched.next_run_at(t, at(20, 16, 0)) == at(21, 15, 52)
+
+    # Restricted to Fridays, asked on a Monday: 2026-07-24.
+    t.days = [4]
+    assert sched.next_run_at(t, at(20, 15, 0)) == at(24, 15, 52)
+
+    # Nothing to promise for the other kinds.
+    assert sched.next_run_at(cfg_mod.Trigger(name="b", when="startup")) is None
+    assert sched.next_run_at(cfg_mod.Trigger(name="o", when="time",
+                                             enabled=False)) is None
+
+
 def test_repeat_summary_reads_naturally():
     t = cfg_mod.Trigger(name="r", when="time", time_of_day="03:00",
                         repeat_seconds=2 * 3600, action="stack", stack="S")
