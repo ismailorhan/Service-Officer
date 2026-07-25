@@ -207,7 +207,7 @@ class Application(QObject):
         self.scheduler.start()
         self.scheduler.run_startup_triggers()
         self.health.start()
-        watched = sum(1 for s in self.cfg.services if s.health.enabled)
+        watched = sum(1 for s in self.cfg.services if s.health.active)
         log.info("started with %d service(s), %d stack(s), %d trigger(s), "
                  "%d health-checked",
                  len(self.cfg.services), len(self.cfg.stacks),

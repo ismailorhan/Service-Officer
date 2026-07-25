@@ -251,9 +251,18 @@ def run_check(check, machine: str = "", control=None, service: str = "") -> Resu
 
 
 def run_all(service, control=None) -> tuple:
-    """(ok, [Result]) for one service. ANDed: any failure means unhealthy."""
+    """(ok, [Result]) for one service. ANDed: any failure means unhealthy.
+
+    A half-filled check — added in the editor but with no port or URL yet — is
+    skipped rather than failed. It cannot tell us anything, and failing it would
+    mark a perfectly healthy service as not responding because of an unfinished
+    edit.
+    """
+    if not getattr(service.health, "enabled", True):
+        return True, []                     # switched off: nothing is claimed
     results = [run_check(c, service.machine, control, service.name)
-               for c in service.health.checks if c.enabled]
+               for c in service.health.checks
+               if c.enabled and getattr(c, "is_configured", lambda: True)()]
     return (all(r.ok for r in results) if results else True), results
 
 
@@ -338,7 +347,7 @@ class Monitor:
     def due(self, service, now: float = None) -> bool:
         now = now if now is not None else self._now()
         health = service.health
-        if not health.enabled:
+        if not health.active:
             return False
         if self._store.status_of(service.name, service.machine) != "Running":
             return False

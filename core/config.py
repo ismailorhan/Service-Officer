@@ -120,8 +120,23 @@ class HealthCheck:
     timeout_seconds: int = 5
     enabled: bool = True
 
+    #: what a kind needs before it checks anything at all
+    NEEDS = {"tcp": "port", "http": "url", "file": "path", "command": "command"}
+
+    def is_configured(self) -> bool:
+        needed = self.NEEDS.get(self.kind)
+        return True if needed is None else bool(getattr(self, needed))
+
     def describe(self) -> str:
-        """One line, in the words someone would use to explain the check."""
+        """One line, in the words someone would use to explain the check.
+
+        An unfinished check says so. It used to read "returns a success response"
+        with the URL missing, which looks like a check that is working.
+        """
+        if not self.is_configured():
+            blank = {"tcp": "No port set yet", "http": "No URL set yet",
+                     "file": "No file set yet", "command": "No command set yet"}
+            return blank.get(self.kind, "Not set up yet")
         if self.kind == "tcp":
             where = f"{self.host or 'the service’s machine'}:{self.port}"
             return f"something answers on {where}"
@@ -149,6 +164,10 @@ class Health:
     checks are ANDed: a service with a port *and* a URL has to satisfy both,
     because either one failing means somebody can't use it.
     """
+    #: The master switch. Off means "stop watching for now" and keeps the checks
+    #: where they are — turning something off should never cost you the
+    #: configuration you would need to turn it back on.
+    enabled: bool = True
     checks: list = field(default_factory=list)     # list[HealthCheck]
     interval_seconds: int = 60
     #: after it reaches Running, how long before its answers count. A service
@@ -160,8 +179,11 @@ class Health:
     action: str = "notify"                         # notify | restart
 
     @property
-    def enabled(self) -> bool:
-        return any(c.enabled for c in self.checks)
+    def active(self) -> bool:
+        """Whether anything will actually be checked: the switch is on, and there
+        is at least one check that is both ticked and filled in."""
+        return self.enabled and any(
+            c.enabled and c.is_configured() for c in self.checks)
 
 
 @dataclass
@@ -504,6 +526,7 @@ def _health_from(raw) -> Health:
     checks = [c for c in (_check_from(x) for x in raw.get("checks", [])) if c]
     action = raw.get("action", "notify")
     return Health(
+        enabled=bool(raw.get("enabled", True)),
         checks=checks,
         interval_seconds=max(5, _as_int(raw.get("interval_seconds"), 60)),
         grace_seconds=max(0, _as_int(raw.get("grace_seconds"), 60)),

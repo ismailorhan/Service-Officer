@@ -305,7 +305,59 @@ def test_a_disabled_check_is_not_run(listener):
 def test_a_service_with_no_checks_is_never_unhealthy():
     ok, results = health.run_all(service())
     assert ok is True and results == []
-    assert service().health.enabled is False
+    # The switch is on by default, but with nothing to ask there is nothing active.
+    assert service().health.enabled is True
+    assert service().health.active is False
+
+
+def test_the_master_switch_keeps_the_checks_and_stops_asking():
+    """Turning watching off for an afternoon must not cost you the configuration
+    you need to turn it back on."""
+    svc = service(failing_check(), grace_seconds=0, interval_seconds=0)
+    assert svc.health.active is True
+
+    svc.health.enabled = False
+    assert svc.health.active is False
+    assert len(svc.health.checks) == 1            # still there
+
+    ok, results = health.run_all(svc)
+    assert ok is True and results == []           # nothing asked, nothing claimed
+
+    mon, _clock, verdicts, _a = monitor(svc)
+    mon.note_running(svc.name)
+    assert mon.due(svc) is False
+    assert verdicts == []
+
+    svc.health.enabled = True
+    assert svc.health.active is True
+    assert mon.due(svc) is True
+
+
+def test_an_unfinished_check_is_skipped_not_failed():
+    """A check added in the editor with no port yet cannot tell us anything, and
+    failing it would report a healthy service as dead because of a half-finished
+    edit."""
+    blank = cfg_mod.HealthCheck(kind="tcp")       # no port
+    assert blank.is_configured() is False
+    assert "No port set yet" in blank.describe()
+
+    svc = service(blank)
+    ok, results = health.run_all(svc)
+    assert ok is True and results == []
+    assert svc.health.active is False             # nothing to ask yet
+
+    for kind, field, value in (("http", "url", "http://x/"),
+                               ("file", "path", "C:\\x.log"),
+                               ("command", "command", "cmd /c exit 0")):
+        check = cfg_mod.HealthCheck(kind=kind)
+        assert check.is_configured() is False
+        assert "set yet" in check.describe()
+        setattr(check, field, value)
+        assert check.is_configured() is True
+        assert "set yet" not in check.describe()
+
+    # "It has a process" needs nothing typed in, so it is ready immediately.
+    assert cfg_mod.HealthCheck(kind="process").is_configured() is True
 
 
 # ---------------------------------------------------------------------------

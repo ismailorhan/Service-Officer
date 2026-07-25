@@ -986,6 +986,69 @@ def test_health_checks_read_as_one_line_each_and_open_to_edit(qapp, sample):
     win.deleteLater()
 
 
+def test_health_can_be_switched_off_without_losing_the_checks(qapp, sample):
+    sample.service("AppEngine").health = cfg_mod.Health(checks=[
+        cfg_mod.HealthCheck(kind="tcp", host="CTL052", port=54001),
+        cfg_mod.HealthCheck(kind="http", url="https://CTL052:54001")])
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
+    health = win.config().service("AppEngine").health
+
+    assert detail.h_enabled.isChecked() is True
+    assert health.active is True
+
+    detail.h_enabled.setChecked(False)
+    assert health.enabled is False
+    assert health.active is False
+    assert len(health.checks) == 2                 # nothing was deleted
+    # Everything stays on screen, greyed, so it can be read and switched back on.
+    assert detail.checks_host.isEnabled() is False
+    assert detail.add_button.isEnabled() is False
+    assert detail.check_now_button.isEnabled() is False
+
+    detail.h_enabled.setChecked(True)
+    assert health.active is True
+    assert detail.checks_host.isEnabled() is True
+    win.deleteLater()
+
+
+def test_a_check_row_opens_on_a_double_click(qapp, sample):
+    sample.service("AppEngine").health = cfg_mod.Health(checks=[
+        cfg_mod.HealthCheck(kind="tcp", port=54001)])
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
+    assert detail._open_checks == set()
+
+    row = detail.checks_lay.itemAt(0).widget()
+    row.mouseDoubleClickEvent(None)
+    assert detail._open_checks == {0}
+    # And again to close it.
+    detail.checks_lay.itemAt(0).widget().mouseDoubleClickEvent(None)
+    assert detail._open_checks == set()
+    win.deleteLater()
+
+
+def test_an_unfinished_check_says_so_in_its_summary(qapp, sample):
+    """"returns a success response" with no URL reads as a check that works."""
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
+    detail._add_check("http")
+
+    row = detail.checks_lay.itemAt(0).widget()
+    texts = " ".join(lb.text() for lb in row.findChildren(QLabel))
+    assert "No URL set yet" in texts
+    win.deleteLater()
+
+
 def test_removing_a_check_forgets_which_row_was_open(qapp, sample):
     """Indexes shift, so a remembered one would open a different check."""
     sample.service("AppEngine").health = cfg_mod.Health(checks=[

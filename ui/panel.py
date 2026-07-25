@@ -589,48 +589,30 @@ class ServiceDetail(_Page):
 
         # -- health ---------------------------------------------------------
         body = health_tab
-        body.addWidget(_label("HEALTH", "section"))
+        head_row = QHBoxLayout()
+        head_row.addWidget(_label("HEALTH", "section"))
+        head_row.addStretch(1)
+        # A master switch, so watching can be stopped for an afternoon without
+        # deleting the checks — turning something off should never cost you the
+        # configuration you need to turn it back on.
+        self.h_enabled = QCheckBox("Watch this service")
+        self.h_enabled.setToolTip("Off keeps the checks below but stops asking. "
+                                  "Nothing is reported as unhealthy while it is "
+                                  "off.")
+        self.h_enabled.toggled.connect(self._health_switched)
+        head_row.addWidget(self.h_enabled)
+        body.addLayout(head_row)
         body.addSpacing(9)
         body.addWidget(_label(
             "Windows reports Running as soon as a process exists. These say "
             "whether anyone can actually use it — the “running but dead” case "
             "that a service list cannot show. Every check has to pass.",
             "hint", wrap=True))
-        body.addSpacing(10)
-
-        # One button with a menu, not a combo box sitting next to a button. A
-        # combo standing there permanently reading "A port answers" looks like a
-        # description of the service rather than a chooser for something you are
-        # about to add — the control was in plain sight and still invisible.
-        add_row = QHBoxLayout()
-        add_row.setSpacing(6)
-        # No arrow in the text: setMenu makes Qt draw its own indicator, and two
-        # arrows on one button looks like a mistake.
-        self.add_button = QPushButton("Add check")
-        self.add_button.setProperty("kind", "primary")
-        self.add_button.setCursor(Qt.PointingHandCursor)
-        self.add_menu = QMenu(self.add_button)
-        for text, kind in (("A port answers", "tcp"),
-                           ("A URL answers", "http"),
-                           ("It has a process", "process"),
-                           ("A file is being written", "file"),
-                           ("A command succeeds", "command")):
-            self.add_menu.addAction(text, lambda k=kind: self._add_check(k))
-        self.add_button.setMenu(self.add_menu)
-        add_row.addWidget(self.add_button)
-        self.check_now_button = _button("Check now", None, self._check_now)
-        add_row.addWidget(self.check_now_button)
-        add_row.addStretch(1)
-        body.addLayout(add_row)
         body.addSpacing(14)
 
-        self.checks_host = QWidget()
-        self.checks_lay = QVBoxLayout(self.checks_host)
-        self.checks_lay.setContentsMargins(0, 0, 0, 0)
-        self.checks_lay.setSpacing(6)
-        body.addWidget(self.checks_host)
-        body.addSpacing(16)
-
+        # The rules come first and the list last, so nothing sits below a list
+        # that grows: with five checks the settings scrolled off the bottom and
+        # you had to know they were there to go looking.
         self.health_rules = QWidget()
         hl = QVBoxLayout(self.health_rules)
         hl.setContentsMargins(0, 0, 0, 0)
@@ -651,8 +633,40 @@ class ServiceDetail(_Page):
         self.h_action.currentIndexChanged.connect(self._save_health)
         hl.addWidget(_sentence("Then:", self.h_action))
         body.addWidget(self.health_rules)
+        body.addSpacing(20)
+
+        # The actions, then the list. Nothing goes below the list — it grows.
+        add_row = QHBoxLayout()
+        add_row.setSpacing(6)
+        # One button with a menu, not a combo next to a button: a combo standing
+        # there reading "A port answers" describes the service rather than
+        # offering to add something, and was invisible in plain sight.
+        # No arrow in the text either — setMenu draws Qt's own indicator.
+        self.add_button = QPushButton("Add check")
+        self.add_button.setProperty("kind", "primary")
+        self.add_button.setCursor(Qt.PointingHandCursor)
+        self.add_menu = QMenu(self.add_button)
+        for text, kind in (("A port answers", "tcp"),
+                           ("A URL answers", "http"),
+                           ("It has a process", "process"),
+                           ("A file is being written", "file"),
+                           ("A command succeeds", "command")):
+            self.add_menu.addAction(text, lambda k=kind: self._add_check(k))
+        self.add_button.setMenu(self.add_menu)
+        add_row.addWidget(self.add_button)
+        self.check_now_button = _button("Check now", None, self._check_now)
+        add_row.addWidget(self.check_now_button)
+        add_row.addStretch(1)
+        body.addLayout(add_row)
+        body.addSpacing(12)
+
         self.health_note = _label("", "hint", wrap=True)
         body.addWidget(self.health_note)
+        self.checks_host = QWidget()
+        self.checks_lay = QVBoxLayout(self.checks_host)
+        self.checks_lay.setContentsMargins(0, 0, 0, 0)
+        self.checks_lay.setSpacing(6)
+        body.addWidget(self.checks_host)
         body.addStretch(1)
 
     # -- tabs --------------------------------------------------------------
@@ -722,6 +736,9 @@ class ServiceDetail(_Page):
         self.clean.setChecked(r.restart_on_clean_stop)
 
         h = svc.health
+        self.h_enabled.blockSignals(True)
+        self.h_enabled.setChecked(h.enabled)
+        self.h_enabled.blockSignals(False)
         for widget, value in ((self.h_interval, h.interval_seconds),
                               (self.h_grace, h.grace_seconds)):
             widget.set_seconds(value)
@@ -736,6 +753,7 @@ class ServiceDetail(_Page):
         self._open_checks = set()
         self._rebuild_checks()
         self._sync_enabled()
+        self._sync_health_enabled()
 
     def _sync_enabled(self):
         on = self.keep.isChecked()
@@ -782,20 +800,22 @@ class ServiceDetail(_Page):
             return
         checks = self.svc.health.checks
         if not checks:
-            self.checks_lay.addWidget(_label(
-                "No checks yet. Use Add check above — until then this service is "
-                "judged only by whether Windows says it is running.",
-                "hint", wrap=True))
+            self.health_note.setText(
+                "No checks yet. Use Add check — until then this service is judged "
+                "only by whether Windows says it is running.")
         else:
             count = len(checks)
-            self.checks_lay.addWidget(_label(
-                f"{count} CHECK{'S' if count != 1 else ''}, ALL OF WHICH MUST PASS",
-                "section"))
+            self.health_note.setText(
+                f"{count} CHECK{'S' if count != 1 else ''}, "
+                f"ALL OF WHICH MUST PASS")
+        # Reads as a heading once there is a list under it, as a hint when empty.
+        self.health_note.setProperty("role", "section" if checks else "hint")
+        self.health_note.style().unpolish(self.health_note)
+        self.health_note.style().polish(self.health_note)
         for index, check in enumerate(checks):
             self.checks_lay.addWidget(self._check_row(index, check))
         self.health_rules.setVisible(bool(checks))
-        self.check_now_button.setEnabled(bool(checks))
-        self.health_note.setText("")
+        self._sync_health_enabled()
 
     #: what to call each kind in the one-line summary
     KIND_NAMES = {"tcp": "PORT", "http": "URL", "process": "PROCESS",
@@ -843,6 +863,12 @@ class ServiceDetail(_Page):
         head.addWidget(remove)
         outer.addLayout(head)
 
+        # Double-clicking the row opens it too. The Edit button stays, because a
+        # double-click is not something anyone can see is available.
+        row.mouseDoubleClickEvent = (
+            lambda _ev, i=index: self._toggle_check(i))
+        row.setToolTip("Double-click to edit")
+
         if not expanded:
             return row
 
@@ -888,6 +914,26 @@ class ServiceDetail(_Page):
         fields.addStretch(1)
         outer.addLayout(fields)
         return row
+
+    def _health_switched(self, on: bool):
+        if self.svc is not None:
+            self.svc.health.enabled = on
+            self.changed.emit()
+        self._sync_health_enabled()
+
+    def _sync_health_enabled(self):
+        """Off greys everything out but leaves it on screen: the point of the
+        switch is that the configuration survives being turned off.
+
+        The single authority on what is enabled here. Two rules apply — the switch
+        is off, or there is nothing to check — and having them set the same button
+        from two places meant whichever ran last won.
+        """
+        on = self.h_enabled.isChecked()
+        has_checks = bool(self.svc.health.checks) if self.svc is not None else False
+        for widget in (self.health_rules, self.checks_host, self.add_button):
+            widget.setEnabled(on)
+        self.check_now_button.setEnabled(on and has_checks)
 
     def _toggle_check(self, index: int):
         if index in self._open_checks:
