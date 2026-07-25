@@ -219,6 +219,9 @@ class ServicesPage(QWidget):
         bar.setSpacing(6)
         bar.addWidget(_button("Add services…", "primary", self._add))
         bar.addWidget(_button("Open", None, self._open_selected))
+        # Filing services is something you do to several at once, so it belongs
+        # on the list and not only inside one service's page.
+        bar.addWidget(_button("Category…", None, self._set_category))
         bar.addWidget(_button("Remove", "danger", self._remove))
         bar.addStretch(1)
         self.list_page.root.addSpacing(14)
@@ -303,6 +306,49 @@ class ServicesPage(QWidget):
             return
         for r in reversed(rows):
             del cfg.services[r]
+        self._refresh_and_signal()
+
+    def _set_category(self):
+        """File the selected services under a heading, creating it if needed."""
+        from PySide6.QtWidgets import QInputDialog
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Service Officer",
+                                    "Select one or more services in the list "
+                                    "first.")
+            return
+        cfg = self.cfg()
+        new_label = "New category…"
+        options = ([cfg_mod.NO_CATEGORY_TITLE]
+                   + [c.name for c in cfg.categories] + [new_label])
+        # Preselect what they already share, so re-filing one service doesn't
+        # start from the top of the list.
+        current = {cfg.services[r].category or cfg_mod.NO_CATEGORY for r in rows}
+        start = 0
+        if len(current) == 1:
+            only = current.pop()
+            start = options.index(only) if only in options else 0
+
+        heading = ("Put this service under:" if len(rows) == 1
+                   else f"Put these {len(rows)} services under:")
+        pick, ok = QInputDialog.getItem(self, "Category", heading, options,
+                                        start, False)
+        if not ok or not pick:
+            return
+        if pick == new_label:
+            name, ok = QInputDialog.getText(self, "New category",
+                                            "Category name:")
+            name = (name or "").strip()
+            if not ok or not name:
+                return
+            if not cfg.category(name):
+                cfg.categories.append(cfg_mod.Category(name=name))
+            pick = name
+        elif pick == cfg_mod.NO_CATEGORY_TITLE:
+            pick = cfg_mod.NO_CATEGORY
+
+        for r in rows:
+            cfg.services[r].category = pick
         self._refresh_and_signal()
 
     def _reorder(self, source, target):
@@ -1876,8 +1922,10 @@ class MainPanel(QDialog):
         self.general_page.theme_changed.connect(self.theme_changed)
         self.general_page.theme_changed.connect(lambda _m: self.restyle())
         self.machines_page.changed.connect(self.services_page.refresh)
-        # Renaming or removing a category changes what the Services rows say.
+        # Renaming or removing a category changes what the Services rows say,
+        # and filing a service can create a category the other page must list.
         self.categories_page.changed.connect(self.services_page.refresh)
+        self.services_page.changed.connect(self.categories_page.refresh)
         for page in (self.services_page, self.categories_page, self.stacks_page,
                      self.schedule_page, self.machines_page, self.history_page,
                      self.general_page):

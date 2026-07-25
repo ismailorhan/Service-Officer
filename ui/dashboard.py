@@ -88,6 +88,12 @@ class DashboardPage(QWidget):
                 cl.addWidget(lb, 1)
         root.addWidget(cols)
 
+        # Under the header it belongs to, same as the tray panel's.
+        self.bulk = BulkBar()
+        self.bulk.chosen.connect(self._bulk)
+        self.bulk.cleared.connect(lambda: self._set_all(False))
+        root.addWidget(self.bulk)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -99,11 +105,6 @@ class DashboardPage(QWidget):
         self.list_lay.addStretch(1)
         self.scroll.setWidget(self.list)
         root.addWidget(self.scroll, 1)
-
-        self.bulk = BulkBar()
-        self.bulk.chosen.connect(self._bulk)
-        self.bulk.cleared.connect(lambda: self._set_all(False))
-        root.addWidget(self.bulk)
         self.rebuild()
 
     # -- content -----------------------------------------------------------

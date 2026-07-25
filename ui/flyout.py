@@ -127,6 +127,19 @@ class Flyout(QWidget):
                 cl.addWidget(lb, 1)
         root.addWidget(cols)
 
+        # Bulk actions appear directly under the header they belong to — the
+        # tick box that selects everything is right above them. Its buttons are
+        # laid out like the footer's, and its own background says it acts on a
+        # selection rather than on everything.
+        #
+        # Appearing must not shove the rows down: the window is anchored to its
+        # bottom edge (see _keep_bottom), so it grows upwards and every row stays
+        # exactly where the pointer left it.
+        self.bulk = BulkBar()
+        self.bulk.chosen.connect(self._bulk)
+        self.bulk.cleared.connect(lambda: self._set_all(False))
+        root.addWidget(self.bulk)
+
         # list
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -138,15 +151,6 @@ class Flyout(QWidget):
         self.list_lay.addStretch(1)
         self.scroll.setWidget(self.list)
         root.addWidget(self.scroll, 1)
-
-        # Bulk actions sit above the footer and match it — same margins, equal
-        # widths — so they read as controls rather than a toolbar wedged into the
-        # list. The row's own background is what says it isn't one of the rows.
-        self.bulk = BulkBar()
-        self.bulk.chosen.connect(self._bulk)
-        self.bulk.cleared.connect(lambda: self._set_all(False))
-        root.addWidget(self._hline())
-        root.addWidget(self.bulk)
 
         # footer
         foot = QWidget()

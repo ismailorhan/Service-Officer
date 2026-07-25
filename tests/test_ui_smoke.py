@@ -631,6 +631,54 @@ def test_a_category_a_service_names_but_nobody_defined_is_kept(tmp_path):
     assert cfg.grouped_services()[0][0] == "Ghost"
 
 
+def _fake_dialogs(monkeypatch, item: str, text: str = ""):
+    """Stand in for the two QInputDialogs the category picker opens. Patched
+    through monkeypatch so it can't leak into another test — the picker imports
+    QInputDialog inside the method, so the module attribute is what matters."""
+    import PySide6.QtWidgets as qtw
+
+    class Fake:
+        @staticmethod
+        def getItem(*_a, **_k):
+            return item, True
+
+        @staticmethod
+        def getText(*_a, **_k):
+            return text, True
+
+    monkeypatch.setattr(qtw, "QInputDialog", Fake)
+
+
+def test_the_services_list_can_file_several_at_once(qapp, sample, monkeypatch):
+    """Filing is something you do to a group, so it lives on the list — not only
+    inside one service's page."""
+    sample.categories = [cfg_mod.Category(name="SAP")]
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    page.list.setCurrentRow(0)
+    page.list.item(1).setSelected(True)
+    assert page._selected_rows() == [0, 1]
+
+    _fake_dialogs(monkeypatch, "SAP")
+    page._set_category()
+    assert [s.category for s in win.config().services][:2] == ["SAP", "SAP"]
+
+    # A new category can be created from here, and shows up on the other page.
+    _fake_dialogs(monkeypatch, "New category…", text="Printing")
+    page.list.clearSelection()
+    page.list.setCurrentRow(2)
+    page._set_category()
+    assert win.config().services[2].category == "Printing"
+    assert [c.name for c in win.config().categories] == ["SAP", "Printing"]
+    assert win.categories_page.list.count() == 2
+
+    # And back out again.
+    _fake_dialogs(monkeypatch, cfg_mod.NO_CATEGORY_TITLE)
+    page._set_category()
+    assert win.config().services[2].category == cfg_mod.NO_CATEGORY
+    win.deleteLater()
+
+
 def test_services_page_names_the_machine_on_the_row(qapp, sample):
     from core import control
     win = panel_mod.MainPanel(sample)
