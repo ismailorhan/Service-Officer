@@ -7,6 +7,10 @@ a plumbing one. An empty machine means this computer.
 
 from __future__ import annotations
 
+import os
+import socket
+import threading
+
 import win32service
 import win32serviceutil
 import pywintypes
@@ -152,6 +156,77 @@ def kill_process(service_name: str, machine: str = "") -> int:
     finally:
         win32api.CloseHandle(handle)
     return pid
+
+
+def host_name() -> str:
+    """This computer's name as Windows knows it, so the local machine can be
+    named rather than called "this computer"."""
+    return (os.environ.get("COMPUTERNAME") or socket.gethostname() or "").strip()
+
+
+_addresses: dict = {}
+_resolving: set = set()
+
+
+def cached_address(machine: str = ""):
+    """The address if we already know it; None if it has never been looked up.
+    Painting a list must not wait on DNS — a name that doesn't resolve costs
+    three seconds, measured."""
+    return _addresses.get(machine or "")
+
+
+def resolve_address(machine: str = "", done=None) -> None:
+    """Look an address up on a worker thread, calling done(machine, address)
+    when it lands. Repeat calls while one is in flight are ignored."""
+    key = machine or ""
+    if key in _addresses:
+        if done:
+            done(key, _addresses[key])
+        return
+    if key in _resolving:
+        return
+    _resolving.add(key)
+
+    def work():
+        try:
+            found = address_of(machine)
+        finally:
+            _resolving.discard(key)
+        if done:
+            done(key, found)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def address_of(machine: str = "") -> str:
+    """Best-effort IP address for a machine, empty when it can't be resolved.
+
+    Blocking — call resolve_address() from anything that paints.
+    """
+    key = machine or ""
+    if key in _addresses:
+        return _addresses[key]
+    target = machine or socket.gethostname()
+    found = ""
+    try:
+        # Prefer a routable v4 address; a machine usually has several.
+        infos = socket.getaddrinfo(target, None, socket.AF_INET)
+        found = infos[0][4][0] if infos else ""
+    except (socket.gaierror, OSError, IndexError):
+        found = ""
+    if found.startswith("127.") and not machine:
+        # A hosts-file entry pointing at loopback tells the user nothing; ask
+        # the routing table which address this computer actually uses.
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.settimeout(0.2)
+            probe.connect(("10.255.255.255", 1))       # never sends a packet
+            found = probe.getsockname()[0]
+            probe.close()
+        except OSError:
+            pass
+    _addresses[key] = found
+    return found
 
 
 def reachable(machine: str) -> bool:

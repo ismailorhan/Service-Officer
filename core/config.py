@@ -187,6 +187,11 @@ class Trigger:
             return f"{days} at {self.time_of_day}{self.repeat_text()}"
         return f"every day at {self.time_of_day}{self.repeat_text()}"
 
+    #: what "tell me" can be set to; the combinations exist because the runs
+    #: worth hearing about are the ones that didn't simply work.
+    NOTIFY_CHOICES = ("never", "success", "failed", "skipped",
+                      "failed_skipped", "both", "all")
+
     def wants_notice(self, outcome: str) -> bool:
         """outcome is "success", "failed" or "skipped"."""
         if self.notify == "never":
@@ -195,6 +200,8 @@ class Trigger:
             return True
         if self.notify == "both":
             return outcome in ("success", "failed")
+        if self.notify == "failed_skipped":
+            return outcome in ("failed", "skipped")
         return self.notify == outcome
 
     def action_text(self, services=None) -> str:
@@ -366,7 +373,7 @@ def _trigger_from(raw) -> Trigger | None:
     if not _valid_hhmm(time_of_day):
         time_of_day = "03:00"
     notify = raw.get("notify", "failed")
-    if notify not in ("never", "success", "failed", "both", "all"):
+    if notify not in Trigger.NOTIFY_CHOICES:
         notify = "failed"
     return Trigger(
         name=str(raw["name"]),

@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QScrollArea, QSizePolicy,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
+                               QLineEdit, QMenu, QPushButton, QScrollArea,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from core import state as st
 from . import icons, theme
@@ -23,14 +23,16 @@ MARGIN = 12
 
 
 class _Row(QWidget):
-    """One service: name, short name, status chip, Start/Stop/Restart."""
+    """One service: tick box, name, short name, status chip, Start/Stop/Restart."""
 
     act = Signal(str, str, str)      # action, service, machine
+    picked = Signal()                # the tick box changed
 
     def __init__(self, service, parent=None):
         super().__init__(parent)
         self.service = service
         self.status = st.UNKNOWN
+        self.disabled = False
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("row")
         self.setStyleSheet(f"#row:hover {{ background: {theme.BG_HOVER}; }}")
@@ -38,6 +40,13 @@ class _Row(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(14, 8, 14, 8)
         lay.setSpacing(10)
+
+        # Ticking rows is how a whole SAP stack gets stopped without clicking
+        # five separate buttons and hoping the order held.
+        self.tick = QCheckBox()
+        self.tick.setToolTip("Include in a bulk action")
+        self.tick.toggled.connect(lambda _on: self.picked.emit())
+        lay.addWidget(self.tick)
 
         who = QVBoxLayout()
         who.setSpacing(1)
@@ -85,6 +94,7 @@ class _Row(QWidget):
     def set_status(self, status: str, busy_label: str = "",
                    disabled: bool = False) -> None:
         self.status = status
+        self.disabled = disabled
         cat = st.category(status)
         # A disabled service can't be started at all, so say so instead of
         # showing "Stopped" next to a Start button that would only fail.
@@ -152,6 +162,7 @@ class Flyout(QWidget):
     """Anchored above the tray icon, closes when the user clicks elsewhere."""
 
     action_requested = Signal(str, str, str)   # action, service, machine
+    bulk_requested = Signal(str, list)         # action, [(service, machine), …]
     run_stack = Signal(str)
     open_settings = Signal()
     open_services_mmc = Signal()
@@ -229,6 +240,12 @@ class Flyout(QWidget):
         cols.setAttribute(Qt.WA_StyledBackground, True)
         cl = QHBoxLayout(cols)
         cl.setContentsMargins(14, 4, 14, 4)
+        cl.setSpacing(10)
+        self.tick_all = QCheckBox()
+        self.tick_all.setTristate(True)
+        self.tick_all.setToolTip("Select every service shown")
+        self.tick_all.clicked.connect(self._toggle_all)
+        cl.addWidget(self.tick_all)
         for text, width, align in (("SERVICE", 0, Qt.AlignLeft),
                                    ("STATUS", 74, Qt.AlignCenter),
                                    ("ACTIONS", 96, Qt.AlignRight)):
@@ -241,6 +258,40 @@ class Flyout(QWidget):
             else:
                 cl.addWidget(lb, 1)
         root.addWidget(cols)
+
+        # bulk actions — hidden until something is ticked, so the panel stays
+        # as quiet as it was for the one-service-at-a-time case
+        self.bulk = QWidget()
+        self.bulk.setObjectName("sectionBar")
+        self.bulk.setAttribute(Qt.WA_StyledBackground, True)
+        bk = QHBoxLayout(self.bulk)
+        bk.setContentsMargins(14, 6, 10, 6)
+        bk.setSpacing(5)
+        self.bulk_count = QLabel("")
+        self.bulk_count.setProperty("role", "strong")
+        bk.addWidget(self.bulk_count)
+        bk.addStretch(1)
+        # Words without glyphs: the panel is 466px wide, and with glyphs the row
+        # pushed Kill off the edge — the one button that must not be ambiguous.
+        for text, action, kind in (("Start", "start", None),
+                                   ("Stop", "stop", None),
+                                   ("Restart", "restart", None),
+                                   ("Kill", "kill", "kill")):
+            b = QPushButton(text)
+            if kind:
+                b.setProperty("kind", kind)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(f"{text} every selected service")
+            b.clicked.connect(lambda _=False, a=action: self._bulk(a))
+            bk.addWidget(b)
+        clear = QPushButton("Clear")
+        clear.setProperty("kind", "quiet")
+        clear.setCursor(Qt.PointingHandCursor)
+        clear.setToolTip("Unselect everything")
+        clear.clicked.connect(lambda: self._set_all(False))
+        bk.addWidget(clear)
+        self.bulk.setVisible(False)
+        root.addWidget(self.bulk)
 
         # list
         self.scroll = QScrollArea()
@@ -263,7 +314,7 @@ class Flyout(QWidget):
         fl.setSpacing(6)
         for text, slot in (("↻  Refresh", self.refresh),
                            ("▤  Services", self.open_services_mmc.emit),
-                           ("⚙  Settings", self._settings)):
+                           ("⚙  Manage", self._settings)):
             b = QPushButton(text)
             b.clicked.connect(slot)
             fl.addWidget(b, 1)
@@ -278,6 +329,8 @@ class Flyout(QWidget):
         return line
 
     def _settings(self):
+        """Hands over to the management panel — this button used to say Settings,
+        which is now one section inside it."""
         self.hide()
         self.open_settings.emit()
 
@@ -307,6 +360,7 @@ class Flyout(QWidget):
         for svc in cfg.services:
             row = _Row(svc)
             row.act.connect(self.action_requested)
+            row.picked.connect(self._selection_changed)
             self._rows[svc.key] = row
             add(row)
 
@@ -366,6 +420,53 @@ class Flyout(QWidget):
             parts.append(f"{other} other")
         self.summary.setText("  ·  ".join(parts))
 
+    # -- bulk actions ------------------------------------------------------
+    def _service_rows(self, visible_only: bool = True) -> list:
+        # isHidden(), not isVisible(): a row in a window that hasn't been shown
+        # yet is invisible without having been filtered out, and asking the wrong
+        # question there makes the selection silently empty.
+        return [r for r in self._rows.values() if isinstance(r, _Row)
+                and (not r.isHidden() or not visible_only)]
+
+    def selected(self) -> list:
+        """The ticked rows, in the order they are shown."""
+        return [r for r in self._service_rows() if r.tick.isChecked()]
+
+    def _set_all(self, on: bool) -> None:
+        for row in self._service_rows():
+            row.tick.blockSignals(True)
+            row.tick.setChecked(on)
+            row.tick.blockSignals(False)
+        self._selection_changed()
+
+    def _toggle_all(self) -> None:
+        # A tristate box clicks through to Partial, which as a *command* means
+        # nothing — so treat any click as "select all unless all are selected".
+        rows = self._service_rows()
+        self._set_all(not (rows and all(r.tick.isChecked() for r in rows)))
+
+    def _selection_changed(self) -> None:
+        rows = self._service_rows()
+        chosen = [r for r in rows if r.tick.isChecked()]
+        self.bulk.setVisible(bool(chosen))
+        self.bulk_count.setText(f"{len(chosen)} selected")
+        self.tick_all.blockSignals(True)
+        if not chosen:
+            self.tick_all.setCheckState(Qt.Unchecked)
+        elif len(chosen) == len(rows):
+            self.tick_all.setCheckState(Qt.Checked)
+        else:
+            self.tick_all.setCheckState(Qt.PartiallyChecked)
+        self.tick_all.blockSignals(False)
+        self._resize_to_content()
+
+    def _bulk(self, action: str) -> None:
+        targets = [(r.service.name, r.service.machine) for r in self.selected()]
+        if not targets:
+            return
+        self.bulk_requested.emit(action, targets)
+        self._set_all(False)
+
     def mark_busy(self, name: str, machine: str, label: str) -> None:
         row = self._rows.get((machine or "", name))
         if isinstance(row, _Row):
@@ -377,7 +478,12 @@ class Flyout(QWidget):
             if isinstance(row, _Row):
                 hit = q in row.service.display().lower() or q in row.service.name.lower()
                 row.setVisible(hit)
-        self._resize_to_content()
+                if not hit and row.tick.isChecked():
+                    # A tick you can't see is a bulk action you didn't mean.
+                    row.tick.blockSignals(True)
+                    row.tick.setChecked(False)
+                    row.tick.blockSignals(False)
+        self._selection_changed()
 
     def _resize_to_content(self, settled: bool = False) -> None:
         """Grow to fit the rows, up to what the screen allows.
@@ -390,7 +496,7 @@ class Flyout(QWidget):
         comes up a few pixels short; one follow-up pass on the next event-loop
         turn gets the final number.
         """
-        rows = [r for r in self._rows.values() if isinstance(r, _Row) and r.isVisible()]
+        rows = self._service_rows()
         self.list.adjustSize()
         content = self.list_lay.sizeHint().height()
 
@@ -413,6 +519,7 @@ class Flyout(QWidget):
         self.rebuild()
         self.apply_states()
         self.search.clear()
+        self._set_all(False)
         self.adjustSize()
         self.move(self._anchor(icon_rect))
         self.show()

@@ -21,7 +21,7 @@ from core import (applog, config as cfg_mod, control, history, scm, schedule,
                   stacks)
 from core import state as st
 from core.watchdog import Watchdog
-from ui import flyout as flyout_mod, hover as hover_mod, icons, settings as settings_mod
+from ui import flyout as flyout_mod, hover as hover_mod, icons, panel as panel_mod
 from ui import theme
 from ui.tray import StateBridge, Tray
 
@@ -47,7 +47,11 @@ class ActionSignals(QObject):
     spinning forever after every start/stop because the completion handler that
     clears the busy counter was never called.
     """
-    done = Signal(str, str, str, object)        # service, machine, action, error
+    #: service, machine, action, error, announce errors, part of a bulk run.
+    #: The flags travel with the result rather than living on the app: a bulk
+    #: action has several of these in flight at once, and a shared attribute
+    #: would be whatever the last caller set.
+    done = Signal(str, str, str, object, bool, bool)
 
 
 class Application(QObject):
@@ -62,7 +66,8 @@ class Application(QObject):
         self.store = st.store
         #: set while a trigger's action is in flight, so its outcome is recorded
         self._pending_trigger = None
-        self._announce_errors = True
+        #: the running bulk action, so one tally is reported instead of N dialogs
+        self._bulk = None
         theme.set_mode(self.cfg.theme)
         self.qt.setStyleSheet(theme.sheet())
         # With "system" chosen, follow Windows when it flips light/dark.
@@ -97,7 +102,7 @@ class Application(QObject):
         self.tray = Tray(lambda: self.cfg, self.store)
         self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store)
         self.hover = hover_mod.HoverCard(lambda: self.cfg, self.store)
-        self.settings_window = None
+        self.panel = None
 
         self.bridge = StateBridge()
         self.bridge.changed.connect(self._on_state_event)
@@ -115,17 +120,22 @@ class Application(QObject):
 
         self.tray.left_clicked.connect(self._toggle_flyout)
         self.tray.hover.connect(self._on_hover)
-        self.tray.settings_requested.connect(self.open_settings)
+        self.tray.panel_requested.connect(self.open_panel)
         self.tray.services_requested.connect(self._open_services_mmc)
         self.tray.refresh_requested.connect(self.refresh)
         self.tray.quit_requested.connect(self.quit)
         self.tray.stack_requested.connect(self.run_stack)
         self.tray.menu_opened.connect(self.hover.dismiss)
 
-        self.flyout.action_requested.connect(self.do_action)
-        self.flyout.run_stack.connect(self.run_stack)
-        self.flyout.open_settings.connect(self.open_settings)
-        self.flyout.open_services_mmc.connect(self._open_services_mmc)
+        self._wire_flyout()
+
+        # Start type is not pushed to us — the SCM only reports status — so
+        # disabling a service in services.msc was invisible until someone hit
+        # Refresh. Reading it costs 0.2 ms per service, measured, so poll.
+        self.start_type_timer = QTimer(self)
+        self.start_type_timer.setInterval(30_000)
+        self.start_type_timer.timeout.connect(self._poll_start_types)
+        self.start_type_timer.start()
 
         # --- SCM push notifications ---------------------------------------
         self.watcher = scm.Watcher(
@@ -133,6 +143,33 @@ class Application(QObject):
             on_change=self._on_scm,
             safety_query=control.query_status,
         )
+
+    def _wire_flyout(self):
+        """One place for the flyout's connections — it is rebuilt on a theme
+        change, and a signal wired in only one of the two places is a bug that
+        appears hours later."""
+        self.flyout.action_requested.connect(self.do_action)
+        self.flyout.bulk_requested.connect(self.do_bulk)
+        self.flyout.run_stack.connect(self.run_stack)
+        self.flyout.open_settings.connect(lambda: self.open_panel())
+        self.flyout.open_services_mmc.connect(self._open_services_mmc)
+
+    def _poll_start_types(self):
+        """Notice a service being disabled or re-enabled outside this app."""
+        changed = False
+        for svc in self.cfg.services:
+            try:
+                found = control.start_type(svc.name, svc.machine)
+            except Exception:
+                continue
+            if found != self.store.start_type(svc.name, svc.machine):
+                self.store.set_start_type(svc.name, found, machine=svc.machine)
+                changed = True
+                log.info("%s start type is now %s", svc.name, found or "unknown")
+        if changed:
+            if self.flyout.isVisible():
+                self.flyout.apply_states()
+            self.hover.refresh()
 
     # -- startup -----------------------------------------------------------
     def start(self) -> int:
@@ -177,11 +214,10 @@ class Application(QObject):
 
     # -- actions -----------------------------------------------------------
     def do_action(self, action: str, name: str, machine: str = "",
-                  announce_errors: bool = True):
+                  announce_errors: bool = True, bulk: bool = False):
         if action == "kill":
             self.kill_process(name, machine)
             return
-        self._announce_errors = announce_errors
         verb = {"start": "Starting", "stop": "Stopping", "restart": "Restarting"}[action]
         self.flyout.mark_busy(name, machine, verb + "…")
         self.tray.action_started()
@@ -198,10 +234,12 @@ class Application(QObject):
                 error = getattr(exc, "strerror", None) or str(exc)
                 self.store.clear_expected(name, machine)
             finally:
-                self.action_signals.done.emit(name, machine, action, error)
+                self.action_signals.done.emit(name, machine, action, error,
+                                              announce_errors, bulk)
         threading.Thread(target=work, daemon=True).start()
 
-    def _action_done(self, name, machine, action, error):
+    def _action_done(self, name, machine, action, error, announce=True,
+                     bulk=False):
         self.tray.action_finished()
         try:
             self.store.update(name, control.query_status(name, machine),
@@ -211,15 +249,106 @@ class Application(QObject):
         if self.flyout.isVisible():
             self.flyout.apply_states()
 
+        if bulk:
+            self._bulk_report(name, error)
+            return
+
         pending = self._pending_trigger
         self._pending_trigger = None
         if pending is not None:
             _trigger, finish = pending
             finish("failed" if error else "success", error or "")
-        elif error and self._announce_errors:
+        elif error and announce:
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not {action} '{name}':\n{error}")
-        self._announce_errors = True
+
+    def do_bulk(self, action: str, targets: list):
+        """Apply one action to several services at once.
+
+        Asked once for the whole batch, not per service, and reported once at the
+        end: a dialog per failure is what made the old per-row loop unusable.
+        Services that can't take the action are named up front rather than
+        failing one by one — a disabled service will never start, and a process
+        on another machine isn't ours to terminate.
+        """
+        chosen = [(n, m or "") for n, m in targets]
+        skipped = []
+        if action == "start":
+            for name, machine in list(chosen):
+                if self.store.is_disabled(name, machine):
+                    chosen.remove((name, machine))
+                    skipped.append(f"{name} — disabled in Windows")
+        if action == "kill":
+            for name, machine in list(chosen):
+                if machine:
+                    chosen.remove((name, machine))
+                    skipped.append(f"{name} — on {machine}, not this computer")
+
+        if not chosen:
+            QMessageBox.information(None, "Service Officer",
+                                   "Nothing to do:\n\n" + "\n".join(skipped))
+            return
+
+        verb = {"start": "Start", "stop": "Stop", "restart": "Restart",
+                "kill": "Kill the process of"}[action]
+        lines = "\n".join(f"  ·  {n}" for n, _m in chosen[:12])
+        if len(chosen) > 12:
+            lines += f"\n  ·  … and {len(chosen) - 12} more"
+        question = f"{verb} these {len(chosen)} services?\n\n{lines}"
+        if action == "kill":
+            question += ("\n\nEach is killed outright, with no chance to shut "
+                         "down cleanly.")
+        if skipped:
+            question += "\n\nSkipping:\n" + "\n".join(f"  ·  {s}" for s in skipped)
+        if QMessageBox.question(None, f"{verb} {len(chosen)} services", question,
+                               QMessageBox.Yes | QMessageBox.No,
+                               QMessageBox.No) != QMessageBox.Yes:
+            return
+
+        log.info("bulk %s on %d service(s)", action, len(chosen))
+        self._bulk = {"action": action, "left": len(chosen), "failed": []}
+        for name, machine in chosen:
+            if action == "kill":
+                self._bulk_kill(name, machine)
+            else:
+                self.do_action(action, name, machine, announce_errors=False,
+                               bulk=True)
+
+    def _bulk_kill(self, name: str, machine: str):
+        """Kill without its own confirmation — the batch was already confirmed."""
+        error = None
+        try:
+            self.store.expect_stop(name, machine)
+            if self.cfg.history.enabled:
+                history.record_action(name, "kill", st.SRC_PANEL, machine=machine)
+            control.kill_process(name, machine)
+        except Exception as exc:
+            self.store.clear_expected(name, machine)
+            error = getattr(exc, "strerror", None) or str(exc)
+        self._bulk_report(name, error)
+        try:
+            self.store.update(name, control.query_status(name, machine),
+                              machine=machine, source=st.SRC_PANEL)
+        except Exception:
+            pass
+
+    def _bulk_report(self, name: str, error):
+        """One tally for the whole batch, announced when the last one lands."""
+        batch = getattr(self, "_bulk", None)
+        if not batch:
+            return
+        if error:
+            batch["failed"].append(f"{name}: {error}")
+        batch["left"] -= 1
+        if batch["left"] > 0:
+            return
+        self._bulk = None
+        self.refresh()
+        if batch["failed"]:
+            QMessageBox.warning(
+                None, "Service Officer",
+                f"{len(batch['failed'])} of the selected services could not "
+                f"{batch['action']}:\n\n" + "\n".join(batch["failed"][:10]))
 
     def kill_process(self, name: str, machine: str = ""):
         """Terminate the service's process — abrupt, so it asks first."""
@@ -359,11 +488,12 @@ class Application(QObject):
         if self.flyout.isVisible():
             self.flyout.hide()
         else:
+            self._poll_start_types()      # so Disabled is right the moment it opens
             self.flyout.popup(self.tray.geometry())
 
     def _on_hover(self):
-        if not self.flyout.isVisible() and (self.settings_window is None
-                                           or not self.settings_window.isVisible()):
+        if not self.flyout.isVisible() and (self.panel is None
+                                           or not self.panel.isVisible()):
             self.hover.request(self.tray.geometry())
 
     def refresh(self):
@@ -389,10 +519,7 @@ class Application(QObject):
         was_visible = self.flyout.isVisible()
         self.flyout.deleteLater()
         self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store)
-        self.flyout.action_requested.connect(self.do_action)
-        self.flyout.run_stack.connect(self.run_stack)
-        self.flyout.open_settings.connect(self.open_settings)
-        self.flyout.open_services_mmc.connect(self._open_services_mmc)
+        self._wire_flyout()
         if was_visible:
             self.flyout.popup(self.tray.geometry())
 
@@ -401,19 +528,26 @@ class Application(QObject):
         self.tray.apply_state()
         log.info("theme set to %s (%s)", requested, theme.resolved)
 
-    def open_settings(self):
+    def open_panel(self, page: str = ""):
+        """Show the management panel, optionally on a named page."""
         self.hover.dismiss()
-        if self.settings_window is not None and self.settings_window.isVisible():
-            self.settings_window.raise_()
-            self.settings_window.activateWindow()
+        if self.panel is not None and self.panel.isVisible():
+            if page:
+                self.panel.go_to(page)
+            self.panel.raise_()
+            self.panel.activateWindow()
             return
-        win = settings_mod.SettingsWindow(self.cfg)
+        win = panel_mod.MainPanel(self.cfg)
         win.saved.connect(self._settings_saved)
         win.test_run.connect(self.run_stack)
         win.run_trigger.connect(self.run_trigger)
         win.theme_changed.connect(self.apply_theme)
-        self.settings_window = win
+        self.panel = win
+        if page:
+            win.go_to(page)
         win.show()
+        win.raise_()
+        win.activateWindow()
 
     def _settings_saved(self, new_cfg):
         old_auto = self.cfg.auto_start

@@ -28,7 +28,8 @@ class Tray(QObject):
     left_clicked = Signal()
     hover = Signal()
     quit_requested = Signal()
-    settings_requested = Signal()
+    #: open the management panel, optionally on a named page
+    panel_requested = Signal(str)
     services_requested = Signal()
     refresh_requested = Signal()
     stack_requested = Signal(str)          # stack name — a stack is one script
@@ -83,9 +84,20 @@ class Tray(QObject):
                     stack.name, lambda s=stack.name: self.stack_requested.emit(s))
                 action.setToolTip(stack.describe(self._config().services))
             self._menu.addSeparator()
+        # The panel is the app's main window, so it leads the menu — and its
+        # sections are offered directly, since "open the panel then click
+        # History" is two steps for one intention.
+        opener = self._menu.addAction(
+            "Service Management Panel", lambda: self.panel_requested.emit(""))
+        font = opener.font()
+        font.setBold(True)
+        opener.setFont(font)
+        for text, page in (("Schedule…", "schedule"), ("History…", "history"),
+                           ("Settings…", "general")):
+            self._menu.addAction(text, lambda p=page: self.panel_requested.emit(p))
+        self._menu.addSeparator()
         self._menu.addAction("Open Services", self.services_requested.emit)
         self._menu.addAction("Refresh", self.refresh_requested.emit)
-        self._menu.addAction("Settings…", self.settings_requested.emit)
         self._menu.addSeparator()
         self._menu.addAction("Quit", self.quit_requested.emit)
 
@@ -137,7 +149,13 @@ class Tray(QObject):
 
     # -- input -------------------------------------------------------------
     def _activated(self, reason):
-        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+        if reason == QSystemTrayIcon.DoubleClick:
+            # A single click stays instant — the flyout is the thing you want
+            # nine times out of ten, and deferring it by the double-click
+            # interval to tell the two apart would cost that every time. The
+            # price is that the flyout may flicker open first.
+            self.panel_requested.emit("")
+        elif reason == QSystemTrayIcon.Trigger:
             self.left_clicked.emit()
         elif reason == QSystemTrayIcon.Context:
             # The menu is about to cover the same corner as the hover card.

@@ -9,11 +9,12 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication          # noqa: E402
+from PySide6.QtCore import Qt                        # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel   # noqa: E402
 
 from core import config as cfg_mod                  # noqa: E402
 from core import state as st                        # noqa: E402
-from ui import flyout as flyout_mod, hover as hover_mod, settings as settings_mod  # noqa: E402
+from ui import flyout as flyout_mod, hover as hover_mod, panel as panel_mod  # noqa: E402
 from ui import icons, theme                         # noqa: E402
 from ui.tray import StateBridge                     # noqa: E402
 
@@ -176,8 +177,8 @@ def test_hover_card_lists_every_service(qapp, sample):
     card.deleteLater()
 
 
-def test_settings_window_builds_every_page(qapp, sample):
-    win = settings_mod.SettingsWindow(sample)
+def test_panel_builds_every_page(qapp, sample):
+    win = panel_mod.MainPanel(sample)
     assert win.services_page.list.count() == 3
     assert win.stacks_page.list.count() == 1
     # opening a service shows its recovery rules
@@ -190,7 +191,7 @@ def test_settings_window_builds_every_page(qapp, sample):
 
 
 def test_editing_recovery_updates_the_config_copy(qapp, sample):
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     win.services_page.list.setCurrentRow(1)          # WMSServer, recovery off
     win.services_page._open_selected()
     d = win.services_page.detail
@@ -208,7 +209,7 @@ def test_editing_recovery_updates_the_config_copy(qapp, sample):
 
 
 def test_stack_detail_edits_steps(qapp, sample):
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     win.stacks_page.list.setCurrentRow(0)
     win.stacks_page._open()
     detail = win.stacks_page.detail
@@ -226,7 +227,7 @@ def test_steps_are_dragged_by_a_handle(qapp, sample):
     the editors inside the row must stay editable, which is why the whole row
     isn't the drag source."""
     from ui.widgets import Grip
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     win.stacks_page.list.setCurrentRow(0)
     win.stacks_page._open()
     detail = win.stacks_page.detail
@@ -247,7 +248,7 @@ def test_steps_are_dragged_by_a_handle(qapp, sample):
 
 
 def test_services_reorder_by_drag(qapp, sample):
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     page = win.services_page
     names = [s.name for s in page.cfg().services]
     assert len(names) >= 2
@@ -301,7 +302,7 @@ def test_duration_is_text_until_clicked(qapp):
 
 
 def test_save_button_is_disabled_until_something_changes(qapp, sample):
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     assert win.is_dirty() is False
     assert win.save_button.isEnabled() is False
 
@@ -324,7 +325,7 @@ def test_save_button_is_disabled_until_something_changes(qapp, sample):
 
 def test_the_same_service_can_appear_twice_in_a_stack(qapp, sample):
     """A stack may legitimately stop something early and start it again later."""
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     stack = win.config().stack("SAP B1")
     stack.steps.append(cfg_mod.Step(service="MSSQLSERVER", action="restart"))
     win.stacks_page.list.setCurrentRow(0)
@@ -335,7 +336,7 @@ def test_the_same_service_can_appear_twice_in_a_stack(qapp, sample):
 
 def test_test_run_carries_the_edited_stack_not_its_name(qapp, sample):
     """Otherwise a test run silently uses the last saved values."""
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     win.stacks_page.list.setCurrentRow(0)
     win.stacks_page._open()
     detail = win.stacks_page.detail
@@ -352,7 +353,7 @@ def test_schedule_page_edits_a_trigger(qapp, sample):
     sample.triggers.append(cfg_mod.Trigger(name="nightly", when="time",
                                            time_of_day="03:00", action="stack",
                                            stack="SAP B1"))
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     assert win.schedule_page.list.count() == 1
 
     win.schedule_page.list.setCurrentRow(0)
@@ -378,7 +379,7 @@ def test_schedule_page_edits_a_trigger(qapp, sample):
 
 
 def test_history_page_builds_a_grid_with_filters(qapp, sample):
-    win = settings_mod.SettingsWindow(sample)
+    win = panel_mod.MainPanel(sample)
     page = win.history_page
     page.load_from(win.config())
 
@@ -390,6 +391,116 @@ def test_history_page_builds_a_grid_with_filters(qapp, sample):
     assert page.service_filter.itemData(0) is None            # "All services"
     assert page.range_filter.count() == len(page.RANGES)
     assert page.include_windows.isChecked() is False
+    win.deleteLater()
+
+
+def test_history_offers_to_clear_only_once_something_is_filtered(qapp, sample):
+    win = panel_mod.MainPanel(sample)
+    page = win.history_page
+    page.load_from(win.config())
+
+    assert page._filtered() is False
+    assert page.clear_filters.isVisible() is False
+
+    page.range_filter.setCurrentIndex(0)               # last hour
+    assert page._filtered() is True
+    page.service_filter.setCurrentIndex(1)
+    page.include_windows.setChecked(True)
+
+    page._clear_filters()
+    assert page._filtered() is False
+    assert page.service_filter.currentData() is None
+    assert page.range_filter.currentIndex() == page.DEFAULT_RANGE
+    assert page.include_windows.isChecked() is False
+    win.deleteLater()
+
+
+def test_history_says_where_the_log_is_written(qapp, sample):
+    from core import history
+    win = panel_mod.MainPanel(sample)
+    page = win.history_page
+    page.load_from(win.config())
+    assert history.path() in page.path_label.text()
+    assert page.path_label.text().startswith("Written to")
+    win.deleteLater()
+
+
+def test_machines_are_named_with_their_address_and_this_pc_is_marked(qapp, sample):
+    from core import control
+    win = panel_mod.MainPanel(sample)
+    page = win.machines_page
+    local = win.config().machines[0]
+    assert local.is_local
+
+    control._addresses[""] = "10.0.0.7"                 # skip the DNS round trip
+    title = page._title(local)
+    assert control.host_name() in title and "10.0.0.7" in title
+
+    page.refresh()
+    row = page.list.itemWidget(page.list.item(0))
+    chips = [lb.text() for lb in row.findChildren(QLabel) if lb.text() == "This PC"]
+    assert chips == ["This PC"]
+    win.deleteLater()
+
+
+def test_bulk_selection_drives_one_action_for_many_services(qapp, sample):
+    """Stopping a five-service SAP stack should be one confirmation, not five
+    clicks in the right order."""
+    store = st.Store()
+    for name in ("AppEngine", "WMSServer", "MSSQLSERVER"):
+        store.update(name, st.RUNNING)
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+    fly.apply_states()
+    fly.show()
+    qapp.processEvents()
+
+    assert fly.bulk.isVisible() is False
+    asked = []
+    fly.bulk_requested.connect(lambda a, t: asked.append((a, t)))
+
+    fly._rows[("", "AppEngine")].tick.setChecked(True)
+    fly._rows[("", "WMSServer")].tick.setChecked(True)
+    assert fly.bulk.isVisible() is True
+    assert fly.bulk_count.text() == "2 selected"
+    assert fly.tick_all.checkState() == Qt.PartiallyChecked
+
+    fly._bulk("stop")
+    assert asked == [("stop", [("AppEngine", ""), ("WMSServer", "")])]
+    # Firing clears the selection, so a second click can't repeat it by accident.
+    assert fly.selected() == []
+    assert fly.bulk.isVisible() is False
+
+    fly._toggle_all()
+    assert len(fly.selected()) == 3
+    assert fly.tick_all.checkState() == Qt.Checked
+    fly._toggle_all()
+    assert fly.selected() == []
+    fly.deleteLater()
+
+
+def test_filtering_drops_ticks_you_can_no_longer_see(qapp, sample):
+    """A tick hidden by the search box is a bulk action nobody asked for."""
+    store = st.Store()
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+    fly._rows[("", "AppEngine")].tick.setChecked(True)
+    assert len(fly.selected()) == 1
+
+    fly.search.setText("wms")
+    assert fly.selected() == []
+    assert fly._rows[("", "AppEngine")].tick.isChecked() is False
+    fly.deleteLater()
+
+
+def test_panel_opens_on_a_named_section(qapp, sample):
+    win = panel_mod.MainPanel(sample)
+    assert win.go_to("history") is True
+    assert win.pages.currentWidget() is win.history_page
+    assert win.go_to("schedule") is True
+    assert win.pages.currentWidget() is win.schedule_page
+    assert win.go_to("nonsense") is False              # and stays where it was
+    assert win.pages.currentWidget() is win.schedule_page
     win.deleteLater()
 
 

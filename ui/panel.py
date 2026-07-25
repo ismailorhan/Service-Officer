@@ -1,4 +1,11 @@
-"""Settings window — sectioned, per docs/settings-mockup.html.
+"""The Service Management Panel — the app's main window.
+
+This began as a settings dialog and outgrew it: the pages that matter are
+Services, Stacks, Schedule and History, which are operational rather than
+configuration. So the window is the panel now, and the settings live in it as one
+section of its own menu instead of naming the whole thing.
+
+Sectioned, per docs/settings-mockup.html.
 
 Structure follows the redesign: a sidebar of sections, and inside Services and
 Stacks a list that opens a detail page rather than a second split pane. Numbers
@@ -11,6 +18,7 @@ Edits are made on a copy of the config; nothing reaches disk until Save.
 from __future__ import annotations
 
 import copy
+import os
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont
@@ -68,9 +76,10 @@ def _hline():
 
 
 class _ListRow(QWidget):
-    """A row in a master list: dot, name, secondary line, chevron."""
+    """A row in a master list: dot, name, secondary line, chip, chevron."""
 
-    def __init__(self, name: str, secondary: str, category: str = None):
+    def __init__(self, name: str, secondary: str, category: str = None,
+                 tag: str = "", tag_category: str = "running"):
         super().__init__()
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 9, 4, 9)
@@ -86,6 +95,10 @@ class _ListRow(QWidget):
         col.addWidget(n)
         col.addWidget(s)
         lay.addLayout(col, 1)
+        if tag:
+            chip = _label(tag)
+            chip.setStyleSheet(theme.chip_style(tag_category))
+            lay.addWidget(chip)
         lay.addWidget(_label("›", "hint"))
 
 
@@ -805,13 +818,16 @@ class MachinesPage(_Page):
     """Every service belongs to a machine; this computer is always one of them."""
 
     changed = Signal()
+    #: an address resolved on a worker thread; redraw on the GUI thread
+    address_found = Signal()
 
     def __init__(self, cfg_ref):
         super().__init__("Machines",
-                         "Where your services live. This computer is always "
-                         "here; adding another lets its services appear in the "
-                         "same panel.")
+                         "Where your services live, by name and address. This "
+                         "computer is always here; adding another lets its "
+                         "services appear in the same panel.")
         self.cfg = cfg_ref
+        self.address_found.connect(self.refresh)
 
         self.list = QListWidget()
         self.root.addWidget(self.list, 1)
@@ -834,14 +850,32 @@ class MachinesPage(_Page):
         cfg = self.cfg()
         for machine in cfg.machines:
             count = sum(1 for s in cfg.services if (s.machine or "") == machine.name)
-            secondary = f"{count} service{'s' if count != 1 else ''}"
-            if machine.is_local:
-                secondary += "  ·  this computer"
             item = QListWidgetItem()
-            widget = _ListRow(machine.display(), secondary)
+            widget = _ListRow(self._title(machine),
+                              f"{count} service{'s' if count != 1 else ''}",
+                              tag="This PC" if machine.is_local else "",
+                              tag_category="running")
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
+            # DNS costs seconds on a name that doesn't resolve, so the address
+            # arrives late and the row is redrawn then. Only ask when we don't
+            # already know it — otherwise the redraw would ask again forever.
+            if control.cached_address(machine.name) is None:
+                control.resolve_address(machine.name,
+                                        lambda *_a: self.address_found.emit())
+
+    def _title(self, machine) -> str:
+        """CTL052 (10.77.3.50) — the name alone isn't enough when someone has to
+        RDP to the box, and an IP alone isn't enough to know which box it is."""
+        name = control.host_name() if machine.is_local else machine.name
+        name = name or machine.display()
+        address = control.cached_address(machine.name)
+        if address:
+            return f"{name}  ({address})"
+        if machine.label and machine.label != name:
+            return f"{name}  ·  {machine.label}"
+        return name
 
     def _add(self):
         from PySide6.QtWidgets import QInputDialog
@@ -1038,7 +1072,9 @@ class TriggerDetail(_Page):
 
     WHENS = ("startup", "time")
     DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-    NOTIFY = ("never", "success", "failed", "both", "all")
+    #: same order as the combo below
+    NOTIFY = ("never", "success", "failed", "skipped", "failed_skipped",
+              "both", "all")
 
     def __init__(self, cfg_ref):
         super().__init__("", "")
@@ -1160,6 +1196,7 @@ class TriggerDetail(_Page):
         body.addSpacing(9)
         self.notify = QComboBox()
         self.notify.addItems(["Never", "On success", "On failure",
+                              "When skipped", "On failure or skipped",
                               "On success or failure", "Every run, even skipped"])
         self.notify.setFixedWidth(240)
         self.notify.currentIndexChanged.connect(self._commit)
@@ -1348,6 +1385,14 @@ class HistoryPage(_Page):
         self.include_windows.toggled.connect(self.reload)
         filt.addWidget(self.include_windows)
 
+        # Only offered once something is actually filtered — a permanently
+        # visible "clear" invites the question of what it would clear.
+        self.clear_filters = _button("Clear filters ✕", "quiet", self._clear_filters)
+        self.clear_filters.setToolTip("Back to all services, the last 24 hours, "
+                                      "any trigger.")
+        self.clear_filters.setVisible(False)
+        filt.addWidget(self.clear_filters)
+
         filt.addStretch(1)
         filt.addWidget(_button("Refresh", "quiet", self.reload))
         filt.addWidget(_button("Export CSV…", "quiet", self._export))
@@ -1374,6 +1419,58 @@ class HistoryPage(_Page):
         self.count = _label("", "hint")
         self.root.addSpacing(6)
         self.root.addWidget(self.count)
+
+        # Where this actually lives on disk, spelled out — the log is evidence,
+        # and evidence you can't find is no use in a ticket.
+        where = QHBoxLayout()
+        where.setSpacing(8)
+        self.path_label = _label("", "hint")
+        self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        where.addWidget(self.path_label)
+        where.addWidget(_button("Open folder", "quiet", self._open_folder))
+        where.addStretch(1)
+        self.root.addLayout(where)
+        self._show_path()
+
+    # -- filters -----------------------------------------------------------
+    DEFAULT_RANGE = 2                      # index of "Last 24 hours"
+
+    def _filtered(self) -> bool:
+        return (self.service_filter.currentData() is not None
+                or self.range_filter.currentIndex() != self.DEFAULT_RANGE
+                or self.source_filter.currentData() is not None
+                or self.include_windows.isChecked())
+
+    def _clear_filters(self):
+        for widget in (self.service_filter, self.range_filter,
+                       self.source_filter, self.include_windows):
+            widget.blockSignals(True)
+        self.service_filter.setCurrentIndex(0)
+        self.range_filter.setCurrentIndex(self.DEFAULT_RANGE)
+        self.source_filter.setCurrentIndex(0)
+        self.include_windows.setChecked(False)
+        for widget in (self.service_filter, self.range_filter,
+                       self.source_filter, self.include_windows):
+            widget.blockSignals(False)
+        self.reload()
+
+    # -- the file on disk ---------------------------------------------------
+    def _show_path(self):
+        path = history.path()
+        try:
+            size = os.path.getsize(path)
+            note = f"  ·  {size / 1024:.0f} KB"
+        except OSError:
+            note = "  ·  not written yet"
+        self.path_label.setText(f"Written to  {path}{note}")
+
+    def _open_folder(self):
+        folder = os.path.dirname(history.path())
+        try:
+            os.startfile(folder)                       # noqa: S606 - Explorer
+        except Exception as exc:
+            QMessageBox.warning(self, "Service Officer",
+                                f"Could not open\n{folder}\n\n{exc}")
 
     def _set_enabled(self, on):
         self.cfg().history.enabled = on
@@ -1419,6 +1516,8 @@ class HistoryPage(_Page):
     def reload(self):
         rows = self._current_rows()
         self._rows_cache = rows
+        self.clear_filters.setVisible(self._filtered())
+        self._show_path()
 
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
@@ -1544,7 +1643,9 @@ class GeneralPage(_Page):
 
 
 # ── the window ─────────────────────────────────────────────────────────────
-class SettingsWindow(QDialog):
+class MainPanel(QDialog):
+    """The window the tray icon opens on a double-click."""
+
     saved = Signal(object)               # the new Config
     test_run = Signal(object, str)       # the stack being edited, action
     run_trigger = Signal(object)         # a trigger, run on demand from its page
@@ -1552,9 +1653,14 @@ class SettingsWindow(QDialog):
 
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Service Officer — Settings")
+        self.setWindowTitle("Service Officer — Service Management Panel")
         self.setWindowIcon(icons.base_icon("green"))
-        self.resize(860, 620)
+        # A dialog by class, a window by behaviour: this is where the work
+        # happens now, so it gets minimise and maximise like any other window.
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint |
+                            Qt.WindowMaximizeButtonHint |
+                            Qt.WindowCloseButtonHint)
+        self.resize(980, 660)
         self._cfg = copy.deepcopy(cfg)    # edit a copy; Save commits it
         # Saved state to compare against, so Save can be disabled when there is
         # nothing to write.
@@ -1598,13 +1704,17 @@ class SettingsWindow(QDialog):
             page.changed.connect(self._refresh_save_state)
 
         self._nav_buttons = []
-        sections = [("Monitoring", None, None),
+        self._by_name = {}
+        self._buttons_by_name = {}
+        # Settings are one section here, not the name of the window.
+        sections = [("Manage", None, None),
                     ("Services", "services", self.services_page),
                     ("Stacks", "stacks", self.stacks_page),
                     ("Schedule", "schedule", self.schedule_page),
                     ("History", "history", self.history_page),
-                    ("Application", None, None),
+                    ("Infrastructure", None, None),
                     ("Machines", "machines", self.machines_page),
+                    ("Settings", None, None),
                     ("General", "general", self.general_page)]
         for text, kind, page in sections:
             if page is None:
@@ -1624,6 +1734,8 @@ class SettingsWindow(QDialog):
             b.clicked.connect(lambda _=False, p=page, btn=b: self._select(p, btn))
             nl.addWidget(b)
             self._nav_buttons.append(b)
+            self._by_name[kind] = page
+            self._buttons_by_name[kind] = b
         nl.addStretch(1)
 
         body.addWidget(nav)
@@ -1654,6 +1766,14 @@ class SettingsWindow(QDialog):
         self.pages.setCurrentWidget(page)
         for b in self._nav_buttons:
             b.setChecked(b is button)
+
+    def go_to(self, name: str) -> bool:
+        """Open a named section — the tray menu offers them directly."""
+        page = self._by_name.get(name)
+        if page is None:
+            return False
+        self._select(page, self._buttons_by_name.get(name))
+        return True
 
     def config(self):
         return self._cfg

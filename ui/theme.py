@@ -133,7 +133,48 @@ def dot_colour(category: str) -> str:
 # ---------------------------------------------------------------------------
 # Stylesheet
 # ---------------------------------------------------------------------------
+_glyph_dir = None
+
+
+def _glyph(kind: str, colour: str) -> str:
+    """Path to a tick or dash image, for use inside the stylesheet.
+
+    Qt stylesheets take `url(path)` and nothing else — no data URIs — so these
+    are written once to a temp file per colour and referenced by path. They are
+    needed because styling ::indicator at all replaces the native check mark.
+    """
+    global _glyph_dir
+    import os
+    import tempfile
+    from PySide6.QtCore import QRectF, Qt as _Qt
+    from PySide6.QtGui import QPainter, QPen, QPixmap
+
+    if _glyph_dir is None:
+        _glyph_dir = os.path.join(tempfile.gettempdir(), "service-officer-glyphs")
+        os.makedirs(_glyph_dir, exist_ok=True)
+    path = os.path.join(_glyph_dir, f"{kind}-{colour.lstrip('#')}.png")
+    if not os.path.exists(path):
+        pix = QPixmap(28, 28)                  # 2x for high-DPI crispness
+        pix.fill(_Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(colour)
+        pen.setWidthF(3.4)
+        pen.setCapStyle(_Qt.RoundCap)
+        p.setPen(pen)
+        if kind == "tick":
+            p.drawLine(7, 15, 12, 20)
+            p.drawLine(12, 20, 21, 8)
+        else:
+            p.drawLine(7, 14, 21, 14)
+        p.end()
+        pix.save(path)
+    return path.replace("\\", "/")             # QSS wants forward slashes
+
+
 def sheet() -> str:
+    TICK_URL = _glyph("tick", "#ffffff")
+    DASH_URL = _glyph("dash", RUN)
     return f"""
     QWidget {{
         background: {BG};
@@ -214,8 +255,20 @@ def sheet() -> str:
         width: 15px; height: 15px; border-radius: 3px;
         border: 1px solid {LINE2}; background: {BG_INPUT};
     }}
-    QCheckBox::indicator:checked {{ background: {RUN}; border-color: {RUN}; }}
+    QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+    /* Styling the indicator at all replaces the native one, tick included, so
+       the check has to be drawn back in — otherwise a ticked box is a plain
+       green square and reads as a colour swatch. */
+    QCheckBox::indicator:checked {{
+        background: {RUN}; border-color: {RUN};
+        image: url("{TICK_URL}");
+    }}
+    QCheckBox::indicator:indeterminate {{
+        background: {BG_INPUT}; border-color: {RUN};
+        image: url("{DASH_URL}");
+    }}
     QCheckBox:disabled {{ color: {FG4}; }}
+    QCheckBox::indicator:disabled {{ border-color: {LINE}; background: {BG}; }}
 
     QTableWidget {{
         background: {BG_RAISE}; border: 1px solid {LINE}; border-radius: 5px;

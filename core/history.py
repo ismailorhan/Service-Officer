@@ -26,6 +26,12 @@ MAX_BYTES = 5 * 1024 * 1024      # keep it well-behaved on a customer server
 _lock = threading.Lock()
 
 
+def path() -> str:
+    """Where the log lives, for the UI to show. Evidence you can't find is no
+    use when someone asks what happened at three in the morning."""
+    return HISTORY_PATH
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
