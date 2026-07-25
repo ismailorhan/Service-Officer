@@ -17,10 +17,18 @@ FONT = "Segoe UI"
 MONO = "Consolas"
 
 _DARK = dict(
-    BG="#1e1e1e", BG_SIDE="#191919", BG_RAISE="#252525", BG_INPUT="#2b2b2b",
-    BG_HOVER="#222222", BG_FOOT="#1b1b1b",
+    # Surfaces, and the order they stack in. There used to be six near-blacks
+    # doing this with three names for one job, and they drifted apart: the column
+    # header ended up *lighter* than the rows while the category headings were
+    # *darker*, with the footer a third shade. One ladder now, one direction:
+    #   content  <  raised  <  bands  <  editable
+    BG="#191919",          # the field: rows, page background
+    BG_RAISE="#212121",    # floats on the field: tables, menus, small buttons
+    BG_BAND="#242424",     # chrome: column headers, section bars, footer, nav
+    BG_INPUT="#2e2e2e",    # where you type, so the brightest
+    BG_HOVER="#222222",
     FG="#f2f4f6", FG2="#a8adb3", FG3="#767b81", FG4="#5a5f65",
-    LINE="#2f2f2f", LINE2="#3a3a3a", BORDER="#383838",
+    LINE="#303030", LINE2="#3d3d3d", BORDER="#3d3d3d",
     RUN="#40c463", RUN_DIM="#1c3a27", RUN_FG="#9ae6b4",
     STOP="#e5534b", STOP_DIM="#3a2222", STOP_FG="#ff9b95",
     PEND="#e3b341", PEND_DIM="#3a3320", PEND_FG="#f2d489",
@@ -33,10 +41,16 @@ _DARK = dict(
 )
 
 _LIGHT = dict(
-    BG="#f7f8fa", BG_SIDE="#eceef2", BG_RAISE="#ffffff", BG_INPUT="#ffffff",
-    BG_HOVER="#eceff3", BG_FOOT="#f0f2f5",
+    # The same three roles. White is the ceiling here, so the ladder can only run
+    # the other way — content is white and the bands are the grey. What matters is
+    # that each theme is internally consistent, which is what was broken.
+    BG="#ffffff",
+    BG_RAISE="#ffffff",    # distinguished by its border, not by another shade
+    BG_BAND="#eef1f4",
+    BG_INPUT="#ffffff",
+    BG_HOVER="#f3f6f8",
     FG="#14181c", FG2="#4b535a", FG3="#79818a", FG4="#9aa2aa",
-    LINE="#e2e6ea", LINE2="#ccd2d9", BORDER="#c8ced5",
+    LINE="#e3e7eb", LINE2="#ccd2d9", BORDER="#c8ced5",
     RUN="#158040", RUN_DIM="#dbf2e4", RUN_FG="#0d5228",
     STOP="#b32f27", STOP_DIM="#fbe3e1", STOP_FG="#7d1d17",
     PEND="#946609", PEND_DIM="#fcedd2", PEND_FG="#5f4204",
@@ -288,11 +302,11 @@ def sheet() -> str:
     QTableWidget::item {{ padding: 4px 8px; border: none; }}
     QTableWidget::item:selected {{ background: {RUN_DIM}; color: {FG}; }}
     QHeaderView::section {{
-        background: {BG_SIDE}; color: {FG3}; border: none;
+        background: {BG_BAND}; color: {FG3}; border: none;
         border-bottom: 1px solid {LINE}; padding: 6px 8px;
         font-size: 8pt; font-weight: 600; letter-spacing: 1px;
     }}
-    QTableCornerButton::section {{ background: {BG_SIDE}; border: none; }}
+    QTableCornerButton::section {{ background: {BG_BAND}; border: none; }}
 
     QListWidget {{
         background: {BG_RAISE}; border: 1px solid {LINE}; border-radius: 5px;
@@ -324,12 +338,12 @@ def sheet() -> str:
     /* named surfaces, so a mode change is one setStyleSheet call */
     #shell, #card {{ background: {BG}; border: 1px solid {BORDER}; }}
     #row:hover, #steprow:hover {{ background: {BG_HOVER}; }}
-    #navPanel {{ background: {BG_SIDE}; border-right: 1px solid {LINE}; }}
-    #footerBar {{ background: {BG_FOOT}; border-top: 1px solid {LINE}; }}
-    #columnHeader {{ background: {BG_RAISE}; }}
+    #navPanel {{ background: {BG_BAND}; border-right: 1px solid {LINE}; }}
+    #footerBar {{ background: {BG_BAND}; border-top: 1px solid {LINE}; }}
+    #columnHeader {{ background: {BG_BAND}; }}
     #hline {{ background: {LINE}; border: none; }}
     #flyoutTitle {{ color: {FG}; font-size: 11.5pt; font-weight: 600; }}
-    #sectionBar {{ background: {BG_SIDE}; }}
+    #sectionBar {{ background: {BG_BAND}; }}
     /* The bulk bar carries the same controls as the footer, so its background is
        the only thing saying it acts on a selection rather than on everything. */
     #bulkBar {{ background: {RUN_DIM}; }}
