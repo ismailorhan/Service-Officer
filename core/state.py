@@ -32,6 +32,7 @@ SRC_PANEL = "panel"      # the user pressed a button in our UI
 SRC_WATCHDOG = "watchdog"
 SRC_STACK = "stack"
 SRC_SCHEDULE = "schedule"   # a trigger fired
+SRC_HEALTH = "health"       # its health checks failed, so we acted
 
 
 def category(status: str) -> str:
@@ -103,6 +104,7 @@ class Store:
         #: start type per service (Automatic/Manual/Disabled). Not part of the
         #: SCM notification, so it is filled in by our own queries.
         self._start_types: dict = {}
+        self._health: dict = {}        # key -> (verdict, detail)
 
     # -- subscription ------------------------------------------------------
     def subscribe(self, fn) -> None:
@@ -191,6 +193,22 @@ class Store:
 
     def is_disabled(self, name: str, machine: str = "") -> bool:
         return self.start_type(name, machine) == "Disabled"
+
+    # -- health ------------------------------------------------------------
+    # A third axis, alongside status and start type: Running says a process
+    # exists, health says whether anyone can use it.
+    def set_health(self, name: str, verdict: str, detail: str = "",
+                   machine: str = "") -> None:
+        with self._lock:
+            self._health[(machine or "", name)] = (verdict, detail)
+
+    def health_of(self, name: str, machine: str = "") -> str:
+        with self._lock:
+            return self._health.get((machine or "", name), ("unknown", ""))[0]
+
+    def health_detail(self, name: str, machine: str = "") -> str:
+        with self._lock:
+            return self._health.get((machine or "", name), ("unknown", ""))[1]
 
     # -- intent ------------------------------------------------------------
     def expect_stop(self, name: str, machine: str = "") -> None:

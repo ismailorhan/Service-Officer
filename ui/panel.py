@@ -538,6 +538,64 @@ class ServiceDetail(_Page):
             "Off by default, only crashes are recovered — a non-zero exit code. "
             "A service you stopped yourself in services.msc is left alone.",
             "hint", wrap=True))
+        body.addSpacing(26)
+
+        # -- health ---------------------------------------------------------
+        body.addWidget(_label("HEALTH", "section"))
+        body.addSpacing(9)
+        body.addWidget(_label(
+            "Windows reports Running as soon as a process exists. These say "
+            "whether anyone can actually use it — the “running but dead” case "
+            "that a service list cannot show. Every check has to pass.",
+            "hint", wrap=True))
+        body.addSpacing(10)
+
+        self.checks_host = QWidget()
+        self.checks_lay = QVBoxLayout(self.checks_host)
+        self.checks_lay.setContentsMargins(0, 0, 0, 0)
+        self.checks_lay.setSpacing(6)
+        body.addWidget(self.checks_host)
+
+        add_row = QHBoxLayout()
+        add_row.setSpacing(6)
+        self.check_kind = QComboBox()
+        self.check_kind.addItem("A port answers", "tcp")
+        self.check_kind.addItem("A URL answers", "http")
+        self.check_kind.addItem("It has a process", "process")
+        self.check_kind.addItem("A file is being written", "file")
+        self.check_kind.addItem("A command succeeds", "command")
+        self.check_kind.setFixedWidth(220)
+        add_row.addWidget(self.check_kind)
+        add_row.addWidget(_button("Add check", None, self._add_check))
+        self.check_now_button = _button("Check now", "quiet", self._check_now)
+        add_row.addWidget(self.check_now_button)
+        add_row.addStretch(1)
+        body.addSpacing(6)
+        body.addLayout(add_row)
+        body.addSpacing(12)
+
+        self.health_rules = QWidget()
+        hl = QVBoxLayout(self.health_rules)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(10)
+        self.h_interval = Duration(60, minimum=5)
+        self.h_grace = Duration(60)
+        self.h_failures = FlatSpin(3, 1, 20)
+        for w in (self.h_interval, self.h_grace, self.h_failures):
+            w.changed.connect(self._save_health)
+        hl.addWidget(_sentence("Ask every", self.h_interval, ", starting",
+                               self.h_grace, "after it comes up."))
+        hl.addWidget(_sentence("Call it unhealthy after", self.h_failures,
+                               "failures in a row."))
+        self.h_action = QComboBox()
+        self.h_action.addItem("Just tell me", "notify")
+        self.h_action.addItem("Restart the service", "restart")
+        self.h_action.setFixedWidth(220)
+        self.h_action.currentIndexChanged.connect(self._save_health)
+        hl.addWidget(_sentence("Then:", self.h_action))
+        body.addWidget(self.health_rules)
+        self.health_note = _label("", "hint", wrap=True)
+        body.addWidget(self.health_note)
 
         body.addStretch(1)
         self.root.addLayout(body, 1)
@@ -564,7 +622,19 @@ class ServiceDetail(_Page):
         self.flap_count.setValue(r.flap_threshold)
         self.flap_window.set_seconds(r.flap_window_minutes * 60)
         self.clean.setChecked(r.restart_on_clean_stop)
+
+        h = svc.health
+        for widget, value in ((self.h_interval, h.interval_seconds),
+                              (self.h_grace, h.grace_seconds)):
+            widget.set_seconds(value)
+        self.h_failures.setValue(h.failures_before_acting)
+        self.h_action.blockSignals(True)
+        wanted = self.h_action.findData(h.action)
+        self.h_action.setCurrentIndex(wanted if wanted >= 0 else 0)
+        self.h_action.blockSignals(False)
+
         self.svc = svc
+        self._rebuild_checks()
         self._sync_enabled()
 
     def _sync_enabled(self):
@@ -587,6 +657,150 @@ class ServiceDetail(_Page):
         if self.svc is not None:
             self.svc.category = self.category.currentData() or cfg_mod.NO_CATEGORY
             self.changed.emit()
+
+    # -- health ------------------------------------------------------------
+    #: what each kind needs typing in, and what to call it
+    CHECK_FIELDS = {
+        "tcp": [("host", "Host (blank = this service’s machine)"),
+                ("port", "Port")],
+        "http": [("url", "URL"), ("expect_status", "Expect status (0 = any 2xx/3xx)"),
+                 ("expect_text", "Must contain (optional)")],
+        "process": [],
+        "file": [("path", "File"), ("max_age_seconds", "Written within (seconds)")],
+        "command": [("command", "Command"), ("expect_exit", "Expect exit code")],
+    }
+
+    def _rebuild_checks(self):
+        while self.checks_lay.count():
+            item = self.checks_lay.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        if self.svc is None:
+            return
+        checks = self.svc.health.checks
+        if not checks:
+            self.checks_lay.addWidget(_label(
+                "No checks — this service is only judged by whether Windows says "
+                "it is running.", "hint", wrap=True))
+        for index, check in enumerate(checks):
+            self.checks_lay.addWidget(self._check_row(index, check))
+        self.health_rules.setVisible(bool(checks))
+        self.check_now_button.setEnabled(bool(checks))
+        self.health_note.setText(
+            "" if checks else
+            "Add a check to have this service watched for more than its status.")
+
+    def _check_row(self, index: int, check) -> QWidget:
+        row = QWidget()
+        row.setObjectName("steprow")
+        row.setAttribute(Qt.WA_StyledBackground, True)
+        outer = QVBoxLayout(row)
+        outer.setContentsMargins(8, 6, 6, 6)
+        outer.setSpacing(4)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        on = QCheckBox()
+        on.setChecked(check.enabled)
+        on.setToolTip("Include this check")
+        on.toggled.connect(lambda state, c=check: self._set_check(c, "enabled",
+                                                                  state))
+        head.addWidget(on)
+        head.addWidget(_label(check.describe(), "strong"), 1)
+        remove = _button("Remove", "quiet")
+        remove.clicked.connect(lambda _=False, i=index: self._remove_check(i))
+        head.addWidget(remove)
+        outer.addLayout(head)
+
+        fields = QHBoxLayout()
+        fields.setSpacing(8)
+        for attr, caption in self.CHECK_FIELDS.get(check.kind, []):
+            box = QVBoxLayout()
+            box.setSpacing(2)
+            box.addWidget(_label(caption, "hint"))
+            current = getattr(check, attr)
+            if isinstance(current, int):
+                editor = _spin(current, 0, 999999)
+                editor.valueChanged.connect(
+                    lambda value, c=check, a=attr: self._set_check(c, a, value))
+                editor.setFixedWidth(150)
+            else:
+                editor = QLineEdit(str(current))
+                editor.setMinimumWidth(200)
+                editor.textChanged.connect(
+                    lambda text, c=check, a=attr: self._set_check(c, a, text))
+            box.addWidget(editor)
+            fields.addLayout(box)
+
+        timeout = QVBoxLayout()
+        timeout.setSpacing(2)
+        timeout.addWidget(_label("Give up after (seconds)", "hint"))
+        secs = _spin(check.timeout_seconds, 1, 120)
+        secs.setFixedWidth(110)
+        secs.valueChanged.connect(
+            lambda value, c=check: self._set_check(c, "timeout_seconds", value))
+        timeout.addWidget(secs)
+        fields.addLayout(timeout)
+
+        if check.kind == "http":
+            insecure = QCheckBox("Accept any certificate")
+            insecure.setToolTip("For an internal server with its own certificate.")
+            insecure.setChecked(check.insecure)
+            insecure.toggled.connect(
+                lambda state, c=check: self._set_check(c, "insecure", state))
+            fields.addWidget(insecure, 0, Qt.AlignBottom)
+
+        fields.addStretch(1)
+        outer.addLayout(fields)
+        return row
+
+    def _set_check(self, check, attr, value):
+        setattr(check, attr, value)
+        self.changed.emit()
+
+    def _add_check(self):
+        if self.svc is None:
+            return
+        kind = self.check_kind.currentData()
+        check = cfg_mod.HealthCheck(kind=kind)
+        # Sensible starting points, so the row isn't a set of empty boxes.
+        if kind == "file":
+            check.max_age_seconds = 300
+        self.svc.health.checks.append(check)
+        self._rebuild_checks()
+        self.changed.emit()
+
+    def _remove_check(self, index: int):
+        if self.svc is None or not (0 <= index < len(self.svc.health.checks)):
+            return
+        del self.svc.health.checks[index]
+        self._rebuild_checks()
+        self.changed.emit()
+
+    def _save_health(self, *_):
+        if self.svc is None:
+            return
+        h = self.svc.health
+        h.interval_seconds = max(5, self.h_interval.seconds())
+        h.grace_seconds = self.h_grace.seconds()
+        h.failures_before_acting = max(1, self.h_failures.value())
+        h.action = self.h_action.currentData() or "notify"
+        self.changed.emit()
+
+    def _check_now(self):
+        """Run the checks as they are on screen, not as last saved — otherwise
+        you are testing yesterday's settings."""
+        if self.svc is None:
+            return
+        from core import health as health_mod
+        ok, results = health_mod.run_all(self.svc, control)
+        lines = [r.line() for r in results] or ["nothing to check"]
+        QMessageBox.information(
+            self, "Health check",
+            ("All checks pass." if ok else "Something is not answering.")
+            + "\n\n" + "\n".join(lines))
 
     def _save_rules(self, *_):
         if self.svc is None:
@@ -1757,6 +1971,16 @@ class HistoryPage(_Page):
             note = f"  ·  {size / 1024:.0f} KB"
         except OSError:
             note = "  ·  not written yet"
+        broken = history.last_error()
+        if broken:
+            # An empty timeline that turns out to be a permissions problem reads
+            # as "nothing happened" until somebody checks, so say it here.
+            self.path_label.setText(
+                f"Cannot write the history — {broken}. Is Service Officer "
+                f"running as administrator?")
+            self.path_label.setStyleSheet(f"color:{theme.STOP_FG};")
+            return
+        self.path_label.setStyleSheet("")
         self.path_label.setText(f"Written to  {path}{note}")
 
     def _open_folder(self):

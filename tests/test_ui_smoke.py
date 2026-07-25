@@ -898,6 +898,78 @@ def test_categories_can_be_reordered_from_the_services_page(qapp, sample):
     win.deleteLater()
 
 
+def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
+    svc = win.config().service("AppEngine")
+    assert svc.health.checks == []
+    assert detail.health_rules.isVisibleTo(detail) is False   # nothing to tune
+    assert detail.check_now_button.isEnabled() is False
+
+    detail.check_kind.setCurrentIndex(detail.check_kind.findData("tcp"))
+    detail._add_check()
+    assert [c.kind for c in svc.health.checks] == ["tcp"]
+    assert detail.health_rules.isVisibleTo(detail) is True
+    assert detail.check_now_button.isEnabled() is True
+
+    detail._set_check(svc.health.checks[0], "port", 1433)
+    assert "1433" in svc.health.checks[0].describe()
+
+    detail.check_kind.setCurrentIndex(detail.check_kind.findData("http"))
+    detail._add_check()
+    assert [c.kind for c in svc.health.checks] == ["tcp", "http"]
+
+    detail._remove_check(0)
+    assert [c.kind for c in svc.health.checks] == ["http"]
+
+    # The rules write through to the config copy.
+    detail.h_failures.setValue(5)
+    detail.h_action.setCurrentIndex(detail.h_action.findData("restart"))
+    assert svc.health.failures_before_acting == 5
+    assert svc.health.action == "restart"
+    win.deleteLater()
+
+
+def test_a_running_but_unresponsive_service_says_so(qapp, sample):
+    """The whole point: Running next to a dead service is a lie, so the chip has
+    to change and the reason has to be reachable."""
+    store = st.Store()
+    store.update("AppEngine", st.RUNNING)
+    store.set_health("AppEngine", "unhealthy", "failed: something answers on "
+                                              "127.0.0.1:1433 — refused")
+    store.update("WMSServer", st.RUNNING)
+    store.set_health("WMSServer", "healthy", "127.0.0.1:80 accepted a connection")
+
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+    fly.apply_states()
+
+    sick = fly._rows[("", "AppEngine")]
+    assert sick.chip.text() == "Not responding"
+    assert "1433" in sick.toolTip()
+    # It is still running, so stopping and restarting it must stay available.
+    assert sick.buttons["restart"].isEnabled() is True
+    assert sick.buttons["stop"].isEnabled() is True
+
+    well = fly._rows[("", "WMSServer")]
+    assert well.chip.text() == st.RUNNING
+    assert "accepted a connection" in well.toolTip()
+    fly.deleteLater()
+
+
+def test_the_dashboard_counts_what_is_not_responding(qapp, sample):
+    store = st.Store()
+    for name in ("AppEngine", "WMSServer", "MSSQLSERVER"):
+        store.update(name, st.RUNNING)
+    store.set_health("AppEngine", "unhealthy", "no answer")
+    win = panel_mod.MainPanel(sample, store=store, live_config=lambda: sample)
+    assert "1 not responding" in win.dashboard.summary.text()
+    win.deleteLater()
+
+
 def test_panel_opens_on_a_named_section(qapp, sample):
     win = panel_mod.MainPanel(sample)
     assert win.go_to("history") is True

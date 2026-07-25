@@ -177,7 +177,10 @@ class DashboardPage(QWidget):
                 continue
             status = self._store.status_of(svc.name, svc.machine)
             row.set_status(status,
-                           disabled=self._store.is_disabled(svc.name, svc.machine))
+                           disabled=self._store.is_disabled(svc.name, svc.machine),
+                           health=self._store.health_of(svc.name, svc.machine),
+                           health_detail=self._store.health_detail(svc.name,
+                                                                   svc.machine))
             if status == st.RUNNING:
                 running += 1
             elif status == st.STOPPED:
@@ -198,6 +201,12 @@ class DashboardPage(QWidget):
                        if self._store.is_disabled(s.name, s.machine))
         if disabled:
             parts.append(f"{disabled} disabled in Windows")
+        # Worth its own count: a service that is running and not answering is the
+        # one somebody is about to ring up about.
+        sick = sum(1 for s in cfg.services
+                   if self._store.health_of(s.name, s.machine) == "unhealthy")
+        if sick:
+            parts.append(f"{sick} not responding")
         self.summary.setText("  ·  ".join(parts))
 
     def mark_busy(self, name: str, machine: str, label: str) -> None:

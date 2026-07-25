@@ -17,7 +17,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import autostart
-from core import (applog, config as cfg_mod, control, history, scm, schedule,
+from core import (applog, config as cfg_mod, control, health, history, scm, schedule,
                   stacks)
 from core import state as st
 from core.watchdog import Watchdog
@@ -37,6 +37,12 @@ class StackSignals(QObject):
 class TriggerSignals(QObject):
     """A trigger fires on the scheduler's thread; the work belongs on the UI one."""
     fire = Signal(object)
+
+
+class HealthSignals(QObject):
+    """A health verdict lands on the monitor's thread; the UI belongs on Qt's."""
+    verdict = Signal(str, str, str, str)     # service, machine, verdict, detail
+    act = Signal(str, str, str)              # service, machine, why
 
 
 class ActionSignals(QObject):
@@ -92,6 +98,20 @@ class Application(QObject):
 
         self.runner = stacks.Runner(control, self.store,
                                     on_log=lambda text: log.info(text))
+
+        self.health_signals = HealthSignals()
+        self.health_signals.verdict.connect(self._on_health_verdict)
+        self.health_signals.act.connect(self._on_health_action)
+        self.health = health.Monitor(
+            config_getter=lambda: self.cfg,
+            store=self.store,
+            control=control,
+            on_verdict=lambda svc, verdict, detail, _results:
+                self.health_signals.verdict.emit(svc.name, svc.machine,
+                                                 verdict, detail),
+            on_action=lambda svc, _action, detail:
+                self.health_signals.act.emit(svc.name, svc.machine, detail),
+        )
 
         self.scheduler = schedule.Scheduler(
             config_getter=lambda: self.cfg,
@@ -186,8 +206,12 @@ class Application(QObject):
             log.warning("could not read past trigger runs: %s", exc)
         self.scheduler.start()
         self.scheduler.run_startup_triggers()
-        log.info("started with %d service(s), %d stack(s), %d trigger(s)",
-                 len(self.cfg.services), len(self.cfg.stacks), len(self.cfg.triggers))
+        self.health.start()
+        watched = sum(1 for s in self.cfg.services if s.health.enabled)
+        log.info("started with %d service(s), %d stack(s), %d trigger(s), "
+                 "%d health-checked",
+                 len(self.cfg.services), len(self.cfg.stacks),
+                 len(self.cfg.triggers), watched)
         return self.qt.exec()
 
     def _prime_states(self):
@@ -209,14 +233,54 @@ class Application(QObject):
     def _on_scm(self, name, status, exit_code=0, pid=0):
         self.store.update(name, status, exit_code=exit_code, pid=pid)
 
-    def _on_state_event(self, event):
-        """GUI thread: refresh whatever is on screen."""
-        self.tray.apply_state()
+    # -- health ------------------------------------------------------------
+    def _on_health_verdict(self, name, machine, verdict, detail):
+        """GUI thread: a service changed between answering and not."""
+        self.store.set_health(name, verdict, detail, machine=machine)
+        if self.cfg.history.enabled:
+            history.record_health(name, verdict, detail, machine=machine)
+        self._refresh_lists()
+        label = next((s.display() for s in self.cfg.services
+                      if s.name == name and (s.machine or "") == (machine or "")),
+                     name)
+        if verdict == health.UNHEALTHY and self.cfg.notifications.on_crash:
+            # Reuses the crash switch on purpose: "it stopped working" is the
+            # same news to whoever is on call, whether the process died or not.
+            self.tray.notify("Service Officer",
+                             f"{label} is running but not responding.")
+        elif verdict == health.HEALTHY and self.cfg.notifications.on_recovery:
+            self.tray.notify("Service Officer", f"{label} is responding again.")
+
+    def _on_health_action(self, name, machine, detail):
+        """Health checks asked for a restart. Recorded as its own cause, so the
+        history says why rather than showing an unexplained restart."""
+        log.info("health restart of %s: %s", name, detail)
+        if self.cfg.history.enabled:
+            history.record_action(name, "restart", st.SRC_HEALTH,
+                                  machine=machine, note=detail[:200])
+        self.do_action("restart", name, machine, announce_errors=False)
+
+    def _refresh_lists(self):
         if self.flyout.isVisible():
             self.flyout.apply_states()
         if self.panel is not None and self.panel.isVisible():
             self.panel.dashboard.apply_states()
+
+    def _on_state_event(self, event):
+        """GUI thread: refresh whatever is on screen."""
+        self.tray.apply_state()
+        self._refresh_lists()
         self.hover.refresh()
+        # Health is judged from when a service reached Running, and a stopped
+        # service is not unhealthy — it is stopped.
+        machine = event.state.machine
+        if event.status == st.RUNNING:
+            self.health.note_running(event.name, machine)
+            self.store.set_health(event.name, health.UNKNOWN, machine=machine)
+        elif not st.is_pending(event.status):
+            self.health.note_stopped(event.name, machine)
+            self.store.set_health(event.name, health.UNKNOWN, machine=machine)
+
         if event.status == st.RUNNING and self.cfg.notifications.on_recovery:
             if self.watchdog.attempts_for(event.name, event.state.machine):
                 self.tray.notify("Service Officer", f"{event.name} is running again.")
@@ -632,6 +696,7 @@ class Application(QObject):
         self.watcher.stop()
         self.scheduler.stop()
         self.watchdog.stop()
+        self.health.stop()
         self.tray.hide()
         self.qt.quit()
 

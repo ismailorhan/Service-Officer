@@ -80,6 +80,83 @@ class Machine:
 NO_CATEGORY = ""                   # a service that hasn't been filed anywhere
 NO_CATEGORY_TITLE = "No category"
 
+#: How to tell whether a service is doing its job, as opposed to merely being
+#: Running. The SCM only knows whether a process exists, which is why a wedged
+#: service can sit there reporting Running while nobody can use it.
+#:
+#: Five kinds, chosen to need no knowledge of any particular product:
+#:   tcp      — something is accepting connections on a port
+#:   http     — a URL answers, with an expected status and optionally some text
+#:   process  — Running, but with no process behind it at all
+#:   file     — a heartbeat or log file has been touched recently
+#:   command  — anything else: exit code 0 means healthy
+CHECK_KINDS = ("tcp", "http", "process", "file", "command")
+
+
+@dataclass
+class HealthCheck:
+    kind: str = "tcp"
+    #: tcp
+    host: str = ""                 # blank = the machine the service runs on
+    port: int = 0
+    #: http
+    url: str = ""
+    expect_status: int = 0         # 0 = any 2xx or 3xx
+    expect_text: str = ""          # must appear in the body when set
+    insecure: bool = False         # internal servers often have their own certs
+    #: file
+    path: str = ""
+    max_age_seconds: int = 300
+    #: command
+    command: str = ""
+    expect_exit: int = 0
+    #: all kinds
+    timeout_seconds: int = 5
+    enabled: bool = True
+
+    def describe(self) -> str:
+        """One line, in the words someone would use to explain the check."""
+        if self.kind == "tcp":
+            where = f"{self.host or 'the service’s machine'}:{self.port}"
+            return f"something answers on {where}"
+        if self.kind == "http":
+            want = (f"HTTP {self.expect_status}" if self.expect_status
+                    else "a success response")
+            text = f" containing “{self.expect_text}”" if self.expect_text else ""
+            return f"{self.url} returns {want}{text}"
+        if self.kind == "process":
+            return "it actually has a process"
+        if self.kind == "file":
+            return (f"{self.path} was written in the last "
+                    f"{self.max_age_seconds}s")
+        if self.kind == "command":
+            exit_note = ("" if self.expect_exit == 0
+                         else f" (exit {self.expect_exit})")
+            return f"“{self.command}” succeeds{exit_note}"
+        return self.kind
+
+
+@dataclass
+class Health:
+    """When and how hard to ask, and what to do about the answer.
+
+    checks are ANDed: a service with a port *and* a URL has to satisfy both,
+    because either one failing means somebody can't use it.
+    """
+    checks: list = field(default_factory=list)     # list[HealthCheck]
+    interval_seconds: int = 60
+    #: after it reaches Running, how long before its answers count. A service
+    #: that has just started has not opened its port yet, and judging it
+    #: immediately would report every single restart as a failure.
+    grace_seconds: int = 60
+    #: one bad answer is a blip; this many in a row is a problem
+    failures_before_acting: int = 3
+    action: str = "notify"                         # notify | restart
+
+    @property
+    def enabled(self) -> bool:
+        return any(c.enabled for c in self.checks)
+
 
 @dataclass
 class Category:
@@ -101,6 +178,7 @@ class Service:
     machine: str = LOCAL_MACHINE   # which machine it belongs to
     category: str = NO_CATEGORY    # which heading it is listed under
     recovery: Recovery = field(default_factory=Recovery)
+    health: Health = field(default_factory=Health)
 
     def display(self) -> str:
         return self.label or self.name
@@ -376,6 +454,56 @@ def _service_from(raw) -> Service | None:
         machine=str(raw.get("machine") or ""),
         category=str(raw.get("category") or NO_CATEGORY),
         recovery=_recovery_from(raw.get("recovery")),
+        health=_health_from(raw.get("health")),
+    )
+
+
+def _check_from(raw) -> HealthCheck | None:
+    if not isinstance(raw, dict):
+        return None
+    kind = raw.get("kind", "tcp")
+    if kind not in CHECK_KINDS:
+        return None                     # an unknown kind is silently useless
+    check = HealthCheck(
+        kind=kind,
+        host=str(raw.get("host") or ""),
+        port=max(0, min(65535, _as_int(raw.get("port"), 0))),
+        url=str(raw.get("url") or ""),
+        expect_status=max(0, _as_int(raw.get("expect_status"), 0)),
+        expect_text=str(raw.get("expect_text") or ""),
+        insecure=bool(raw.get("insecure", False)),
+        path=str(raw.get("path") or ""),
+        max_age_seconds=max(1, _as_int(raw.get("max_age_seconds"), 300)),
+        command=str(raw.get("command") or ""),
+        expect_exit=_as_int(raw.get("expect_exit"), 0),
+        timeout_seconds=max(1, min(120, _as_int(raw.get("timeout_seconds"), 5))),
+        enabled=bool(raw.get("enabled", True)),
+    )
+    # A check with nothing to check would always pass, which is worse than
+    # having no check at all — it would read as a guarantee.
+    if kind == "tcp" and not check.port:
+        return None
+    if kind == "http" and not check.url:
+        return None
+    if kind == "file" and not check.path:
+        return None
+    if kind == "command" and not check.command:
+        return None
+    return check
+
+
+def _health_from(raw) -> Health:
+    if not isinstance(raw, dict):
+        return Health()
+    checks = [c for c in (_check_from(x) for x in raw.get("checks", [])) if c]
+    action = raw.get("action", "notify")
+    return Health(
+        checks=checks,
+        interval_seconds=max(5, _as_int(raw.get("interval_seconds"), 60)),
+        grace_seconds=max(0, _as_int(raw.get("grace_seconds"), 60)),
+        failures_before_acting=max(1, _as_int(
+            raw.get("failures_before_acting"), 3)),
+        action=action if action in ("notify", "restart") else "notify",
     )
 
 

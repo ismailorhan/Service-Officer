@@ -25,6 +25,38 @@ MAX_BYTES = 5 * 1024 * 1024      # keep it well-behaved on a customer server
 
 _lock = threading.Lock()
 
+#: Why the last write failed, if one did. Losing history must not take the app
+#: down — but it must not be invisible either. An empty timeline that turns out to
+#: be a permissions problem is worse than an error, because it reads as "nothing
+#: happened" for exactly as long as nobody checks.
+_last_error = ""
+_reported = False
+
+
+def last_error() -> str:
+    return _last_error
+
+
+def _write_failed(where: str, exc: Exception) -> None:
+    global _last_error, _reported
+    _last_error = f"{where}: {getattr(exc, 'strerror', None) or exc}"
+    if not _reported:                      # once, or a broken disk floods the log
+        _reported = True
+        from . import applog
+        applog.get("history").warning("cannot write history — %s", _last_error)
+
+
+def _append(line: dict, path: str) -> None:
+    """One place that writes, so one place reports when it can't."""
+    global _last_error
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _lock, open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        _last_error = ""
+    except OSError as exc:
+        _write_failed(path, exc)
+
 
 def path() -> str:
     """Where the log lives, for the UI to show. Evidence you can't find is no
@@ -51,12 +83,21 @@ def record(event: st.Event, path: str = None, note: str = "") -> None:
         line["exit_code"] = event.state.exit_code
     if note:
         line["note"] = note
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with _lock, open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    _append(line, path)
+
+
+def record_health(service: str, verdict: str, detail: str = "",
+                  machine: str = "", path: str = None) -> None:
+    """Log a change between answering and not answering.
+
+    Its own kind of row, because it is neither a state change the SCM reported
+    nor something we asked for — and it is the row that explains why a service
+    that never left Running still stopped working.
+    """
+    path = path or HISTORY_PATH
+    line = {"ts": _now_iso(), "service": service, "machine": machine,
+            "health": verdict, "detail": detail, "source": st.SRC_HEALTH}
+    _append(line, path)
 
 
 def record_action(service: str, action: str, source: str, machine: str = "",
@@ -69,12 +110,7 @@ def record_action(service: str, action: str, source: str, machine: str = "",
             "action": action, "source": source}
     if note:
         line["note"] = note
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with _lock, open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    _append(line, path)
 
 
 def record_run(kind: str, name: str, outcome: str, seconds: float = 0.0,
@@ -86,12 +122,7 @@ def record_run(kind: str, name: str, outcome: str, seconds: float = 0.0,
     line = {"ts": _now_iso(), "run": kind, "name": name, "outcome": outcome,
             "seconds": round(float(seconds), 1), "detail": detail,
             "source": source or kind}
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with _lock, open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    _append(line, path)
 
 
 def runs(path: str = None, limit: int = 200, kind: str = None,
@@ -191,6 +222,7 @@ SOURCE_TEXT = {
     st.SRC_WATCHDOG: "watchdog",
     st.SRC_STACK: "stack run",
     st.SRC_SCHEDULE: "scheduled trigger",
+    st.SRC_HEALTH: "health check",
 }
 
 ACTION_TEXT = {"start": "start requested", "stop": "stop requested",
@@ -258,6 +290,16 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
                              f"{rec.get('seconds', 0)}s" if rec.get("seconds") else "")
                              if x),
                          "level": level,
+                         "source": SOURCE_TEXT.get(rec.get("source", ""),
+                                                   rec.get("source", ""))})
+        elif rec.get("health"):
+            verdict = rec["health"]
+            rows.append({**common, "kind": "health",
+                         "event": ("not responding" if verdict == "unhealthy"
+                                   else "responding again" if verdict == "healthy"
+                                   else verdict),
+                         "detail": rec.get("detail", ""),
+                         "level": "Error" if verdict == "unhealthy" else "",
                          "source": SOURCE_TEXT.get(rec.get("source", ""),
                                                    rec.get("source", ""))})
         elif rec.get("action"):

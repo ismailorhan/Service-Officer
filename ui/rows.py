@@ -88,7 +88,8 @@ class ServiceRow(QWidget):
         lay.addWidget(kill)
 
     def set_status(self, status: str, busy_label: str = "",
-                   disabled: bool = False) -> None:
+                   disabled: bool = False, health: str = "unknown",
+                   health_detail: str = "") -> None:
         self.status = status
         self.disabled = disabled
         cat = st.category(status)
@@ -102,9 +103,24 @@ class ServiceRow(QWidget):
             self.setToolTip("This service is disabled in Windows — enable it in "
                             "services.msc before it can start.")
             return
-        self.setToolTip("")
+        # Running but not answering is the failure the service list cannot show.
+        # It gets the chip, because "Running" next to a dead service is a lie —
+        # and the reason goes in the tooltip, where the next question is answered.
+        if health == "unhealthy" and not busy_label and cat == "running":
+            self.chip.setText("Not responding")
+            self.chip.setStyleSheet(theme.chip_style("stopped"))
+            self.setToolTip("The service is running, but its health checks are "
+                            "failing:\n" + (health_detail or "no detail"))
+            self._set_buttons(cat, busy_label)
+            return
+
+        self.setToolTip(f"Health checks pass — {health_detail}"
+                        if health == "healthy" and health_detail else "")
         self.chip.setText(busy_label or status)
         self.chip.setStyleSheet(theme.chip_style("pending" if busy_label else cat))
+        self._set_buttons(cat, busy_label)
+
+    def _set_buttons(self, cat: str, busy_label: str) -> None:
         # Kill stays available while anything is running or stuck mid-transition —
         # that stuck case is exactly what it is for — but never for a remote
         # service, where terminating a process isn't something we can do.

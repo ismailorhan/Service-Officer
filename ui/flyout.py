@@ -301,7 +301,10 @@ class Flyout(QWidget):
                 continue
             status = self._store.status_of(svc.name, svc.machine)
             row.set_status(status,
-                           disabled=self._store.is_disabled(svc.name, svc.machine))
+                           disabled=self._store.is_disabled(svc.name, svc.machine),
+                           health=self._store.health_of(svc.name, svc.machine),
+                           health_detail=self._store.health_detail(svc.name,
+                                                                   svc.machine))
             if status == st.RUNNING:
                 running += 1
 
