@@ -29,17 +29,27 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
-      - name: Build ServiceOfficer.exe
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Build ServiceOfficer (one-dir; a Qt app re-extracted on every
+              launch starts slowly)
         run: >
           python -m PyInstaller
-          --noconfirm --clean --onefile --windowed --uac-admin
+          --noconfirm --clean --windowed --uac-admin
           --name ServiceOfficer --icon=icon.ico
-          --hidden-import=win32com --hidden-import=win32com.client
-          --hidden-import=pywintypes --hidden-import=PIL.ImageTk
-          service_officer.py
+          --add-data "icon.ico;."
+          --hidden-import=win32timezone
+          --exclude-module tkinter
+          --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick
+          --exclude-module PySide6.QtNetwork --exclude-module PySide6.Qt3DCore
+          app.py
 
-      - name: Copy exe to project root
-        run: Copy-Item -Force dist/ServiceOfficer.exe ServiceOfficer.exe
+      - name: Prune what a tray app never uses
+        run: |
+          $d = "dist/ServiceOfficer/_internal/PySide6"
+          Remove-Item "$d/opengl32sw.dll","$d/libcrypto*","$d/libssl*","$d/Qt6Network.dll" -Force -ErrorAction SilentlyContinue
+          "{0:N1} MB" -f ((Get-ChildItem dist/ServiceOfficer -Recurse | Measure-Object Length -Sum).Sum/1MB)
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress

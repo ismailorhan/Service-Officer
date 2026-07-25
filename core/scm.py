@@ -20,6 +20,8 @@ import ctypes.wintypes
 import threading
 import time
 
+from . import state as _st
+
 _advapi = ctypes.windll.advapi32
 _kernel = ctypes.windll.kernel32
 
@@ -107,7 +109,11 @@ class _Watch:
         self.armed = False
         try:
             if self.buf.dwNotificationStatus == 0:
-                self.hits.append(_STATE.get(self.buf.ServiceStatus.dwCurrentState))
+                s = self.buf.ServiceStatus
+                # The exit code is what separates a crash from a deliberate
+                # stop, so it has to travel with the status.
+                self.hits.append((_STATE.get(s.dwCurrentState),
+                                  int(s.dwWin32ExitCode), int(s.dwProcessId)))
         except Exception:
             pass
 
@@ -193,7 +199,7 @@ class Watcher:
                 w.close()
                 self._watches.pop(name, None)
 
-    def _report(self, name, status):
+    def _report(self, name, status, exit_code=0, pid=0):
         """Report a state, skipping repeats. While a service is start/stop
         pending the SCM also notifies on checkpoint progress, which repeats the
         same state several times — the UI only cares about actual changes."""
@@ -201,14 +207,15 @@ class Watcher:
             return
         self._last[name] = status
         try:
-            self._on_change(name, status)
+            self._on_change(name, status, exit_code, pid)
         except Exception:
             pass
 
     def _drain(self):
         for w in list(self._watches.values()):
             while w.hits:
-                self._report(w.name, w.hits.pop(0))
+                status, exit_code, pid = w.hits.pop(0)
+                self._report(w.name, status, exit_code, pid)
 
     def _loop(self):
         last_sync = 0.0

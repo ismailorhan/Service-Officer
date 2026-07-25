@@ -9,10 +9,14 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "1.1.0"
+#define MyAppVersion     "2.0.0"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyAppId          "{{A4F1F8C2-3D7B-4A8D-9E5F-1B2C3D4E5F60}}"
+; The data folder has no space in it, and must match core/config.APP_DIR exactly.
+; Using MyAppName here created C:\ProgramData\Service Officer and set the
+; permissions on that, while the app wrote to ...\ServiceOfficer.
+#define MyDataDir        "ServiceOfficer"
 
 [Setup]
 AppId={#MyAppId}
@@ -48,8 +52,19 @@ turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
 Name: "autostart"; Description: "{cm:AutoStartTask}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[Dirs]
+; Config, history and the app log live here rather than in one user's profile:
+; the services being watched belong to the machine, and a second administrator
+; must see the same setup and the same history. Administrators get write access
+; explicitly — the default ACL on a ProgramData subfolder only lets the creating
+; user modify it, and the app can be started by any admin on the box.
+Name: "{commonappdata}\{#MyDataDir}"; Permissions: admins-modify
+
 [Files]
-Source: "dist\ServiceOfficer.exe"; DestDir: "{app}"; Flags: ignoreversion
+; One-dir build: a Qt app re-extracted from a one-file exe on every launch is
+; slow to start, so PyInstaller emits a folder and we package all of it.
+Source: "dist\ServiceOfficer\ServiceOfficer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\ServiceOfficer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "icon.ico";          DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";         DestDir: "{app}"; Flags: ignoreversion isreadme
 
