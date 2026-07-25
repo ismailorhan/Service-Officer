@@ -40,8 +40,7 @@ if errorlevel 1 (
 echo.
 echo === Installing build dependencies ===
 "%PY%" -m pip install --upgrade pip
-"%PY%" -m pip install -r requirements.txt
-"%PY%" -m pip install pyinstaller
+"%PY%" -m pip install -r requirements-dev.txt
 
 echo.
 echo === Running tests ===

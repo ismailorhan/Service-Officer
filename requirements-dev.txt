@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Everything needed to run the tests and produce a build. Kept apart from
+# requirements.txt so a plain install of the app doesn't drag in a test runner.
+pytest>=8.0
+pyinstaller>=6.0

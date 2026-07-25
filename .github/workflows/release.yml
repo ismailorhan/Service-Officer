@@ -23,11 +23,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # requirements-dev.txt, not requirements.txt: the test step needs pytest,
+      # whose absence is what failed the first v2.0.0 build.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
+          python -m pip install -r requirements-dev.txt
 
       - name: Run tests
         run: python -m pytest tests -q
