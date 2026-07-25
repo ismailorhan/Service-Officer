@@ -637,7 +637,14 @@ class Application(QObject):
 
 
 def main() -> int:
+    # Before anything opens a file under the new directory: the old per-user copy
+    # is only carried over while the destination is still empty, and the log
+    # handler would otherwise create its target first.
+    brought = cfg_mod.migrate_from_legacy()
     applog.setup()
+    if brought:
+        log.info("moved %s from %s to %s", ", ".join(brought),
+                 cfg_mod.LEGACY_DIR, cfg_mod.APP_DIR)
     # No manual DPI call here: Qt already opts into per-monitor v2 awareness
     # before we could, and calling SetProcessDpiAwareness afterwards just fails
     # with "access denied" and prints a warning.

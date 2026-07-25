@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
                                QVBoxLayout, QWidget)
 
 from core import config as cfg_mod
-from core import control, history
+from core import control, history, version
 from core import state as st
 from . import icons, theme
 from .dashboard import DashboardPage
@@ -1903,13 +1903,35 @@ class GeneralPage(_Page):
             self.root.addSpacing(4)
 
         self.root.addSpacing(22)
-        self.root.addWidget(_label("OTHER MACHINES", "section"))
+        self.root.addWidget(_label("ABOUT", "section"))
         self.root.addSpacing(9)
-        self.root.addWidget(_label(
-            "Reserved for managing services on your other servers from this same "
-            "window. Every call we make already accepts a machine name, so the "
-            "groundwork is done.", "hint", wrap=True))
+        # Which build, and where it lives. "Version 2.0.0" alone doesn't answer
+        # the question people actually ask on someone else's server — is this the
+        # one I installed — so the commit and build time are here too.
+        build = _label(version.full(), "hint", wrap=True)
+        build.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.root.addWidget(build)
+        self.root.addSpacing(4)
+        where = _label(f"Installed in  {version.install_dir()}\n"
+                       f"Settings and history in  {cfg_mod.APP_DIR}",
+                       "hint", wrap=True)
+        where.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.root.addWidget(where)
+        self.root.addSpacing(8)
+        row = QHBoxLayout()
+        row.addWidget(_button("Copy build details", "quiet", self._copy_build))
+        row.addStretch(1)
+        self.root.addLayout(row)
         self.root.addStretch(1)
+
+    def _copy_build(self):
+        """One click to paste into a ticket."""
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(
+            f"Service Officer {version.full()}\n"
+            f"Installed in: {version.install_dir()}\n"
+            f"Data in: {cfg_mod.APP_DIR}\n"
+            f"Machine: {control.host_name()} ({control.cached_address('') or '?'})")
 
     _THEMES = ("system", "dark", "light")
 
@@ -1962,7 +1984,10 @@ class MainPanel(QDialog):
         # falls back to what it was handed, and to the global store.
         self._store = store if store is not None else st.store
         self._live = live_config or (lambda: self._cfg)
-        self.setWindowTitle("Service Officer — Service Management Panel")
+        # The version in the title bar, so a screenshot in a ticket says which
+        # build it came from without anyone having to go and look.
+        self.setWindowTitle("Service Officer — Service Management Panel  "
+                            f"({version.short()})")
         self.setWindowIcon(icons.base_icon("green"))
         # A dialog by class, a window by behaviour: this is where the work
         # happens now, so it gets minimise and maximise like any other window.

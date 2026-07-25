@@ -86,3 +86,60 @@ def test_backoff_schedule_and_cap():
     r = cfg.Recovery(delay_seconds=10, backoff=2.0)
     assert [r.delay_for(n) for n in (1, 2, 3, 4)] == [10.0, 20.0, 40.0, 80.0]
     assert r.delay_for(20, cap_seconds=300) == 300.0
+
+
+def test_the_data_directory_is_machine_wide(tmp_path):
+    """It describes the machine's services, so it cannot live in one profile."""
+    assert "ProgramData" in cfg.APP_DIR
+    assert "AppData" in cfg.LEGACY_DIR
+
+
+def test_a_per_user_install_is_carried_over_once(tmp_path):
+    """An upgrade must never be the reason a service list disappears."""
+    legacy = tmp_path / "appdata" / "ServiceOfficer"
+    new = tmp_path / "programdata" / "ServiceOfficer"
+    legacy.mkdir(parents=True)
+    (legacy / "services.json").write_text('{"services": ["AppEngine"]}',
+                                          encoding="utf-8")
+    (legacy / "history.jsonl").write_text('{"ts": "x", "service": "AppEngine"}\n',
+                                          encoding="utf-8")
+
+    brought = cfg.migrate_from_legacy(str(new), str(legacy))
+    assert sorted(brought) == ["history.jsonl", "services.json"]
+    assert cfg.load(str(new / "services.json")).service("AppEngine")
+    # The old copy is left where it was, so a rollback still has its data.
+    assert (legacy / "services.json").exists()
+
+    # A second run does nothing — and so cannot overwrite newer settings.
+    (new / "services.json").write_text('{"services": ["WMSServer"]}',
+                                       encoding="utf-8")
+    assert cfg.migrate_from_legacy(str(new), str(legacy)) == []
+    assert cfg.load(str(new / "services.json")).service("WMSServer")
+
+
+def test_migration_never_overwrites_what_is_already_there(tmp_path):
+    legacy = tmp_path / "old"
+    new = tmp_path / "new"
+    legacy.mkdir()
+    new.mkdir()
+    (legacy / "services.json").write_text('{"services": ["Old"]}', encoding="utf-8")
+    (new / "services.json").write_text('{"services": ["New"]}', encoding="utf-8")
+
+    assert cfg.migrate_from_legacy(str(new), str(legacy)) == []
+    assert cfg.load(str(new / "services.json")).service("New")
+
+
+def test_the_build_identifies_itself():
+    from core import version
+    assert version.VERSION.count(".") == 2
+    # An unstamped source checkout: the release number, and it says as much.
+    assert version.short() == version.VERSION
+    assert "running from source" in version.full()
+
+    # Stamped, the way build.bat leaves it.
+    version.COMMIT, version.BUILT = "a1b2c3d", "2026-07-25 21:00"
+    try:
+        assert version.short() == f"{version.VERSION}+a1b2c3d"
+        assert "a1b2c3d" in version.full() and "2026-07-25" in version.full()
+    finally:
+        version.COMMIT, version.BUILT = "dev", ""

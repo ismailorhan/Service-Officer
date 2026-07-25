@@ -1,4 +1,4 @@
-"""Configuration: a typed model over %APPDATA%\\ServiceOfficer\\services.json.
+"""Configuration: a typed model over %ProgramData%\\ServiceOfficer\\services.json.
 
 Version 2 adds per-service recovery rules, ordered stacks, history and
 notification preferences. A version 1 file (a plain list of services, possibly
@@ -8,18 +8,32 @@ existing install keeps working after an upgrade.
 Saving is atomic: the document is written to a temporary file in the same
 directory and then moved over the original, so a crash or a full disk can never
 leave a customer's machine with a half-written config.
+
+Machine-scoped, not per-user. What this app describes belongs to the computer:
+the services installed on it, when they should restart, and what happened to
+them. Under %APPDATA% a second administrator logging into the same server saw an
+empty install, the history a ticket needs was in whoever's profile happened to be
+active, and running as a Windows service would put it in
+%WINDIR%\\System32\\config\\systemprofile — a different place again. There is a
+one-time move from the old per-user location so nothing is lost.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field, asdict, replace
 
-APP_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                       "ServiceOfficer")
+APP_DIR = os.path.join(
+    os.environ.get("ProgramData", r"C:\ProgramData"), "ServiceOfficer")
+#: where it used to live, per user; kept only to move data out of
+LEGACY_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                          "ServiceOfficer")
 CONFIG_PATH = os.path.join(APP_DIR, "services.json")
+#: dropped next to the moved files so a second run doesn't try again
+MIGRATION_MARK = ".moved-from-appdata"
 
 CURRENT_VERSION = 2
 
@@ -527,6 +541,44 @@ def to_dict(cfg: Config) -> dict:
         "auto_start": cfg.auto_start,
         "theme": cfg.theme,
     }
+
+
+#: files worth carrying over from the old per-user directory
+MIGRATED_FILES = ("services.json", "history.jsonl", "service-officer.log")
+
+
+def migrate_from_legacy(app_dir: str = None, legacy_dir: str = None) -> list:
+    """Move a per-user install's data to the machine-wide directory, once.
+
+    Copied rather than moved, and only when the destination has nothing: an
+    upgrade must never be the reason someone's service list disappears. Returns
+    what it brought over, for the log.
+    """
+    app_dir = app_dir or APP_DIR
+    legacy_dir = legacy_dir or LEGACY_DIR
+    if os.path.abspath(app_dir) == os.path.abspath(legacy_dir):
+        return []
+    if not os.path.isdir(legacy_dir):
+        return []
+    if os.path.exists(os.path.join(legacy_dir, MIGRATION_MARK)):
+        return []                       # already done on a previous run
+
+    brought = []
+    try:
+        os.makedirs(app_dir, exist_ok=True)
+        for name in MIGRATED_FILES:
+            source = os.path.join(legacy_dir, name)
+            target = os.path.join(app_dir, name)
+            if os.path.exists(source) and not os.path.exists(target):
+                shutil.copy2(source, target)
+                brought.append(name)
+        # The old copies stay where they are; the mark stops us looking again.
+        with open(os.path.join(legacy_dir, MIGRATION_MARK), "w",
+                  encoding="utf-8") as f:
+            f.write(f"moved to {app_dir}\n")
+    except OSError:
+        return brought                  # partial is fine; nothing was destroyed
+    return brought
 
 
 def load(path: str = None) -> Config:

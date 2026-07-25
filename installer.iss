@@ -48,6 +48,14 @@ turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
 Name: "autostart"; Description: "{cm:AutoStartTask}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[Dirs]
+; Config, history and the app log live here rather than in one user's profile:
+; the services being watched belong to the machine, and a second administrator
+; must see the same setup and the same history. Administrators get write access
+; explicitly — the default ACL on a ProgramData subfolder only lets the creating
+; user modify it, and the app can be started by any admin on the box.
+Name: "{commonappdata}\{#MyAppName}"; Permissions: admins-modify
+
 [Files]
 ; One-dir build: a Qt app re-extracted from a one-file exe on every launch is
 ; slow to start, so PyInstaller emits a folder and we package all of it.

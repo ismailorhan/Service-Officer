@@ -58,6 +58,15 @@ if exist dist  rmdir /s /q dist
 if exist ServiceOfficer.spec del ServiceOfficer.spec
 
 echo.
+echo === Stamping the build ===
+REM Baked in, because a frozen app has no git repo to ask which commit it is.
+"%PY%" stamp_version.py
+if errorlevel 1 (
+    echo [ERROR] Could not stamp the version.
+    exit /b 1
+)
+
+echo.
 echo === Building ServiceOfficer.exe ===
 "%PY%" -m PyInstaller ^
     --noconfirm ^
@@ -74,8 +83,13 @@ echo === Building ServiceOfficer.exe ===
     --exclude-module PySide6.QtNetwork ^
     --exclude-module PySide6.Qt3DCore ^
     app.py
+set BUILD_RESULT=%errorlevel%
 
-if errorlevel 1 (
+REM Put version.py back whatever happened, so a build never leaves the tree dirty
+REM and the next build doesn't stamp a stamp.
+"%PY%" stamp_version.py --restore
+
+if not "%BUILD_RESULT%"=="0" (
     echo [ERROR] PyInstaller build failed.
     exit /b 1
 )
