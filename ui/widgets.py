@@ -396,17 +396,34 @@ class Duration(FlatEdit):
 
     def __init__(self, seconds: int = 0, minimum: int = 0, parent=None):
         super().__init__(parent)
-        self._min = minimum
+        self._min = minimum                  # a floor in seconds, always
         unit_index, amount = self._split(int(seconds))
-        self.spin = Spin(amount, minimum, 9999, 62)
+        self.spin = Spin(amount, 0, 9999, 62)
         self.unit = QComboBox()
         self.unit.addItems([long for long, _short, _f in self.UNITS])
         self.unit.setCurrentIndex(unit_index)
         self.unit.setFixedWidth(88)
+        self._apply_minimum()
         self.spin.valueChanged.connect(self._on_edit)
-        self.unit.currentIndexChanged.connect(self._on_edit)
+        self.unit.currentIndexChanged.connect(self._unit_changed)
         self.spin.editingFinished.connect(self._maybe_flatten)
         self._wire()
+
+    def _apply_minimum(self) -> None:
+        """Express the floor in whatever unit is showing.
+
+        The floor is in seconds, and it used to be handed to the spin box as-is:
+        with "minutes" selected, a five-*second* minimum stopped you typing
+        anything under five *minutes*. Typing 1 left the box holding an invalid
+        value, so Qt put the previous number back — which looked like the field
+        refusing to change.
+        """
+        factor = self.UNITS[self.unit.currentIndex()][2]
+        self.spin.setMinimum(-(-self._min // factor))    # ceil, in whole units
+
+    def _unit_changed(self, _index) -> None:
+        self._apply_minimum()
+        self._on_edit()
 
     def _editors(self):
         return [self.spin, self.unit]
@@ -430,7 +447,10 @@ class Duration(FlatEdit):
 
     def set_seconds(self, seconds: int) -> None:
         idx, amount = self._split(int(seconds))
+        self.unit.blockSignals(True)
         self.unit.setCurrentIndex(idx)
+        self.unit.blockSignals(False)
+        self._apply_minimum()            # before setValue, or it clamps to the old
         self.spin.setValue(amount)
         if not self._editing:
             self._set_editing(False)

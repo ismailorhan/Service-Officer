@@ -352,6 +352,43 @@ def test_duration_shows_the_friendliest_unit_and_stores_seconds(qapp):
     assert (d.spin.value(), d.unit.currentText()) == (45, "seconds")
 
 
+def test_a_duration_floor_is_measured_in_the_unit_on_screen(qapp):
+    """"Ask every 6 minutes" would not go down to 1. The floor is five *seconds*,
+    and it was handed to the spin box unconverted, so with minutes selected it
+    refused anything under five minutes — and Qt put the old number back, which
+    read as the field ignoring you."""
+    from ui.widgets import Duration
+
+    d = Duration(360, minimum=5)                  # 6 minutes, floor of 5 seconds
+    assert (d.spin.value(), d.unit.currentText()) == (6, "minutes")
+    assert d.spin.minimum() == 1, "one minute clears a five-second floor"
+
+    d.spin.setValue(1)
+    assert (d.spin.value(), d.seconds()) == (1, 60)
+    d.spin.setValue(2)
+    assert d.seconds() == 120
+
+    # In seconds the floor applies as written.
+    d.unit.setCurrentIndex(0)
+    assert d.spin.minimum() == 5
+    d.spin.setValue(1)
+    assert d.spin.value() == 5 and d.seconds() == 5
+
+    # A zero floor still allows zero — "no grace period" is a real answer.
+    grace = Duration(60, minimum=0)
+    grace.unit.setCurrentIndex(1)
+    grace.spin.setValue(0)
+    assert grace.spin.minimum() == 0 and grace.seconds() == 0
+
+
+def test_setting_a_duration_in_seconds_survives_the_unit_it_picks(qapp):
+    from ui.widgets import Duration
+    d = Duration(360, minimum=5)
+    for value in (60, 5, 120, 3600, 90, 7):
+        d.set_seconds(value)
+        assert d.seconds() == value, f"{value}s came back as {d.seconds()}s"
+
+
 def test_duration_is_text_until_clicked(qapp):
     """Reading a settings page shouldn't mean staring at input boxes: the value
     is plain text, underlined on hover, and only becomes editable on a click."""
