@@ -69,18 +69,39 @@ class _Row(QWidget):
             self.buttons[action] = b
             lay.addWidget(b)
 
+        # Last resort, kept visually apart and in red: when a service wedges,
+        # Stop does nothing and the SCM reports "Stopping" for ever.
+        kill = QPushButton("✕")
+        kill.setProperty("kind", "kill")
+        kill.setToolTip("Kill the process — for when Stop doesn't work")
+        kill.setCursor(Qt.PointingHandCursor)
+        kill.setEnabled(False)
+        kill.clicked.connect(lambda: self.act.emit(
+            "kill", self.service.name, self.service.machine))
+        self.buttons["kill"] = kill
+        lay.addSpacing(6)
+        lay.addWidget(kill)
+
     def set_status(self, status: str, busy_label: str = "") -> None:
         self.status = status
         cat = st.category(status)
         self.chip.setText(busy_label or status)
         self.chip.setStyleSheet(theme.chip_style("pending" if busy_label else cat))
+        # Kill stays available while anything is running or stuck mid-transition —
+        # that stuck case is exactly what it is for — but never for a remote
+        # service, where terminating a process isn't something we can do.
+        local = not self.service.machine
         allowed = {
-            "running": {"start": False, "stop": True, "restart": True},
-            "stopped": {"start": True, "stop": False, "restart": True},
-            "paused":  {"start": False, "stop": True, "restart": True},
-        }.get(cat, {"start": False, "stop": False, "restart": False})
+            "running": {"start": False, "stop": True, "restart": True, "kill": local},
+            "stopped": {"start": True, "stop": False, "restart": True, "kill": False},
+            "paused":  {"start": False, "stop": True, "restart": True, "kill": local},
+            "pending": {"start": False, "stop": False, "restart": False, "kill": local},
+        }.get(cat, {"start": False, "stop": False, "restart": False, "kill": False})
         for action, b in self.buttons.items():
-            b.setEnabled(bool(allowed.get(action)) and not busy_label)
+            enabled = bool(allowed.get(action))
+            if action != "kill":
+                enabled = enabled and not busy_label
+            b.setEnabled(enabled)
 
 
 class _StackRow(QWidget):

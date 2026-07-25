@@ -182,7 +182,9 @@ class Watchdog:
             ok, _ = self.should_recover(event)
             if not ok:
                 return
-            self._on_log(event, f"watchdog attempt {attempt}")
+            rec, _ = self._rules_for(name, machine)
+            total = f" of {rec.max_attempts}" if rec and rec.max_attempts else ""
+            self._on_log(event, f"watchdog attempt {attempt}{total}")
             try:
                 self._control.start_service(name, machine=machine)
             except Exception as exc:

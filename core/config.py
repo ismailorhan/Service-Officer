@@ -118,6 +118,55 @@ class Stack:
 
 
 @dataclass
+class Trigger:
+    """When something should happen, and what.
+
+    Deliberately two halves so the list of "whens" and the list of "actions" can
+    grow independently — notifications and mail are the obvious next actions, a
+    maintenance window the obvious next when.
+    """
+    name: str
+    enabled: bool = True
+
+    # -- when ----------------------------------------------------------------
+    when: str = "startup"          # "startup" | "time"
+    delay_seconds: int = 30        # startup: settle time before firing
+    time_of_day: str = "03:00"     # time: local HH:MM
+    days: list = field(default_factory=list)   # empty = every day, else 0=Mon…6=Sun
+
+    # -- action --------------------------------------------------------------
+    action: str = "stack"          # "stack" | "service"
+    stack: str = ""
+    service: str = ""
+    service_action: str = "start"  # start | stop | restart
+
+    DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+    def when_text(self) -> str:
+        if self.when == "startup":
+            if self.delay_seconds:
+                return f"when Windows starts, after {self.delay_seconds}s"
+            return "when Windows starts"
+        if self.days and len(self.days) < 7:
+            days = ", ".join(self.DAY_NAMES[d] for d in sorted(self.days))
+            return f"{days} at {self.time_of_day}"
+        return f"every day at {self.time_of_day}"
+
+    def action_text(self, services=None) -> str:
+        if self.action == "stack":
+            return f"run “{self.stack}”" if self.stack else "run a stack (none chosen)"
+        label = self.service
+        for s in (services or []):
+            if s.name == self.service:
+                label = s.display()
+                break
+        return f"{self.service_action} {label}" if self.service else "no service chosen"
+
+    def summary(self, services=None) -> str:
+        return f"{self.when_text()} → {self.action_text(services)}"
+
+
+@dataclass
 class History:
     enabled: bool = True
     retention_days: int = 30
@@ -134,6 +183,7 @@ class Notifications:
 class Config:
     services: list = field(default_factory=list)      # list[Service]
     stacks: list = field(default_factory=list)        # list[Stack]
+    triggers: list = field(default_factory=list)      # list[Trigger]
     history: History = field(default_factory=History)
     notifications: Notifications = field(default_factory=Notifications)
     auto_start: bool = True
@@ -149,6 +199,9 @@ class Config:
 
     def stack(self, name: str) -> Stack | None:
         return next((s for s in self.stacks if s.name == name), None)
+
+    def trigger(self, name: str) -> Trigger | None:
+        return next((t for t in self.triggers if t.name == name), None)
 
     def service_names(self) -> list:
         return [s.name for s in self.services]
@@ -233,11 +286,53 @@ def _stack_from(raw) -> Stack | None:
     return Stack(name=str(raw["name"]), steps=steps)
 
 
+def _trigger_from(raw) -> Trigger | None:
+    if not isinstance(raw, dict) or not raw.get("name"):
+        return None
+    when = raw.get("when", "startup")
+    if when not in ("startup", "time"):
+        when = "startup"
+    action = raw.get("action", "stack")
+    if action not in ("stack", "service"):
+        action = "stack"
+    svc_action = raw.get("service_action", "start")
+    if svc_action not in ("start", "stop", "restart"):
+        svc_action = "start"
+    days = [d for d in raw.get("days", []) if isinstance(d, int) and 0 <= d <= 6]
+    time_of_day = str(raw.get("time_of_day") or "03:00")
+    if not _valid_hhmm(time_of_day):
+        time_of_day = "03:00"
+    return Trigger(
+        name=str(raw["name"]),
+        enabled=bool(raw.get("enabled", True)),
+        when=when,
+        delay_seconds=max(0, _as_int(raw.get("delay_seconds"), 30)),
+        time_of_day=time_of_day,
+        days=sorted(set(days)),
+        action=action,
+        stack=str(raw.get("stack") or ""),
+        service=str(raw.get("service") or ""),
+        service_action=svc_action,
+    )
+
+
+def _valid_hhmm(text: str) -> bool:
+    parts = str(text).split(":")
+    if len(parts) != 2:
+        return False
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    return 0 <= hour <= 23 and 0 <= minute <= 59
+
+
 def from_dict(data: dict) -> Config:
     """Build a Config from raw JSON, filling in anything missing."""
     data = data if isinstance(data, dict) else {}
     services = [s for s in (_service_from(x) for x in data.get("services", [])) if s]
     stacks = [s for s in (_stack_from(x) for x in data.get("stacks", [])) if s]
+    triggers = [t for t in (_trigger_from(x) for x in data.get("triggers", [])) if t]
 
     h = data.get("history") if isinstance(data.get("history"), dict) else {}
     n = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
@@ -245,6 +340,7 @@ def from_dict(data: dict) -> Config:
     return Config(
         services=services,
         stacks=stacks,
+        triggers=triggers,
         history=History(
             enabled=bool(h.get("enabled", True)),
             retention_days=max(1, _as_int(h.get("retention_days"), 30)),
@@ -266,6 +362,7 @@ def to_dict(cfg: Config) -> dict:
         "version": CURRENT_VERSION,
         "services": [asdict(s) for s in cfg.services],
         "stacks": [asdict(s) for s in cfg.stacks],
+        "triggers": [asdict(t) for t in cfg.triggers],
         "history": asdict(cfg.history),
         "notifications": asdict(cfg.notifications),
         "auto_start": cfg.auto_start,

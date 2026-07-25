@@ -173,6 +173,15 @@ def sheet() -> str:
         min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
         background: {BG_RAISE};
     }}
+    QPushButton[kind="kill"] {{
+        border: 1px solid {STOP}; border-radius: 5px; padding: 2px;
+        min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
+        background: {STOP_DIM}; color: {STOP_FG}; font-weight: 600;
+    }}
+    QPushButton[kind="kill"]:hover {{ background: {STOP}; color: #ffffff; }}
+    QPushButton[kind="kill"]:disabled {{
+        border-color: {LINE}; background: transparent; color: {FG4};
+    }}
     QPushButton[kind="nav"] {{
         border: none; border-left: 2px solid transparent; border-radius: 0;
         padding: 9px 16px; text-align: left; color: {FG2}; background: transparent;
@@ -204,6 +213,19 @@ def sheet() -> str:
     }}
     QCheckBox::indicator:checked {{ background: {RUN}; border-color: {RUN}; }}
     QCheckBox:disabled {{ color: {FG4}; }}
+
+    QTableWidget {{
+        background: {BG_RAISE}; border: 1px solid {LINE}; border-radius: 5px;
+        color: {FG}; gridline-color: {LINE};
+    }}
+    QTableWidget::item {{ padding: 4px 8px; border: none; }}
+    QTableWidget::item:selected {{ background: {RUN_DIM}; color: {FG}; }}
+    QHeaderView::section {{
+        background: {BG_SIDE}; color: {FG3}; border: none;
+        border-bottom: 1px solid {LINE}; padding: 6px 8px;
+        font-size: 8pt; font-weight: 600; letter-spacing: 1px;
+    }}
+    QTableCornerButton::section {{ background: {BG_SIDE}; border: none; }}
 
     QListWidget {{
         background: {BG_RAISE}; border: 1px solid {LINE}; border-radius: 5px;

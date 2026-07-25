@@ -70,7 +70,14 @@ def test_flyout_builds_and_reflects_state(qapp, sample):
     assert running.buttons["stop"].isEnabled() is True
     assert stopped.buttons["start"].isEnabled() is True
     assert stopped.buttons["stop"].isEnabled() is False
-    assert all(not b.isEnabled() for b in pending.buttons.values())
+    # Mid-transition nothing may be commanded — except Kill, which exists
+    # precisely for a service wedged in "Stopping".
+    assert all(not pending.buttons[a].isEnabled()
+               for a in ("start", "stop", "restart"))
+    assert pending.buttons["kill"].isEnabled() is True
+    # Nothing to kill once it is stopped.
+    assert stopped.buttons["kill"].isEnabled() is False
+    assert running.buttons["kill"].isEnabled() is True
     assert "1 of 3 running" in fly.badge.text()
     fly.deleteLater()
 
@@ -272,6 +279,51 @@ def test_test_run_carries_the_edited_stack_not_its_name(qapp, sample):
     win.test_run.connect(lambda stack, action: got.append((stack, action)))
     detail.test_run.emit(detail.stack, "start")
     assert got and got[0][0].steps[0].timeout_seconds == 999
+    win.deleteLater()
+
+
+def test_schedule_page_edits_a_trigger(qapp, sample):
+    sample.triggers.append(cfg_mod.Trigger(name="nightly", when="time",
+                                           time_of_day="03:00", action="stack",
+                                           stack="SAP B1"))
+    win = settings_mod.SettingsWindow(sample)
+    assert win.schedule_page.list.count() == 1
+
+    win.schedule_page.list.setCurrentRow(0)
+    win.schedule_page._open()
+    d = win.schedule_page.detail
+    assert d.when.currentIndex() == 1                  # time-based
+    assert d.time_row.isVisibleTo(d) and not d.startup_row.isVisibleTo(d)
+
+    d.hour.setValue(22)
+    d.minute.setValue(15)
+    d.day_boxes[0].setChecked(True)                    # Monday
+    edited = win.config().trigger("nightly")
+    assert edited.time_of_day == "22:15" and edited.days == [0]
+
+    d.when.setCurrentIndex(0)                          # switch to startup
+    assert d.startup_row.isVisibleTo(d) and not d.time_row.isVisibleTo(d)
+    assert win.config().trigger("nightly").when == "startup"
+
+    d.action.setCurrentIndex(1)                        # act on one service
+    assert d.service_row.isVisibleTo(d)
+    assert win.config().trigger("nightly").action == "service"
+    win.deleteLater()
+
+
+def test_history_page_builds_a_grid_with_filters(qapp, sample):
+    win = settings_mod.SettingsWindow(sample)
+    page = win.history_page
+    page.load_from(win.config())
+
+    assert [page.table.horizontalHeaderItem(i).text()
+            for i in range(page.table.columnCount())] == \
+        ["Time", "Service", "Event", "Detail", "Source"]
+    # The service filter offers the configured services, not free text.
+    assert page.service_filter.count() == 1 + len(sample.services)
+    assert page.service_filter.itemData(0) is None            # "All services"
+    assert page.range_filter.count() == len(page.RANGES)
+    assert page.include_windows.isChecked() is False
     win.deleteLater()
 
 

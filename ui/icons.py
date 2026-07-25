@@ -176,6 +176,12 @@ def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:
         p.drawEllipse(QRectF(s * 0.14, s * 0.14, s * 0.72, s * 0.72))
         p.drawLine(QPointF(s * 0.5, s * 0.5), QPointF(s * 0.5, s * 0.28))
         p.drawLine(QPointF(s * 0.5, s * 0.5), QPointF(s * 0.68, s * 0.58))
+    elif kind == "schedule":                     # a calendar
+        p.drawRect(QRectF(s * 0.15, s * 0.22, s * 0.7, s * 0.63))
+        p.drawLine(QPointF(s * 0.15, s * 0.4), QPointF(s * 0.85, s * 0.4))
+        p.drawLine(QPointF(s * 0.33, s * 0.14), QPointF(s * 0.33, s * 0.28))
+        p.drawLine(QPointF(s * 0.67, s * 0.14), QPointF(s * 0.67, s * 0.28))
+        p.drawEllipse(QRectF(s * 0.44, s * 0.56, s * 0.12, s * 0.12))
     else:                                        # gear
         c = s / 2.0
         p.drawEllipse(QRectF(c - s * 0.17, c - s * 0.17, s * 0.34, s * 0.34))

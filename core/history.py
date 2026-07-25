@@ -53,6 +53,24 @@ def record(event: st.Event, path: str = None, note: str = "") -> None:
         pass
 
 
+def record_action(service: str, action: str, source: str, machine: str = "",
+                  note: str = "", path: str = None) -> None:
+    """Log that an action was *asked for*, separately from the state changes it
+    causes. Without this the timeline shows a service stopping with no hint that
+    somebody pressed the button."""
+    path = path or HISTORY_PATH
+    line = {"ts": _now_iso(), "service": service, "machine": machine,
+            "action": action, "source": source}
+    if note:
+        line["note"] = note
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _lock, open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def read(path: str = None, limit: int = 500, service: str = None) -> list:
     """Most recent first. Malformed lines are skipped, not fatal."""
     path = path or HISTORY_PATH
@@ -125,18 +143,112 @@ def trim(retention_days: int, path: str = None) -> int:
     return dropped
 
 
-def export_csv(dest: str, path: str = None, service: str = None) -> int:
-    """Write the history to CSV for a ticket. Returns rows written."""
+# ---------------------------------------------------------------------------
+# Unified timeline
+# ---------------------------------------------------------------------------
+#: our own source codes, written to the file, spelled out for people
+SOURCE_TEXT = {
+    st.SRC_SCM: "observed",
+    st.SRC_PANEL: "you, from the panel",
+    st.SRC_WATCHDOG: "watchdog",
+    st.SRC_STACK: "stack run",
+    st.SRC_SCHEDULE: "scheduled trigger",
+}
+
+ACTION_TEXT = {"start": "start requested", "stop": "stop requested",
+               "restart": "restart requested", "kill": "process killed",
+               "run stack": "stack run requested"}
+
+
+def _within(ts: str, since) -> bool:
+    if since is None:
+        return True
+    try:
+        when = datetime.fromisoformat(ts)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when >= since
+    except (TypeError, ValueError):
+        return True
+
+
+def query(service_names=None, labels=None, service: str = None, hours: int = None,
+          include_windows: bool = False, windows_levels=None, limit: int = 800,
+          path: str = None) -> list:
+    """One timeline, newest first, in a shape a table can render directly.
+
+    Merges three kinds of row: what we asked for (action), what the SCM told us
+    (state), and what Windows logged about the service (windows) — so "it
+    stopped" sits next to "terminated unexpectedly, .NET exception".
+    """
+    since = None
+    if hours:
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    label_of = dict(zip(service_names or [], labels or []))
+    rows = []
+
+    for rec in read(path=path, limit=100000):
+        if service and rec.get("service") != service:
+            continue
+        if not _within(str(rec.get("ts", "")), since):
+            continue
+        name = rec.get("service", "")
+        common = {"ts": rec.get("ts", ""), "service": name,
+                  "label": label_of.get(name, name), "level": ""}
+        if rec.get("action"):
+            rows.append({**common, "kind": "action",
+                         "event": ACTION_TEXT.get(rec["action"], rec["action"]),
+                         "detail": rec.get("note", ""),
+                         "source": SOURCE_TEXT.get(rec.get("source", ""),
+                                                   rec.get("source", ""))})
+        else:
+            detail = []
+            if rec.get("from"):
+                detail.append(f"was {rec['from']}")
+            if rec.get("exit_code"):
+                detail.append(f"exit code {rec['exit_code']}")
+            if rec.get("note"):
+                detail.append(rec["note"])
+            level = "Error" if rec.get("exit_code") else ""
+            rows.append({**common, "kind": "state", "event": rec.get("to", ""),
+                         "detail": " · ".join(detail), "level": level,
+                         "source": SOURCE_TEXT.get(rec.get("source", ""),
+                                                   rec.get("source", ""))})
+
+    if include_windows and service_names:
+        from . import eventlog
+        wanted = [service] if service else list(service_names)
+        wanted_labels = ([label_of.get(service, service)] if service
+                         else list(labels or []))
+        for rec in eventlog.read(wanted, wanted_labels, hours=hours or 168,
+                                 levels=windows_levels, limit=400):
+            name = rec.get("service") or ""
+            rows.append({
+                "ts": rec["ts"], "service": name,
+                "label": label_of.get(name, name), "kind": "windows",
+                "event": rec["summary"] or f"event {rec['event_id']}",
+                "detail": rec["message"], "level": rec["level"],
+                "source": f"Windows event log · {rec['source']}",
+            })
+
+    rows.sort(key=lambda r: r["ts"], reverse=True)
+    return rows[:limit]
+
+
+def export_csv(dest: str, rows=None, path: str = None, service: str = None) -> int:
+    """Write a timeline to CSV for a ticket. Pass the rows you are looking at so
+    the file matches the filters on screen; otherwise everything is exported."""
     import csv
-    rows = read(path=path, limit=100000, service=service)
+    if rows is None:
+        rows = query(service=service, path=path)
     with open(dest, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(["Time", "Service", "Machine", "From", "To", "Source",
-                    "Exit code", "Note"])
+        w.writerow(["Time", "Service", "Kind", "Event", "Detail", "Level", "Source"])
         for r in rows:
-            w.writerow([r.get("ts", ""), r.get("service", ""), r.get("machine", ""),
-                        r.get("from") or "", r.get("to", ""), r.get("source", ""),
-                        r.get("exit_code", ""), r.get("note", "")])
+            w.writerow([r.get("ts", ""), r.get("label") or r.get("service", ""),
+                        r.get("kind", ""), r.get("event", ""), r.get("detail", ""),
+                        r.get("level", ""), r.get("source", "")])
     return len(rows)
 
 

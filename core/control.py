@@ -67,6 +67,58 @@ def list_all_services(machine: str = "") -> list:
     return services
 
 
+def process_id(service_name: str, machine: str = "") -> int:
+    """The service's process, or 0 if it isn't running.
+
+    Needed for the last resort below, and worth having anyway: it identifies the
+    process for resource figures later.
+    """
+    try:
+        scm = win32service.OpenSCManager(_m(machine), None,
+                                         win32service.SC_MANAGER_CONNECT)
+    except pywintypes.error:
+        return 0
+    try:
+        handle = win32service.OpenService(scm, service_name,
+                                         win32service.SERVICE_QUERY_STATUS)
+        try:
+            info = win32service.QueryServiceStatusEx(handle)
+            return int(info.get("ProcessId", 0) or 0)
+        finally:
+            win32service.CloseServiceHandle(handle)
+    except pywintypes.error:
+        return 0
+    finally:
+        win32service.CloseServiceHandle(scm)
+
+
+def kill_process(service_name: str, machine: str = "") -> int:
+    """Terminate the service's process outright. Returns the pid killed.
+
+    For when a service is wedged and Stop does nothing: the SCM keeps reporting
+    "Stopping" for ever because the process never acknowledges the control
+    request. Terminating it is abrupt by definition — the service gets no chance
+    to flush anything — so the UI asks before calling this.
+
+    Only local services: terminating a process on another machine needs a
+    different mechanism entirely.
+    """
+    if machine:
+        raise RuntimeError("Killing a process is only possible on this computer.")
+    pid = process_id(service_name)
+    if not pid:
+        raise RuntimeError("That service has no running process.")
+
+    import win32api
+    import win32con
+    handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
+    try:
+        win32api.TerminateProcess(handle, 1)
+    finally:
+        win32api.CloseHandle(handle)
+    return pid
+
+
 def reachable(machine: str) -> bool:
     """Can we talk to this machine's SCM at all? Used to show a machine as
     offline instead of every service on it as 'Not Found'."""

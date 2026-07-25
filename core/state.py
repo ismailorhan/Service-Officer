@@ -31,6 +31,7 @@ SRC_SCM = "scm"          # observed, cause unknown (external or a crash)
 SRC_PANEL = "panel"      # the user pressed a button in our UI
 SRC_WATCHDOG = "watchdog"
 SRC_STACK = "stack"
+SRC_SCHEDULE = "schedule"   # a trigger fired
 
 
 def category(status: str) -> str:

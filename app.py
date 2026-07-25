@@ -16,7 +16,8 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import autostart
-from core import applog, config as cfg_mod, control, history, scm, stacks
+from core import (applog, config as cfg_mod, control, history, scm, schedule,
+                  stacks)
 from core import state as st
 from core.watchdog import Watchdog
 from ui import flyout as flyout_mod, hover as hover_mod, icons, settings as settings_mod
@@ -30,6 +31,11 @@ class StackSignals(QObject):
     """A stack run happens on a worker thread; these carry it back to the UI."""
     step = Signal(int, int, str, str, str)      # index, total, service, action, phase
     done = Signal(object)
+
+
+class TriggerSignals(QObject):
+    """A trigger fires on the scheduler's thread; the work belongs on the UI one."""
+    fire = Signal(object)
 
 
 class ActionSignals(QObject):
@@ -78,6 +84,11 @@ class Application(QObject):
         self.runner = stacks.Runner(control, self.store,
                                     on_log=lambda text: log.info(text))
 
+        self.scheduler = schedule.Scheduler(
+            config_getter=lambda: self.cfg,
+            on_fire=lambda trigger: self.trigger_signals.fire.emit(trigger),
+            log=lambda text: log.info(text))
+
         # --- ui -----------------------------------------------------------
         self.tray = Tray(lambda: self.cfg, self.store)
         self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store)
@@ -94,6 +105,9 @@ class Application(QObject):
 
         self.action_signals = ActionSignals()
         self.action_signals.done.connect(self._action_done)
+
+        self.trigger_signals = TriggerSignals()
+        self.trigger_signals.fire.connect(self.run_trigger)
 
         self.tray.left_clicked.connect(self._toggle_flyout)
         self.tray.hover.connect(self._on_hover)
@@ -122,7 +136,10 @@ class Application(QObject):
         self.tray.show()
         self.tray.apply_state()
         self.watcher.start()
-        log.info("started with %d service(s)", len(self.cfg.services))
+        self.scheduler.start()
+        self.scheduler.run_startup_triggers()
+        log.info("started with %d service(s), %d stack(s), %d trigger(s)",
+                 len(self.cfg.services), len(self.cfg.stacks), len(self.cfg.triggers))
         return self.qt.exec()
 
     def _prime_states(self):
@@ -150,9 +167,14 @@ class Application(QObject):
 
     # -- actions -----------------------------------------------------------
     def do_action(self, action: str, name: str, machine: str = ""):
+        if action == "kill":
+            self.kill_process(name, machine)
+            return
         verb = {"start": "Starting", "stop": "Stopping", "restart": "Restarting"}[action]
         self.flyout.mark_busy(name, machine, verb + "…")
         self.tray.action_started()
+        if self.cfg.history.enabled:
+            history.record_action(name, action, st.SRC_PANEL, machine=machine)
 
         def work():
             error = None
@@ -179,6 +201,58 @@ class Application(QObject):
         if error:
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not {action} '{name}':\n{error}")
+
+    def kill_process(self, name: str, machine: str = ""):
+        """Terminate the service's process — abrupt, so it asks first."""
+        label = next((s.display() for s in self.cfg.services
+                      if s.name == name and (s.machine or "") == (machine or "")), name)
+        pid = 0
+        try:
+            pid = control.process_id(name, machine)
+        except Exception:
+            pass
+        if not pid:
+            QMessageBox.information(None, "Service Officer",
+                                    f"{label} has no running process to kill.")
+            return
+        answer = QMessageBox.question(
+            None, "Kill process",
+            f"Terminate {label} (process {pid})?\n\n"
+            "The service is killed outright — it gets no chance to shut down "
+            "cleanly. Use this when Stop has no effect.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer != QMessageBox.Yes:
+            return
+
+        self.store.expect_stop(name, machine)     # we did this on purpose
+        if self.cfg.history.enabled:
+            history.record_action(name, "kill", st.SRC_PANEL, machine=machine,
+                                  note=f"process {pid}")
+        try:
+            control.kill_process(name, machine)
+            log.info("killed %s (pid %s)", name, pid)
+        except Exception as exc:
+            self.store.clear_expected(name, machine)
+            QMessageBox.warning(None, "Service Officer",
+                                f"Could not kill {label}:\n"
+                                f"{getattr(exc, 'strerror', None) or exc}")
+            return
+        self.refresh()
+
+    def run_trigger(self, trigger):
+        """Do what a trigger says. Shared by the scheduler and its Run now button."""
+        if trigger is None:
+            return
+        if self.cfg.history.enabled:
+            target = trigger.stack if trigger.action == "stack" else trigger.service
+            history.record_action(target or trigger.name,
+                                  trigger.service_action if trigger.action == "service"
+                                  else "run stack",
+                                  st.SRC_SCHEDULE, note=f"trigger “{trigger.name}”")
+        if trigger.action == "stack":
+            self.run_stack(trigger.stack)
+        elif trigger.service:
+            self.do_action(trigger.service_action, trigger.service)
 
     def run_stack(self, stack_or_name, _action=None):
         """The second argument exists only because Settings' test-run signal
@@ -209,6 +283,9 @@ class Application(QObject):
     def _on_stack_step(self, index, total, service, action, phase):
         if phase == "begin":
             self.flyout.mark_busy(service, "", f"{action} {index}/{total}…")
+            if self.cfg.history.enabled:
+                history.record_action(service, action, st.SRC_STACK,
+                                      note=f"step {index} of {total}")
 
     def _on_stack_done(self, result):
         self.tray.action_finished()
@@ -270,6 +347,7 @@ class Application(QObject):
         win = settings_mod.SettingsWindow(self.cfg)
         win.saved.connect(self._settings_saved)
         win.test_run.connect(self.run_stack)
+        win.run_trigger.connect(self.run_trigger)
         win.theme_changed.connect(self.apply_theme)
         self.settings_window = win
         win.show()
@@ -304,6 +382,7 @@ class Application(QObject):
     def quit(self):
         log.info("quitting")
         self.watcher.stop()
+        self.scheduler.stop()
         self.watchdog.stop()
         self.tray.hide()
         self.qt.quit()
