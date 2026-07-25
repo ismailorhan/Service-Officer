@@ -11,26 +11,41 @@ REM ----------------------------------------------------------------------
 
 cd /d "%~dp0"
 
-set PY=py
-where py >nul 2>nul
-if errorlevel 1 (
-    set PY=python
-    where python >nul 2>nul
+REM An explicit interpreter wins. This matters on machines where "python" is
+REM only the Microsoft Store stub: `where python` finds it, so the checks below
+REM pass and the build then fails with "Python was not found".
+REM   set PYTHON=C:\Path\to\python.exe && build.bat
+if defined PYTHON (
+    set "PY=%PYTHON%"
+) else (
+    set PY=py
+    where py >nul 2>nul
     if errorlevel 1 (
-        echo [ERROR] No Python found on PATH. Install Python 3.10+ first.
-        exit /b 1
+        set PY=python
+        where python >nul 2>nul
+        if errorlevel 1 (
+            echo [ERROR] No Python found on PATH. Install Python 3.10+ first,
+            echo         or set PYTHON to its full path.
+            exit /b 1
+        )
     )
+)
+
+"%PY%" -c "import sys; print('Using', sys.version.split()[0], 'at', sys.executable)"
+if errorlevel 1 (
+    echo [ERROR] %PY% is not a working Python. Set PYTHON to its full path.
+    exit /b 1
 )
 
 echo.
 echo === Installing build dependencies ===
-%PY% -m pip install --upgrade pip
-%PY% -m pip install -r requirements.txt
-%PY% -m pip install pyinstaller
+"%PY%" -m pip install --upgrade pip
+"%PY%" -m pip install -r requirements.txt
+"%PY%" -m pip install pyinstaller
 
 echo.
 echo === Running tests ===
-%PY% -m pytest tests -q
+"%PY%" -m pytest tests -q
 if errorlevel 1 (
     echo [ERROR] Tests failed — not building.
     exit /b 1
@@ -44,7 +59,7 @@ if exist ServiceOfficer.spec del ServiceOfficer.spec
 
 echo.
 echo === Building ServiceOfficer.exe ===
-%PY% -m PyInstaller ^
+"%PY%" -m PyInstaller ^
     --noconfirm ^
     --clean ^
     --windowed ^

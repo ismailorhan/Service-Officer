@@ -177,6 +177,13 @@ class Application(QObject):
         self.tray.show()
         self.tray.apply_state()
         self.watcher.start()
+        # What already ran today is on disk, so a restart doesn't repeat it.
+        try:
+            seeded = self.scheduler.seed_from(history.runs(kind="trigger", limit=200))
+            if seeded:
+                log.info("scheduler: %d trigger(s) already ran today", seeded)
+        except Exception as exc:
+            log.warning("could not read past trigger runs: %s", exc)
         self.scheduler.start()
         self.scheduler.run_startup_triggers()
         log.info("started with %d service(s), %d stack(s), %d trigger(s)",

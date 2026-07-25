@@ -124,6 +124,43 @@ def test_editing_days_or_repeat_also_clears_the_memory():
     assert sched.due_now(at(20, 3, 6)) == [t]
 
 
+def test_a_restart_does_not_repeat_what_already_ran(tmp_path):
+    """Measured on the real app: a trigger set for 16:12 fired again at 16:31
+    because it was restarted at 16:29 and the memory lived only in the process.
+    Inside the catch-up window that means every restart re-runs the action."""
+    t = cfg_mod.Trigger(name="app", when="time", time_of_day="16:12")
+    sched, _fired, _cfg = build([t], now=at(20, 16, 31))
+    assert sched.due_now() == [t]                   # a fresh process, no memory
+
+    sched.seed_from([{"run": "trigger", "name": "app",
+                      "ts": "2026-07-20T16:12:04+03:00", "outcome": "success"}])
+    assert sched.due_now() == []                    # it is on disk, so not again
+    assert sched.due_now(at(21, 16, 12)) == [t]     # tomorrow still fires
+
+
+def test_seeding_ignores_runs_that_do_not_match_the_schedule():
+    t = cfg_mod.Trigger(name="app", when="time", time_of_day="22:00")
+    sched, _fired, _cfg = build([t], now=at(20, 22, 5))
+
+    # A "Run now" at nine in the morning is not the 22:00 occurrence.
+    assert sched.seed_from([{"run": "trigger", "name": "app",
+                             "ts": "2026-07-20T09:00:00+03:00"}]) == 0
+    assert sched.due_now() == [t]
+
+    # Neither is a run recorded against a name we no longer have, nor a
+    # timestamp we can't read.
+    assert sched.seed_from([{"run": "trigger", "name": "gone",
+                             "ts": "2026-07-20T22:00:00+03:00"}]) == 0
+    assert sched.seed_from([{"run": "trigger", "name": "app", "ts": "nonsense"}]) == 0
+
+    # An edit since that run leaves the trigger free to fire.
+    sched.seed_from([{"run": "trigger", "name": "app",
+                      "ts": "2026-07-20T22:00:03+03:00"}])
+    assert sched.due_now() == []
+    t.time_of_day = "22:04"
+    assert sched.due_now() == [t]
+
+
 def test_next_run_says_when_so_the_user_need_not_guess():
     t = cfg_mod.Trigger(name="app", when="time", time_of_day="15:52")
     sched, _fired, _cfg = build([t], now=at(20, 15, 0))

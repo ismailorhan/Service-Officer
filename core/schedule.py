@@ -20,6 +20,15 @@ from datetime import date, datetime, timedelta
 CATCH_UP_MINUTES = 30      # how late a missed time trigger may still fire
 
 
+def _parse_ts(text) -> datetime | None:
+    """History timestamps carry an offset; comparisons here are naive local."""
+    try:
+        parsed = datetime.fromisoformat(str(text))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
 class Scheduler:
     def __init__(self, config_getter, on_fire, tick_seconds: float = 20.0,
                  now=None, log=None):
@@ -112,6 +121,47 @@ class Scheduler:
     def due_now(self, now: datetime = None) -> list:
         now = now or self._now()
         return [t for t in self._config().triggers if self._time_due(t, now)]
+
+    def seed_from(self, records) -> int:
+        """Remember runs that happened before this process started.
+
+        Without this the memory of "already ran today" dies with the app, and
+        restarting inside the catch-up window fires everything again — measured:
+        a trigger set for 16:12 fired at 16:31 because the app had been
+        restarted at 16:29. Records are the history's run entries, newest first;
+        only the newest per trigger matters.
+
+        A record can only be matched to the schedule that is configured *now*,
+        so a trigger whose time has since been edited is correctly not blocked.
+        """
+        by_name = {t.name: t for t in self._config().triggers}
+        seeded = 0
+        for rec in records:
+            name = rec.get("name")
+            trigger = by_name.pop(name, None)
+            if trigger is None or trigger.when != "time":
+                continue
+            when = _parse_ts(rec.get("ts"))
+            if when is None:
+                continue
+            occurrence = self.occurrence_for(trigger, when)
+            # Only if that scheduled moment had actually arrived: a "Run now"
+            # at 09:00 must not cancel the 22:00 trigger it belongs to.
+            if self._passed(trigger, when):
+                self._last_run[trigger.name] = (self.signature(trigger), occurrence)
+                seeded += 1
+            if not by_name:
+                break
+        return seeded
+
+    def _passed(self, trigger, moment: datetime) -> bool:
+        """Had this trigger's time already come by `moment` that day?"""
+        try:
+            hour, minute = (int(p) for p in trigger.time_of_day.split(":"))
+        except (ValueError, AttributeError):
+            return False
+        return moment >= moment.replace(hour=hour, minute=minute, second=0,
+                                        microsecond=0)
 
     def mark_ran(self, trigger, when=None) -> None:
         occurrence = (when if when is not None
