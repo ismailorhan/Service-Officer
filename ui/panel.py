@@ -206,13 +206,15 @@ class ServicesPage(QWidget):
         lay.addWidget(self.stack)
 
         self.list_page = _Page("Services",
-                               "These appear in the tray flyout with live status, "
-                               "in this order — drag a row to move it. Open one to "
-                               "set how it should recover when it stops on its own.")
+                               "Grouped by category, in the order the tray flyout "
+                               "and the dashboard show them. Drag a service to "
+                               "move it, or onto another heading to file it there. "
+                               "Open one to set how it should recover when it "
+                               "stops on its own.")
         self.list = ReorderList()
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.itemDoubleClicked.connect(lambda _i: self._open_selected())
-        self.list.reordered.connect(self._reorder)
+        self.list.dropped.connect(self._dropped)
         self.list_page.root.addWidget(self.list, 1)
 
         bar = QHBoxLayout()
@@ -237,40 +239,100 @@ class ServicesPage(QWidget):
 
     # -- list --------------------------------------------------------------
     def refresh(self):
+        """Grouped by category, with every category shown — an empty one is
+        somewhere to drag a service to, which is the point of it being here."""
         keep = self.list.currentRow()
         self.list.clear()
-        for svc in self.cfg().services:
-            rec = svc.recovery
-            if not rec.enabled:
-                note = "no automatic recovery"
-            elif rec.max_attempts:
-                note = f"recovers automatically, up to {rec.max_attempts} attempts"
-            else:
-                note = "recovers automatically, unlimited attempts"
-            # The machine is the service's source, so it goes on the right as a
-            # chip rather than buried in the middle of the secondary line.
-            machine = self.cfg().machine(svc.machine)
-            where = (control.host_name() or "This PC") if (
-                machine and machine.is_local) else (svc.machine or "?")
-            category = svc.category or ""
-            second = f"{svc.name}  ·  {note}"
-            if category:
-                second = f"{category}  ·  {second}"
-            item = QListWidgetItem()
-            widget = _ListRow(svc.display(), second, "none", tag=where,
-                              tag_category="none")
-            item.setSizeHint(widget.sizeHint())
-            self.list.addItem(item)
-            self.list.setItemWidget(item, widget)
+        #: one entry per list row: ("group", category) or ("service", Service)
+        self._entries = []
+        cfg = self.cfg()
+        for name, title, members in cfg.grouped_services(include_empty=True):
+            self._add_group(name, title, len(members))
+            for svc in members:
+                self._add_service(svc)
         if 0 <= keep < self.list.count():
             self.list.setCurrentRow(keep)
+
+    def _add_group(self, name: str, title: str, count: int):
+        item = QListWidgetItem()
+        # Enabled so it can be a drop target, but neither selectable nor
+        # draggable: a heading isn't a thing you move or act on.
+        item.setFlags(Qt.ItemIsEnabled)
+        widget = QWidget()
+        widget.setObjectName("sectionBar")
+        widget.setAttribute(Qt.WA_StyledBackground, True)
+        row = QHBoxLayout(widget)
+        row.setContentsMargins(10, 6, 12, 6)
+        row.addWidget(_label(title.upper(), "section"), 1)
+        row.addWidget(_label("empty — drag a service here" if not count
+                             else f"{count}", "hint"))
+        item.setSizeHint(widget.sizeHint())
+        self.list.addItem(item)
+        self.list.setItemWidget(item, widget)
+        self._entries.append(("group", name))
+
+    def _add_service(self, svc):
+        rec = svc.recovery
+        if not rec.enabled:
+            note = "no automatic recovery"
+        elif rec.max_attempts:
+            note = f"recovers automatically, up to {rec.max_attempts} attempts"
+        else:
+            note = "recovers automatically, unlimited attempts"
+        # The machine is the service's source, so it goes on the right as a chip
+        # rather than buried in the middle of the secondary line. The category is
+        # the heading above it now, so it isn't repeated here.
+        machine = self.cfg().machine(svc.machine)
+        where = (control.host_name() or "This PC") if (
+            machine and machine.is_local) else (svc.machine or "?")
+        item = QListWidgetItem()
+        widget = _ListRow(svc.display(), f"{svc.name}  ·  {note}", "none",
+                          tag=where, tag_category="none")
+        item.setSizeHint(widget.sizeHint())
+        self.list.addItem(item)
+        self.list.setItemWidget(item, widget)
+        self._entries.append(("service", svc))
 
     def _refresh_and_signal(self):
         self.refresh()
         self.changed.emit()
 
-    def _selected_rows(self):
-        return sorted(i.row() for i in self.list.selectedIndexes())
+    def _selected_services(self) -> list:
+        """The chosen services, in the order shown. Headings can't be selected,
+        so anything selected is a service."""
+        return [self._entries[i.row()][1] for i in
+                sorted(self.list.selectedIndexes(), key=lambda i: i.row())
+                if 0 <= i.row() < len(self._entries)
+                and self._entries[i.row()][0] == "service"]
+
+    def _group_at(self, insert_at: int) -> str:
+        """Which category an insertion point falls into — the nearest heading
+        above it."""
+        for i in range(min(insert_at, len(self._entries)) - 1, -1, -1):
+            if self._entries[i][0] == "group":
+                return self._entries[i][1]
+        return cfg_mod.NO_CATEGORY
+
+    def _dropped(self, source_row: int, insert_at: int):
+        """A service dragged onto a group joins it, at the position it was let go.
+
+        The visual order becomes the stored order outright, so what the tray
+        panel and the dashboard show is what was arranged here.
+        """
+        if not (0 <= source_row < len(self._entries)):
+            return
+        kind, svc = self._entries[source_row]
+        if kind != "service":
+            return
+        category = self._group_at(insert_at)
+        services = [e[1] for e in self._entries if e[0] == "service"]
+        before = sum(1 for i, e in enumerate(self._entries)
+                     if i < insert_at and e[0] == "service" and e[1] is not svc)
+        services.remove(svc)
+        svc.category = category
+        services.insert(before, svc)
+        self.cfg().services[:] = services
+        self._refresh_and_signal()
 
     def _add(self):
         cfg = self.cfg()
@@ -293,26 +355,25 @@ class ServicesPage(QWidget):
         self._refresh_and_signal()
 
     def _remove(self):
-        rows = self._selected_rows()
-        if not rows:
+        chosen = self._selected_services()
+        if not chosen:
             QMessageBox.information(self, "Service Officer",
                                     "Select a service in the list first.")
             return
-        cfg = self.cfg()
-        names = [cfg.services[r].display() for r in rows]
+        names = [s.display() for s in chosen]
         msg = (f'Stop monitoring "{names[0]}"?' if len(names) == 1
                else f"Stop monitoring these {len(names)} services?")
         if QMessageBox.question(self, "Remove service", msg) != QMessageBox.Yes:
             return
-        for r in reversed(rows):
-            del cfg.services[r]
+        keep = [s for s in self.cfg().services if s not in chosen]
+        self.cfg().services[:] = keep
         self._refresh_and_signal()
 
     def _set_category(self):
         """File the selected services under a heading, creating it if needed."""
         from PySide6.QtWidgets import QInputDialog
-        rows = self._selected_rows()
-        if not rows:
+        chosen = self._selected_services()
+        if not chosen:
             QMessageBox.information(self, "Service Officer",
                                     "Select one or more services in the list "
                                     "first.")
@@ -323,14 +384,14 @@ class ServicesPage(QWidget):
                    + [c.name for c in cfg.categories] + [new_label])
         # Preselect what they already share, so re-filing one service doesn't
         # start from the top of the list.
-        current = {cfg.services[r].category or cfg_mod.NO_CATEGORY for r in rows}
+        current = {s.category or cfg_mod.NO_CATEGORY for s in chosen}
         start = 0
         if len(current) == 1:
             only = current.pop()
             start = options.index(only) if only in options else 0
 
-        heading = ("Put this service under:" if len(rows) == 1
-                   else f"Put these {len(rows)} services under:")
+        heading = ("Put this service under:" if len(chosen) == 1
+                   else f"Put these {len(chosen)} services under:")
         pick, ok = QInputDialog.getItem(self, "Category", heading, options,
                                         start, False)
         if not ok or not pick:
@@ -347,25 +408,17 @@ class ServicesPage(QWidget):
         elif pick == cfg_mod.NO_CATEGORY_TITLE:
             pick = cfg_mod.NO_CATEGORY
 
-        for r in rows:
-            cfg.services[r].category = pick
+        for svc in chosen:
+            svc.category = pick
         self._refresh_and_signal()
-
-    def _reorder(self, source, target):
-        services = self.cfg().services
-        if not (0 <= source < len(services) and 0 <= target < len(services)):
-            return
-        services.insert(target, services.pop(source))
-        self._refresh_and_signal()
-        self.list.setCurrentRow(target)
 
     def _open_selected(self):
-        rows = self._selected_rows()
-        if len(rows) != 1:
+        chosen = self._selected_services()
+        if len(chosen) != 1:
             QMessageBox.information(self, "Service Officer",
                                     "Select one service to open.")
             return
-        self.detail.load(self.cfg().services[rows[0]], self.cfg().categories)
+        self.detail.load(chosen[0], self.cfg().categories)
         self.stack.setCurrentWidget(self.detail)
 
     def _show_list(self):

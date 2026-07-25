@@ -80,6 +80,10 @@ class ReorderList(QListWidget):
     """
 
     reordered = Signal(int, int)      # from row, to row
+    #: from row, and where the insertion line sat in the *current* list (0..count).
+    #: A grouped list needs that raw position to tell which group was dropped
+    #: into; a flat one only cares where the row ends up.
+    dropped = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -87,20 +91,33 @@ class ReorderList(QListWidget):
         self.setDefaultDropAction(Qt.MoveAction)
         self.setDropIndicatorShown(True)
 
+    def insertion_at(self, point) -> int:
+        """Where the drop indicator sits, as an index between 0 and count."""
+        row = self.indexAt(point).row()
+        if row < 0:
+            return self.count()                     # dropped past the last row
+        where = self.dropIndicatorPosition()
+        if where == QAbstractItemView.BelowItem:
+            return row + 1
+        if where == QAbstractItemView.OnItem:
+            # Landed on a row rather than between two: use its own midpoint, so
+            # the result matches where the line was drawn.
+            rect = self.visualItemRect(self.item(row))
+            return row + (1 if point.y() > rect.center().y() else 0)
+        return row
+
     def dropEvent(self, event):
         source = self.currentRow()
-        point = event.position().toPoint()
-        target = self.indexAt(point).row()
-        if target < 0:                              # dropped past the last row
-            target = self.count() - 1
-        elif self.dropIndicatorPosition() == QAbstractItemView.BelowItem:
-            target += 1
-        if source >= 0 and source < target:
-            target -= 1                             # the row leaves its old slot
-        target = max(0, min(target, self.count() - 1))
+        insert_at = self.insertion_at(event.position().toPoint())
         event.setDropAction(Qt.IgnoreAction)        # we move the data, not the item
         event.accept()
-        if source >= 0 and source != target:
+        if source < 0:
+            return
+        self.dropped.emit(source, insert_at)
+
+        target = insert_at - (1 if source < insert_at else 0)
+        target = max(0, min(target, self.count() - 1))
+        if source != target:
             self.reordered.emit(source, target)
 
 

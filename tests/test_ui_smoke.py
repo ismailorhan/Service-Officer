@@ -177,22 +177,56 @@ def test_hover_card_lists_every_service(qapp, sample):
     card.deleteLater()
 
 
+def _row_of(page, service_name: str) -> int:
+    """The list row a service sits on. The Services list is grouped now, so a row
+    index is no longer the service's index in the config."""
+    for i, (kind, value) in enumerate(page._entries):
+        if kind == "service" and value.name == service_name:
+            return i
+    raise AssertionError(f"{service_name} is not in the list")
+
+
+def _select(page, *service_names):
+    page.list.clearSelection()
+    for name in service_names:
+        page.list.item(_row_of(page, name)).setSelected(True)
+
+
 def test_panel_builds_every_page(qapp, sample):
     win = panel_mod.MainPanel(sample)
-    assert win.services_page.list.count() == 3
+    page = win.services_page
+    # three services under one heading
+    assert page.list.count() == 4
+    assert [k for k, _v in page._entries] == ["group"] + ["service"] * 3
     assert win.stacks_page.list.count() == 1
     # opening a service shows its recovery rules
-    win.services_page.list.setCurrentRow(0)
-    win.services_page._open_selected()
-    detail = win.services_page.detail
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
     assert detail.keep.isChecked() is True
     assert detail.attempts.value() == 3
     win.deleteLater()
 
 
+def test_a_heading_cannot_be_selected_or_dragged(qapp, sample):
+    """It is somewhere to drop a service, not a thing to act on."""
+    sample.categories = [cfg_mod.Category(name="SAP")]
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    headings = [i for i, (k, _v) in enumerate(page._entries) if k == "group"]
+    assert headings                                  # at least "No category"
+    for i in headings:
+        flags = page.list.item(i).flags()
+        assert not (flags & Qt.ItemIsSelectable)
+        assert not (flags & Qt.ItemIsDragEnabled)
+    page.list.item(headings[0]).setSelected(True)
+    assert page._selected_services() == []
+    win.deleteLater()
+
+
 def test_editing_recovery_updates_the_config_copy(qapp, sample):
     win = panel_mod.MainPanel(sample)
-    win.services_page.list.setCurrentRow(1)          # WMSServer, recovery off
+    _select(win.services_page, "WMSServer")          # recovery off
     win.services_page._open_selected()
     d = win.services_page.detail
     d.keep.setChecked(True)
@@ -252,10 +286,55 @@ def test_services_reorder_by_drag(qapp, sample):
     page = win.services_page
     names = [s.name for s in page.cfg().services]
     assert len(names) >= 2
-    page.list.setCurrentRow(0)
-    page._reorder(0, 1)                                # dropped below its neighbour
+    # Row 0 is the heading, so the first service is row 1: drop it below the one
+    # after it, i.e. at insertion point 3.
+    page._dropped(1, 3)
     moved = [s.name for s in page.cfg().services]
     assert moved[:2] == [names[1], names[0]]
+    win.deleteLater()
+
+
+def test_dragging_a_service_onto_a_heading_files_it_there(qapp, sample):
+    """The point of showing every category, empty ones included, is having
+    somewhere to drop a service."""
+    sample.categories = [cfg_mod.Category(name="SAP"),
+                         cfg_mod.Category(name="Printing")]
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+
+    # Nothing is filed yet: No category holds all three, then the two empty
+    # categories, which is where they have to be to be reachable.
+    kinds = [(k, v if k == "group" else v.name) for k, v in page._entries]
+    assert kinds == [("group", ""), ("service", "AppEngine"),
+                     ("service", "WMSServer"), ("service", "MSSQLSERVER"),
+                     ("group", "SAP"), ("group", "Printing")]
+
+    sap_heading = kinds.index(("group", "SAP"))
+    page._dropped(_row_of(page, "AppEngine"), sap_heading + 1)
+    assert win.config().service("AppEngine").category == "SAP"
+    # And the stored order follows what is now on screen.
+    assert [s.name for s in win.config().services] == [
+        "WMSServer", "MSSQLSERVER", "AppEngine"]
+
+    # Dropped just below the SAP heading it stays in SAP — the insertion line
+    # was inside that group.
+    page._dropped(_row_of(page, "AppEngine"), 1)
+    assert win.config().service("AppEngine").category == "SAP"
+
+    # Dragging it back out means dropping under the No category heading.
+    kinds = [(k, v if k == "group" else v.name) for k, v in page._entries]
+    loose = kinds.index(("group", cfg_mod.NO_CATEGORY))
+    page._dropped(_row_of(page, "AppEngine"), loose + 1)
+    assert win.config().service("AppEngine").category == cfg_mod.NO_CATEGORY
+    win.deleteLater()
+
+
+def test_dropping_a_heading_does_nothing(qapp, sample):
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    before = [s.name for s in page.cfg().services]
+    page._dropped(0, 3)                             # row 0 is the heading
+    assert [s.name for s in page.cfg().services] == before
     win.deleteLater()
 
 
@@ -306,7 +385,7 @@ def test_save_button_is_disabled_until_something_changes(qapp, sample):
     assert win.is_dirty() is False
     assert win.save_button.isEnabled() is False
 
-    win.services_page.list.setCurrentRow(1)
+    _select(win.services_page, "WMSServer")
     win.services_page._open_selected()
     win.services_page.detail.keep.setChecked(True)           # an edit
     assert win.is_dirty() is True
@@ -655,34 +734,35 @@ def test_the_services_list_can_file_several_at_once(qapp, sample, monkeypatch):
     sample.categories = [cfg_mod.Category(name="SAP")]
     win = panel_mod.MainPanel(sample)
     page = win.services_page
-    page.list.setCurrentRow(0)
-    page.list.item(1).setSelected(True)
-    assert page._selected_rows() == [0, 1]
+    _select(page, "AppEngine", "WMSServer")
+    assert [s.name for s in page._selected_services()] == ["AppEngine", "WMSServer"]
 
     _fake_dialogs(monkeypatch, "SAP")
     page._set_category()
-    assert [s.category for s in win.config().services][:2] == ["SAP", "SAP"]
+    assert win.config().service("AppEngine").category == "SAP"
+    assert win.config().service("WMSServer").category == "SAP"
 
     # A new category can be created from here, and shows up on the other page.
     _fake_dialogs(monkeypatch, "New category…", text="Printing")
-    page.list.clearSelection()
-    page.list.setCurrentRow(2)
+    _select(page, "MSSQLSERVER")
     page._set_category()
-    assert win.config().services[2].category == "Printing"
+    assert win.config().service("MSSQLSERVER").category == "Printing"
     assert [c.name for c in win.config().categories] == ["SAP", "Printing"]
     assert win.categories_page.list.count() == 2
 
     # And back out again.
     _fake_dialogs(monkeypatch, cfg_mod.NO_CATEGORY_TITLE)
+    _select(page, "MSSQLSERVER")
     page._set_category()
-    assert win.config().services[2].category == cfg_mod.NO_CATEGORY
+    assert win.config().service("MSSQLSERVER").category == cfg_mod.NO_CATEGORY
     win.deleteLater()
 
 
 def test_services_page_names_the_machine_on_the_row(qapp, sample):
     from core import control
     win = panel_mod.MainPanel(sample)
-    row = win.services_page.list.itemWidget(win.services_page.list.item(0))
+    page = win.services_page
+    row = page.list.itemWidget(page.list.item(_row_of(page, "AppEngine")))
     texts = [lb.text() for lb in row.findChildren(QLabel)]
     assert control.host_name() in texts or "This PC" in texts
     win.deleteLater()

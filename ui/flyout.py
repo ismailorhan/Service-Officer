@@ -8,7 +8,7 @@ arrive on the GUI thread through a signal instead of a hand-built queue.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QPushButton, QScrollArea,
@@ -331,7 +331,9 @@ class Flyout(QWidget):
         rows = self._service_rows()
         self._set_all(not (rows and all(r.tick.isChecked() for r in rows)))
 
-    def _selection_changed(self) -> None:
+    def _selection_changed(self, settled: bool = True) -> None:
+        """settled: ticking a box doesn't change which rows exist, so the second
+        measuring pass has nothing to find — skip it rather than resize twice."""
         rows = self._service_rows()
         chosen = [r for r in rows if r.tick.isChecked()]
         self.bulk.set_count(len(chosen))
@@ -343,7 +345,7 @@ class Flyout(QWidget):
         else:
             self.tick_all.setCheckState(Qt.PartiallyChecked)
         self.tick_all.blockSignals(False)
-        self._resize_to_content()
+        self._resize_to_content(settled)
 
     def _bulk(self, action: str) -> None:
         targets = [(r.service.name, r.service.machine) for r in self.selected()]
@@ -385,25 +387,33 @@ class Flyout(QWidget):
         ceiling = max(floor, screen.height() - 260)  # leave room for the chrome
 
         self.scroll.setFixedHeight(int(max(floor, min(content, ceiling))))
-        self.adjustSize()
-        self._keep_bottom()
+        self._apply_geometry()
         if not settled:
             QTimer.singleShot(0, lambda: self._resize_to_content(True))
 
-    def _keep_bottom(self) -> None:
-        """Grow upwards, not downwards.
+    def _apply_geometry(self) -> None:
+        """Resize and reposition in one move, growing upwards.
 
         The panel is anchored to the tray icon at the bottom of the screen, so
-        adjustSize() — which holds the top-left corner — pushed the footer down
-        under the taskbar whenever a row appeared. Holding the bottom edge
-        instead means the bulk bar and extra rows open into empty screen.
+        holding the top-left corner — which is what adjustSize() does — pushed
+        the footer down under the taskbar whenever a row appeared.
+
+        Both edges have to change in a single setGeometry. Resizing and then
+        moving is two window changes, and Windows presents a frame between them:
+        the panel appeared 49px taller at its old position, then jumped up. That
+        was the blink when a tick box was clicked — measured as two distinct
+        geometries per click, now one.
         """
+        self.layout().activate()                 # so sizeHint is the final one
+        height = self.sizeHint().height()
         if self._bottom is None or not self.isVisible():
+            self.adjustSize()
             return
         screen = self.screen().availableGeometry()
-        y = max(screen.top() + 4, self._bottom - self.height())
-        if y != self.y():
-            self.move(self.x(), int(y))
+        y = max(screen.top() + 4, self._bottom - height)
+        target = QRect(self.x(), int(y), self.width(), int(height))
+        if target != self.geometry():
+            self.setGeometry(target)
 
     def refresh(self) -> None:
         self.rebuild()

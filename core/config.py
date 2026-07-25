@@ -288,13 +288,17 @@ class Config:
     def category(self, name: str) -> Category | None:
         return next((c for c in self.categories if c.name == (name or "")), None)
 
-    def grouped_services(self) -> list:
+    def grouped_services(self, include_empty: bool = False) -> list:
         """[(category name, title, [services])] for the panel and the dashboard.
 
         Categories keep the order they were defined in; services keep theirs
         inside each one. Uncategorised services come last under their own
-        heading rather than being hidden, and a category with nothing in it is
-        left out — an empty heading is noise in a list you read at a glance.
+        heading rather than being hidden.
+
+        include_empty is for the editor, where a category with nothing in it is
+        somewhere to drag a service *to*; those come last, after everything that
+        has contents, and "No category" is always offered so a service can be
+        dragged back out. In the lists you only read, an empty heading is noise.
         """
         groups = []
         for cat in self.categories:
@@ -304,8 +308,12 @@ class Config:
         loose = [s for s in self.services
                  if (s.category or "") == NO_CATEGORY
                  or not self.category(s.category)]
-        if loose:
+        if loose or include_empty:
             groups.append((NO_CATEGORY, NO_CATEGORY_TITLE, loose))
+        if include_empty:
+            filed = {name for name, _t, _m in groups}
+            groups.extend((cat.name, cat.display(), [])
+                          for cat in self.categories if cat.name not in filed)
         return groups
 
 
