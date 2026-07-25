@@ -3,6 +3,21 @@
 Candidate features, kept here so each can be reviewed on its own. Ordered by
 what changes the product most per unit of work, not by ease.
 
+> **Status, 2026-07-25 — v2.0.0 shipped.** Tiers 1–3 are built: watchdog,
+> ordered stacks, remote-capable core, scheduler, categories, dashboard, history
+> with the Windows event log merged in. Data moved to `%ProgramData%`.
+>
+> **Agreed next**, in order: health checks ("running but dead"), maintenance
+> windows, post-reboot verification, then mail notifications.
+>
+> **Designed but not built** — reasoning in [DECISIONS.md](DECISIONS.md):
+> auto-update, how remote machines are reached, the agent-then-hub path to a web
+> console, and mail.
+>
+> **Parked deliberately:** code signing (needs a purchased certificate), profile
+> export / silent deploy (waits on the hub), uptime & SLA reporting, resource
+> sparklines.
+
 **Positioning.** This isn't a generic "Windows services" utility. Its centre of
 gravity is the *ERP server*: a SAP Business One box running SQL Server, a
 licence service, add-on services (CompuTec AppEngine / Label / WMS) that must
