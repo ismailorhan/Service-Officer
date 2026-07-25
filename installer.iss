@@ -13,10 +13,11 @@
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyAppId          "{{A4F1F8C2-3D7B-4A8D-9E5F-1B2C3D4E5F60}}"
-; The data folder has no space in it, and must match core/config.APP_DIR exactly.
-; Using MyAppName here created C:\ProgramData\Service Officer and set the
-; permissions on that, while the app wrote to ...\ServiceOfficer.
-#define MyDataDir        "ServiceOfficer"
+; Must match core/config.APP_DIR exactly. It is the product name, spaces and all,
+; so the folder sits alongside the other vendors' in ProgramData — but the two
+; have to be kept in step by hand, and once were not: the installer permissioned
+; "Service Officer" while the app wrote to "ServiceOfficer".
+#define MyDataDir        "Service Officer"
 
 [Setup]
 AppId={#MyAppId}

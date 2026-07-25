@@ -26,14 +26,20 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field, asdict, replace
 
-APP_DIR = os.path.join(
-    os.environ.get("ProgramData", r"C:\ProgramData"), "ServiceOfficer")
-#: where it used to live, per user; kept only to move data out of
-LEGACY_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                          "ServiceOfficer")
+_PROGRAM_DATA = os.environ.get("ProgramData", r"C:\ProgramData")
+#: Named as the product is named, spaces and all, so it sits next to the other
+#: vendors' folders and matches the Start-menu entry and the install directory.
+APP_DIR = os.path.join(_PROGRAM_DATA, "Service Officer")
+#: Where data has lived before, newest first. Each is only ever read from, and
+#: only to move data forwards — an upgrade must not be why settings vanish.
+LEGACY_DIRS = (
+    os.path.join(_PROGRAM_DATA, "ServiceOfficer"),          # v2.0.0
+    os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                 "ServiceOfficer"),                          # v1.x, per user
+)
 CONFIG_PATH = os.path.join(APP_DIR, "services.json")
 #: dropped next to the moved files so a second run doesn't try again
-MIGRATION_MARK = ".moved-from-appdata"
+MIGRATION_MARK = ".moved"
 
 CURRENT_VERSION = 2
 
@@ -675,15 +681,7 @@ def to_dict(cfg: Config) -> dict:
 MIGRATED_FILES = ("services.json", "history.jsonl", "service-officer.log")
 
 
-def migrate_from_legacy(app_dir: str = None, legacy_dir: str = None) -> list:
-    """Move a per-user install's data to the machine-wide directory, once.
-
-    Copied rather than moved, and only when the destination has nothing: an
-    upgrade must never be the reason someone's service list disappears. Returns
-    what it brought over, for the log.
-    """
-    app_dir = app_dir or APP_DIR
-    legacy_dir = legacy_dir or LEGACY_DIR
+def _migrate_one(app_dir: str, legacy_dir: str) -> list:
     if os.path.abspath(app_dir) == os.path.abspath(legacy_dir):
         return []
     if not os.path.isdir(legacy_dir):
@@ -706,6 +704,24 @@ def migrate_from_legacy(app_dir: str = None, legacy_dir: str = None) -> list:
             f.write(f"moved to {app_dir}\n")
     except OSError:
         return brought                  # partial is fine; nothing was destroyed
+    return brought
+
+
+def migrate_from_legacy(app_dir: str = None, legacy_dirs=None) -> list:
+    """Bring an older install's data forward, once, into the current directory.
+
+    Copied rather than moved, and only into names the destination doesn't already
+    have: an upgrade must never be the reason someone's service list disappears,
+    and it must never overwrite settings that are newer than what it finds.
+
+    The candidates are tried newest first, so a machine that has been through
+    both moves ends up with its most recent data. Returns what it brought, for
+    the log.
+    """
+    app_dir = app_dir or APP_DIR
+    brought = []
+    for legacy in (legacy_dirs if legacy_dirs is not None else LEGACY_DIRS):
+        brought.extend(_migrate_one(app_dir, legacy))
     return brought
 
 

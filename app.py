@@ -708,8 +708,8 @@ def main() -> int:
     brought = cfg_mod.migrate_from_legacy()
     applog.setup()
     if brought:
-        log.info("moved %s from %s to %s", ", ".join(brought),
-                 cfg_mod.LEGACY_DIR, cfg_mod.APP_DIR)
+        log.info("brought %s forward into %s", ", ".join(brought),
+                 cfg_mod.APP_DIR)
     # No manual DPI call here: Qt already opts into per-monitor v2 awareness
     # before we could, and calling SetProcessDpiAwareness afterwards just fails
     # with "access denied" and prints a warning.

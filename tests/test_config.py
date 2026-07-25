@@ -88,10 +88,14 @@ def test_backoff_schedule_and_cap():
     assert r.delay_for(20, cap_seconds=300) == 300.0
 
 
-def test_the_data_directory_is_machine_wide(tmp_path):
+def test_the_data_directory_is_machine_wide_and_named_as_the_product():
     """It describes the machine's services, so it cannot live in one profile."""
     assert "ProgramData" in cfg.APP_DIR
-    assert "AppData" in cfg.LEGACY_DIR
+    assert cfg.APP_DIR.endswith("Service Officer")
+    # Both earlier homes are still read, newest first.
+    assert any("ProgramData" in d and d.endswith("ServiceOfficer")
+               for d in cfg.LEGACY_DIRS)
+    assert any("AppData" in d for d in cfg.LEGACY_DIRS)
 
 
 def test_a_per_user_install_is_carried_over_once(tmp_path):
@@ -104,7 +108,7 @@ def test_a_per_user_install_is_carried_over_once(tmp_path):
     (legacy / "history.jsonl").write_text('{"ts": "x", "service": "AppEngine"}\n',
                                           encoding="utf-8")
 
-    brought = cfg.migrate_from_legacy(str(new), str(legacy))
+    brought = cfg.migrate_from_legacy(str(new), [str(legacy)])
     assert sorted(brought) == ["history.jsonl", "services.json"]
     assert cfg.load(str(new / "services.json")).service("AppEngine")
     # The old copy is left where it was, so a rollback still has its data.
@@ -113,7 +117,7 @@ def test_a_per_user_install_is_carried_over_once(tmp_path):
     # A second run does nothing — and so cannot overwrite newer settings.
     (new / "services.json").write_text('{"services": ["WMSServer"]}',
                                        encoding="utf-8")
-    assert cfg.migrate_from_legacy(str(new), str(legacy)) == []
+    assert cfg.migrate_from_legacy(str(new), [str(legacy)]) == []
     assert cfg.load(str(new / "services.json")).service("WMSServer")
 
 
@@ -125,8 +129,28 @@ def test_migration_never_overwrites_what_is_already_there(tmp_path):
     (legacy / "services.json").write_text('{"services": ["Old"]}', encoding="utf-8")
     (new / "services.json").write_text('{"services": ["New"]}', encoding="utf-8")
 
-    assert cfg.migrate_from_legacy(str(new), str(legacy)) == []
+    assert cfg.migrate_from_legacy(str(new), [str(legacy)]) == []
     assert cfg.load(str(new / "services.json")).service("New")
+
+
+def test_the_newest_of_several_old_homes_wins(tmp_path):
+    """A machine that has been through both moves must end up with its most
+    recent data, not whichever directory happened to be checked first."""
+    newer = tmp_path / "programdata-old"      # v2.0.0, no space
+    older = tmp_path / "appdata"              # v1.x, per user
+    target = tmp_path / "programdata-current"
+    for d in (newer, older):
+        d.mkdir()
+    (newer / "services.json").write_text('{"services": ["Recent"]}',
+                                         encoding="utf-8")
+    (older / "services.json").write_text('{"services": ["Ancient"]}',
+                                         encoding="utf-8")
+    (older / "history.jsonl").write_text("{}\n", encoding="utf-8")
+
+    brought = cfg.migrate_from_legacy(str(target), [str(newer), str(older)])
+    assert cfg.load(str(target / "services.json")).service("Recent")
+    # The older home still contributes what the newer one didn't have.
+    assert "history.jsonl" in brought
 
 
 def test_the_build_identifies_itself():

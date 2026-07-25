@@ -56,20 +56,69 @@ class Result:
 # ---------------------------------------------------------------------------
 # The individual checks
 # ---------------------------------------------------------------------------
+def _addresses(host: str, port: int) -> list:
+    """Where to try, best first.
+
+    A Windows machine name usually resolves to a link-local IPv6 address
+    (fe80::…) *before* its IPv4 one, and nothing listens there.
+    socket.create_connection walks the list in order, so every check against a
+    hostname spent two seconds failing at IPv6 before succeeding on IPv4 —
+    measured: 2.05s by name, 22ms by address. With a five-second timeout that is
+    most of the budget wasted, and on a slower service it is a false alarm.
+
+    So: link-local last, IPv4 before IPv6, and each address gets a share of the
+    time rather than the first one being allowed to eat all of it.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise OSError(f"cannot resolve {host} — {exc}") from exc
+
+    def rank(info):
+        family, _t, _p, _c, sockaddr = info
+        address = sockaddr[0]
+        link_local = address.lower().startswith("fe80:")
+        return (1 if link_local else 0, 0 if family == socket.AF_INET else 1)
+
+    seen, ordered = set(), []
+    for info in sorted(infos, key=rank):
+        if info[4][:2] not in seen:
+            seen.add(info[4][:2])
+            ordered.append(info)
+    return ordered
+
+
 def _tcp(check, machine: str) -> Result:
     host = check.host or machine or "127.0.0.1"
     try:
-        with socket.create_connection((host, check.port),
-                                      timeout=check.timeout_seconds):
-            return Result(True, f"{host}:{check.port} accepted a connection")
-    except socket.timeout:
-        return Result(False, f"{host}:{check.port} did not answer within "
-                             f"{check.timeout_seconds}s")
+        candidates = _addresses(host, check.port)
     except OSError as exc:
-        # Connection refused is the interesting one: something is listening
-        # nowhere, which for a Running service means it never opened up.
-        return Result(False, f"{host}:{check.port} — "
-                             f"{getattr(exc, 'strerror', None) or exc}")
+        return Result(False, str(exc))
+
+    deadline = time.monotonic() + check.timeout_seconds
+    last = ""
+    for index, (family, socktype, proto, _c, sockaddr) in enumerate(candidates):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        # Share what's left, so one dead address can't consume the whole budget.
+        share = max(0.5, left / (len(candidates) - index))
+        sock = socket.socket(family, socktype, proto)
+        try:
+            sock.settimeout(min(share, left))
+            sock.connect(sockaddr)
+            return Result(True, f"{host}:{check.port} accepted a connection"
+                                + (f" ({sockaddr[0]})" if sockaddr[0] != host
+                                   else ""))
+        except socket.timeout:
+            last = f"{sockaddr[0]} did not answer"
+        except OSError as exc:
+            # Connection refused is the interesting one: something is listening
+            # nowhere, which for a Running service means it never opened up.
+            last = f"{sockaddr[0]} — {getattr(exc, 'strerror', None) or exc}"
+        finally:
+            sock.close()
+    return Result(False, f"{host}:{check.port} — {last or 'no answer'}")
 
 
 def _http(check, machine: str) -> Result:
