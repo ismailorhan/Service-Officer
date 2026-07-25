@@ -25,7 +25,8 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPushButton, QScrollArea, QSpinBox,
+                               QMenu, QMessageBox, QPushButton, QScrollArea,
+                               QSpinBox,
                                QStackedWidget, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -595,25 +596,31 @@ class ServiceDetail(_Page):
             "hint", wrap=True))
         body.addSpacing(10)
 
-        # Above the list, not below it: with four checks the buttons ended up
-        # off the bottom of the tab, and "add another" is the thing you reach for
-        # while looking at the ones you already have.
+        # One button with a menu, not a combo box sitting next to a button. A
+        # combo standing there permanently reading "A port answers" looks like a
+        # description of the service rather than a chooser for something you are
+        # about to add — the control was in plain sight and still invisible.
         add_row = QHBoxLayout()
         add_row.setSpacing(6)
-        self.check_kind = QComboBox()
-        self.check_kind.addItem("A port answers", "tcp")
-        self.check_kind.addItem("A URL answers", "http")
-        self.check_kind.addItem("It has a process", "process")
-        self.check_kind.addItem("A file is being written", "file")
-        self.check_kind.addItem("A command succeeds", "command")
-        self.check_kind.setFixedWidth(220)
-        add_row.addWidget(self.check_kind)
-        add_row.addWidget(_button("Add check", None, self._add_check))
-        self.check_now_button = _button("Check now", "quiet", self._check_now)
+        # No arrow in the text: setMenu makes Qt draw its own indicator, and two
+        # arrows on one button looks like a mistake.
+        self.add_button = QPushButton("Add check")
+        self.add_button.setProperty("kind", "primary")
+        self.add_button.setCursor(Qt.PointingHandCursor)
+        self.add_menu = QMenu(self.add_button)
+        for text, kind in (("A port answers", "tcp"),
+                           ("A URL answers", "http"),
+                           ("It has a process", "process"),
+                           ("A file is being written", "file"),
+                           ("A command succeeds", "command")):
+            self.add_menu.addAction(text, lambda k=kind: self._add_check(k))
+        self.add_button.setMenu(self.add_menu)
+        add_row.addWidget(self.add_button)
+        self.check_now_button = _button("Check now", None, self._check_now)
         add_row.addWidget(self.check_now_button)
         add_row.addStretch(1)
         body.addLayout(add_row)
-        body.addSpacing(12)
+        body.addSpacing(14)
 
         self.checks_host = QWidget()
         self.checks_lay = QVBoxLayout(self.checks_host)
@@ -771,15 +778,19 @@ class ServiceDetail(_Page):
         checks = self.svc.health.checks
         if not checks:
             self.checks_lay.addWidget(_label(
-                "No checks — this service is only judged by whether Windows says "
-                "it is running.", "hint", wrap=True))
+                "No checks yet. Use Add check above — until then this service is "
+                "judged only by whether Windows says it is running.",
+                "hint", wrap=True))
+        else:
+            count = len(checks)
+            self.checks_lay.addWidget(_label(
+                f"{count} CHECK{'S' if count != 1 else ''}, ALL OF WHICH MUST PASS",
+                "section"))
         for index, check in enumerate(checks):
             self.checks_lay.addWidget(self._check_row(index, check))
         self.health_rules.setVisible(bool(checks))
         self.check_now_button.setEnabled(bool(checks))
-        self.health_note.setText(
-            "" if checks else
-            "Add a check to have this service watched for more than its status.")
+        self.health_note.setText("")
 
     def _check_row(self, index: int, check) -> QWidget:
         row = QWidget()
@@ -849,14 +860,17 @@ class ServiceDetail(_Page):
         setattr(check, attr, value)
         self.changed.emit()
 
-    def _add_check(self):
+    def _add_check(self, kind: str = "tcp"):
         if self.svc is None:
             return
-        kind = self.check_kind.currentData()
         check = cfg_mod.HealthCheck(kind=kind)
         # Sensible starting points, so the row isn't a set of empty boxes.
         if kind == "file":
             check.max_age_seconds = 300
+        elif kind == "http":
+            # This endpoint took four seconds and once eight, measured — five
+            # would have produced false alarms, so URL checks start generous.
+            check.timeout_seconds = 15
         self.svc.health.checks.append(check)
         self._rebuild_checks()
         self.changed.emit()

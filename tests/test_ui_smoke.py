@@ -911,8 +911,12 @@ def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
     assert detail.health_rules.isHidden() is True             # nothing to tune
     assert detail.check_now_button.isEnabled() is False
 
-    detail.check_kind.setCurrentIndex(detail.check_kind.findData("tcp"))
-    detail._add_check()
+    # One button with a menu; the five kinds are the menu items.
+    assert [a.text() for a in detail.add_menu.actions()] == [
+        "A port answers", "A URL answers", "It has a process",
+        "A file is being written", "A command succeeds"]
+
+    detail._add_check("tcp")
     assert [c.kind for c in svc.health.checks] == ["tcp"]
     assert detail.health_rules.isHidden() is False
     assert detail.check_now_button.isEnabled() is True
@@ -920,9 +924,11 @@ def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
     detail._set_check(svc.health.checks[0], "port", 1433)
     assert "1433" in svc.health.checks[0].describe()
 
-    detail.check_kind.setCurrentIndex(detail.check_kind.findData("http"))
-    detail._add_check()
+    detail._add_check("http")
     assert [c.kind for c in svc.health.checks] == ["tcp", "http"]
+    # A URL check starts with a generous timeout: measured 4s, once 8s, so the
+    # five-second default would have raised false alarms.
+    assert svc.health.checks[1].timeout_seconds == 15
 
     detail._remove_check(0)
     assert [c.kind for c in svc.health.checks] == ["http"]
