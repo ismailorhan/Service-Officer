@@ -178,18 +178,41 @@ class ServicePicker(QDialog):
 
 # ── pages ──────────────────────────────────────────────────────────────────
 class _Page(QWidget):
-    def __init__(self, title: str, desc: str):
+    """A page: a heading, then whatever goes in `self.root`.
+
+    scroll=True puts the body in a scroll area, leaving the heading fixed. Pages
+    made of stacked fields need it — they grow as settings are added, and content
+    that is merely clipped is content nobody knows is there. Pages built around a
+    table or a list don't: those already scroll on their own, and nesting one
+    scrolling thing inside another is horrible to use.
+    """
+
+    def __init__(self, title: str, desc: str, scroll: bool = False):
         super().__init__()
-        self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(28, 24, 28, 20)
-        self.root.setSpacing(0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 20)
+        outer.setSpacing(0)
         self.head = QVBoxLayout()
         self.head.setSpacing(4)
         self.head.addWidget(_label(title, "h2"))
         if desc:
             self.head.addWidget(_label(desc, "hint", wrap=True))
-        self.root.addLayout(self.head)
-        self.root.addSpacing(18)
+        outer.addLayout(self.head)
+        outer.addSpacing(18)
+
+        if not scroll:
+            self.root = outer
+            return
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        holder = QWidget()
+        self.root = QVBoxLayout(holder)
+        self.root.setContentsMargins(0, 0, 12, 8)      # room for the scrollbar
+        self.root.setSpacing(0)
+        area.setWidget(holder)
+        outer.addWidget(area, 1)
 
 
 class ServicesPage(QWidget):
@@ -477,9 +500,29 @@ class ServiceDetail(_Page):
         self.head.addWidget(self.title)
         self.head.addWidget(self.short)
 
-        body = QVBoxLayout()
-        body.setSpacing(0)
+        # Three tabs, named as the Windows service properties dialog names its
+        # own, because this page is the better version of that dialog and people
+        # already know where to look. One page of everything reached 1200px once
+        # health checks were on it: you had to scroll to discover that Health
+        # existed at all, which is the wrong way round.
+        self.tabs = QHBoxLayout()
+        self.tabs.setSpacing(2)
+        self.tabs.setContentsMargins(0, 0, 0, 0)
+        self.pages = QStackedWidget()
+        self._tab_buttons = {}
+        self.root.addLayout(self.tabs)
+        self.root.addSpacing(2)
+        self.root.addWidget(self._hline())
+        self.root.addSpacing(14)
+        self.root.addWidget(self.pages, 1)
 
+        general = self._tab("General")
+        recovery = self._tab("Recovery")
+        health_tab = self._tab("Health")
+        self.tabs.addStretch(1)          # tabs sit left, like a tab strip should
+        self._select_tab("General")
+
+        body = general
         body.addWidget(_label("DISPLAY", "section"))
         body.addSpacing(8)
         self.label_edit = QLineEdit()
@@ -497,8 +540,9 @@ class ServiceDetail(_Page):
         body.addWidget(_label("Groups this service under a heading in the "
                               "dashboard and the tray panel. Define the headings "
                               "on the Categories page.", "hint", wrap=True))
-        body.addSpacing(24)
+        body.addStretch(1)
 
+        body = recovery
         body.addWidget(_label("RECOVERY", "section"))
         body.addSpacing(10)
         self.keep = QCheckBox("Keep this service running")
@@ -538,9 +582,10 @@ class ServiceDetail(_Page):
             "Off by default, only crashes are recovered — a non-zero exit code. "
             "A service you stopped yourself in services.msc is left alone.",
             "hint", wrap=True))
-        body.addSpacing(26)
+        body.addStretch(1)
 
         # -- health ---------------------------------------------------------
+        body = health_tab
         body.addWidget(_label("HEALTH", "section"))
         body.addSpacing(9)
         body.addWidget(_label(
@@ -550,12 +595,9 @@ class ServiceDetail(_Page):
             "hint", wrap=True))
         body.addSpacing(10)
 
-        self.checks_host = QWidget()
-        self.checks_lay = QVBoxLayout(self.checks_host)
-        self.checks_lay.setContentsMargins(0, 0, 0, 0)
-        self.checks_lay.setSpacing(6)
-        body.addWidget(self.checks_host)
-
+        # Above the list, not below it: with four checks the buttons ended up
+        # off the bottom of the tab, and "add another" is the thing you reach for
+        # while looking at the ones you already have.
         add_row = QHBoxLayout()
         add_row.setSpacing(6)
         self.check_kind = QComboBox()
@@ -570,9 +612,15 @@ class ServiceDetail(_Page):
         self.check_now_button = _button("Check now", "quiet", self._check_now)
         add_row.addWidget(self.check_now_button)
         add_row.addStretch(1)
-        body.addSpacing(6)
         body.addLayout(add_row)
         body.addSpacing(12)
+
+        self.checks_host = QWidget()
+        self.checks_lay = QVBoxLayout(self.checks_host)
+        self.checks_lay.setContentsMargins(0, 0, 0, 0)
+        self.checks_lay.setSpacing(6)
+        body.addWidget(self.checks_host)
+        body.addSpacing(16)
 
         self.health_rules = QWidget()
         hl = QVBoxLayout(self.health_rules)
@@ -596,9 +644,50 @@ class ServiceDetail(_Page):
         body.addWidget(self.health_rules)
         self.health_note = _label("", "hint", wrap=True)
         body.addWidget(self.health_note)
-
         body.addStretch(1)
-        self.root.addLayout(body, 1)
+
+    # -- tabs --------------------------------------------------------------
+    @staticmethod
+    def _hline() -> QFrame:
+        line = QFrame()
+        line.setObjectName("hline")
+        line.setFrameShape(QFrame.HLine)
+        line.setFixedHeight(1)
+        return line
+
+    def _tab(self, name: str) -> QVBoxLayout:
+        """Add a tab and return the layout its contents go into.
+
+        Each tab scrolls on its own: three health checks are taller than the
+        window, and content that is simply clipped is content nobody knows is
+        there.
+        """
+        button = _button(name, "tab")
+        button.setCheckable(True)
+        button.clicked.connect(lambda _=False, n=name: self._select_tab(n))
+        self.tabs.addWidget(button)
+        self._tab_buttons[name] = button
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 12, 8)     # room for the scrollbar
+        layout.setSpacing(0)
+        scroll.setWidget(holder)
+        self.pages.addWidget(scroll)
+        self._tab_pages = getattr(self, "_tab_pages", {})
+        self._tab_pages[name] = scroll
+        return layout
+
+    def _select_tab(self, name: str) -> None:
+        page = getattr(self, "_tab_pages", {}).get(name)
+        if page is not None:
+            self.pages.setCurrentWidget(page)
+        for tab_name, button in self._tab_buttons.items():
+            button.setChecked(tab_name == name)
 
     def load(self, svc, categories=()):
         self.svc = None                     # suppress signals while populating
@@ -1575,7 +1664,10 @@ class TriggerDetail(_Page):
               "both", "all")
 
     def __init__(self, cfg_ref):
-        super().__init__("", "")
+        # Scrolls: When, Action, Tell me, the summary and the executions table
+        # only just fitted a 640px window, and any longer summary pushed the Run
+        # now button off the bottom.
+        super().__init__("", "", scroll=True)
         self.cfg = cfg_ref
         self.trigger = None
 
@@ -2092,7 +2184,9 @@ class GeneralPage(_Page):
     theme_changed = Signal(str)      # applied live, so you can see the choice
 
     def __init__(self, cfg_ref):
-        super().__init__("General", "How the app itself behaves.")
+        # Scrolls: appearance, startup, notifications and the about block leave
+        # only fifty pixels spare, and every setting added eats into that.
+        super().__init__("General", "How the app itself behaves.", scroll=True)
         self.cfg = cfg_ref
 
         self.root.addWidget(_label("APPEARANCE", "section"))

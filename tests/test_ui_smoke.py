@@ -906,13 +906,15 @@ def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
     detail = page.detail
     svc = win.config().service("AppEngine")
     assert svc.health.checks == []
-    assert detail.health_rules.isVisibleTo(detail) is False   # nothing to tune
+    # isHidden, not isVisibleTo: the Health tab isn't the current page, so
+    # isVisibleTo would be False whatever we did with the widget.
+    assert detail.health_rules.isHidden() is True             # nothing to tune
     assert detail.check_now_button.isEnabled() is False
 
     detail.check_kind.setCurrentIndex(detail.check_kind.findData("tcp"))
     detail._add_check()
     assert [c.kind for c in svc.health.checks] == ["tcp"]
-    assert detail.health_rules.isVisibleTo(detail) is True
+    assert detail.health_rules.isHidden() is False
     assert detail.check_now_button.isEnabled() is True
 
     detail._set_check(svc.health.checks[0], "port", 1433)
@@ -930,6 +932,39 @@ def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
     detail.h_action.setCurrentIndex(detail.h_action.findData("restart"))
     assert svc.health.failures_before_acting == 5
     assert svc.health.action == "restart"
+    win.deleteLater()
+
+
+def test_the_service_page_is_tabbed_and_every_tab_scrolls(qapp, sample):
+    """One page of everything passed 1200px once health checks were on it, and
+    content that is merely clipped is content nobody knows is there."""
+    from PySide6.QtWidgets import QScrollArea
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
+
+    assert list(detail._tab_buttons) == ["General", "Recovery", "Health"]
+    assert detail._tab_buttons["General"].isChecked() is True
+    # Every tab is a scroll area, so nothing can be cut off the bottom.
+    assert all(isinstance(p, QScrollArea) for p in detail._tab_pages.values())
+    assert all(p.widgetResizable() for p in detail._tab_pages.values())
+
+    detail._select_tab("Health")
+    assert detail.pages.currentWidget() is detail._tab_pages["Health"]
+    assert detail._tab_buttons["Health"].isChecked() is True
+    assert detail._tab_buttons["General"].isChecked() is False
+
+    # The fields still belong to the service whichever tab is showing.
+    detail._select_tab("Recovery")
+    detail.keep.setChecked(True)
+    assert win.config().service("AppEngine").recovery.enabled is True
+
+    # An unknown tab name changes nothing rather than blanking the page.
+    before = detail.pages.currentWidget()
+    detail._select_tab("Nonsense")
+    assert detail.pages.currentWidget() is before
     win.deleteLater()
 
 

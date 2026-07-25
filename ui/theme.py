@@ -251,6 +251,15 @@ def sheet() -> str:
     QPushButton[kind="kill"]:disabled {{
         border-color: {LINE}; background: transparent; color: {FG4};
     }}
+    /* A tab strip inside a page: no box, an underline when chosen. Distinct
+       from the left nav so the two levels don't read as the same control. */
+    QPushButton[kind="tab"] {{
+        border: none; border-bottom: 2px solid transparent; border-radius: 0;
+        padding: 7px 14px; color: {FG3}; background: transparent;
+        font-weight: 600;
+    }}
+    QPushButton[kind="tab"]:hover   {{ color: {FG}; }}
+    QPushButton[kind="tab"]:checked {{ color: {FG}; border-bottom-color: {RUN}; }}
     QPushButton[kind="nav"] {{
         border: none; border-left: 2px solid transparent; border-radius: 0;
         padding: 9px 16px; text-align: left; color: {FG2}; background: transparent;
