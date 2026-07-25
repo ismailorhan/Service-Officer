@@ -256,20 +256,48 @@ class ServicesPage(QWidget):
     def _add_group(self, name: str, title: str, count: int):
         item = QListWidgetItem()
         # Enabled so it can be a drop target, but neither selectable nor
-        # draggable: a heading isn't a thing you move or act on.
+        # draggable: a heading isn't a thing you move or act on. Dragging the
+        # heading itself would also be ambiguous — does it carry its services? —
+        # so the group's own order is changed with the two arrows instead.
         item.setFlags(Qt.ItemIsEnabled)
         widget = QWidget()
         widget.setObjectName("sectionBar")
         widget.setAttribute(Qt.WA_StyledBackground, True)
         row = QHBoxLayout(widget)
-        row.setContentsMargins(10, 6, 12, 6)
+        row.setContentsMargins(10, 4, 8, 4)
+        row.setSpacing(4)
         row.addWidget(_label(title.upper(), "section"), 1)
         row.addWidget(_label("empty — drag a service here" if not count
                              else f"{count}", "hint"))
+
+        cats = [c.name for c in self.cfg().categories]
+        if name in cats:
+            index = cats.index(name)
+            for glyph, delta, tip in (("▲", -1, "Move this category up"),
+                                      ("▼", 1, "Move this category down")):
+                b = _button(glyph, "quiet")
+                b.setFixedSize(22, 20)
+                b.setToolTip(tip)
+                b.setEnabled(0 <= index + delta < len(cats))
+                b.clicked.connect(lambda _=False, i=index, d=delta:
+                                  self._move_category(i, d))
+                row.addWidget(b)
+        else:
+            # "No category" has no position of its own — it follows the rest.
+            row.addSpacing(52)
+
         item.setSizeHint(widget.sizeHint())
         self.list.addItem(item)
         self.list.setItemWidget(item, widget)
         self._entries.append(("group", name))
+
+    def _move_category(self, index: int, delta: int):
+        cats = self.cfg().categories
+        target = index + delta
+        if not (0 <= index < len(cats) and 0 <= target < len(cats)):
+            return
+        cats.insert(target, cats.pop(index))
+        self._refresh_and_signal()
 
     def _add_service(self, svc):
         rec = svc.recovery
@@ -1633,6 +1661,15 @@ class HistoryPage(_Page):
         filt.addWidget(_label("Trigger", "hint"))
         filt.addWidget(self.source_filter)
 
+        self.full_detail = QCheckBox("Full detail")
+        self.full_detail.setToolTip(
+            "Every state the SCM reported, including the halfway ones. Off, a "
+            "restart reads as “restart requested” then “Running” instead of four "
+            "rows saying the same thing. Nothing is left out of the file either "
+            "way.")
+        self.full_detail.toggled.connect(self.reload)
+        filt.addWidget(self.full_detail)
+
         self.include_windows = QCheckBox("Windows event log")
         self.include_windows.setToolTip(
             "Merge what Windows recorded about these services — the SCM's "
@@ -1695,18 +1732,20 @@ class HistoryPage(_Page):
         return (self.service_filter.currentData() is not None
                 or self.range_filter.currentIndex() != self.DEFAULT_RANGE
                 or self.source_filter.currentData() is not None
-                or self.include_windows.isChecked())
+                or self.include_windows.isChecked()
+                or self.full_detail.isChecked())
 
     def _clear_filters(self):
-        for widget in (self.service_filter, self.range_filter,
-                       self.source_filter, self.include_windows):
+        widgets = (self.service_filter, self.range_filter, self.source_filter,
+                   self.include_windows, self.full_detail)
+        for widget in widgets:
             widget.blockSignals(True)
         self.service_filter.setCurrentIndex(0)
         self.range_filter.setCurrentIndex(self.DEFAULT_RANGE)
         self.source_filter.setCurrentIndex(0)
         self.include_windows.setChecked(False)
-        for widget in (self.service_filter, self.range_filter,
-                       self.source_filter, self.include_windows):
+        self.full_detail.setChecked(False)
+        for widget in widgets:
             widget.blockSignals(False)
         self.reload()
 
@@ -1761,7 +1800,8 @@ class HistoryPage(_Page):
                 service_names=names, labels=labels,
                 service=self.service_filter.currentData(),
                 hours=self.range_filter.currentData() or None,
-                include_windows=self.include_windows.isChecked())
+                include_windows=self.include_windows.isChecked(),
+                full=self.full_detail.isChecked())
         except Exception:
             return []
         wanted = self.source_filter.currentData()
@@ -1807,13 +1847,16 @@ class HistoryPage(_Page):
         self.count.setText("  ·  ".join(parts) if shown else "Nothing recorded yet.")
 
     def _export(self):
-        dest, _ = QFileDialog.getSaveFileName(self, "Export history", "history.csv",
-                                              "CSV files (*.csv)")
+        excel = "For Excel (*.csv)"
+        plain = "Plain comma-separated (*.csv)"
+        dest, chosen = QFileDialog.getSaveFileName(
+            self, "Export history", "history.csv", f"{excel};;{plain}")
         if not dest:
             return
         try:
             # Export exactly what is on screen, filters and all.
-            n = history.export_csv(dest, rows=self._current_rows())
+            n = history.export_csv(dest, rows=self._current_rows(),
+                                   for_excel=(chosen != plain))
             QMessageBox.information(self, "Service Officer",
                                     f"Exported {n} rows to\n{dest}")
         except Exception as exc:

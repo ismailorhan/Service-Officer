@@ -73,6 +73,19 @@ class Flyout(QWidget):
         self.badge = QLabel("")
         self.badge.setStyleSheet(theme.chip_style("running"))
         head.addWidget(self.badge)
+
+        # Pinned, the panel stops closing when you click elsewhere — for
+        # watching a stack come up while working in another window.
+        self.pin = QPushButton()
+        self.pin.setProperty("kind", "quiet")
+        self.pin.setCheckable(True)
+        self.pin.setFixedSize(26, 24)
+        self.pin.setIconSize(QSize(13, 13))
+        self.pin.setCursor(Qt.PointingHandCursor)
+        self.pin.toggled.connect(self._pin_toggled)
+        head.addWidget(self.pin)
+        self._paint_pin()
+
         # Drawn, not typed: the ✕ glyph came out blank in both themes because
         # the button's font had no such character.
         close = QPushButton()
@@ -174,6 +187,24 @@ class Flyout(QWidget):
         line.setFrameShape(QFrame.HLine)
         line.setFixedHeight(1)
         return line
+
+    def _paint_pin(self):
+        on = self.pin.isChecked()
+        self.pin.setIcon(icons.nav_icon("pin" if on else "unpin", 13,
+                                        theme.RUN if on else theme.FG3))
+        self.pin.setToolTip("Pinned — stays open until you close it.\n"
+                            "Click to unpin." if on else
+                            "Pin the panel open, so clicking elsewhere doesn't "
+                            "close it.")
+
+    def _pin_toggled(self, on: bool):
+        self._paint_pin()
+        if on:
+            self.raise_()
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin.isChecked()
 
     def _settings(self):
         """Hands over to the management panel — this button used to say Settings,
@@ -288,7 +319,10 @@ class Flyout(QWidget):
     # -- grouping ----------------------------------------------------------
     def _section_toggled(self, _category: str, _folded: bool) -> None:
         self._apply_collapse()
-        self._selection_changed()          # a folded tick is not a selection
+        # Folding changes which rows exist, so the height has to be measured
+        # again after Qt has laid them out — one pass reads the old numbers and
+        # left the panel the wrong size.
+        self._selection_changed(settled=False)
 
     def _apply_collapse(self) -> None:
         """Hide the rows of folded groups. Search wins: a matched row shows even
@@ -364,7 +398,7 @@ class Flyout(QWidget):
         # one place decides it. A tick you can't see is a bulk action you didn't
         # mean, and _apply_collapse drops those too.
         self._apply_collapse()
-        self._selection_changed()
+        self._selection_changed(settled=False)      # rows appeared or vanished
 
     def _resize_to_content(self, settled: bool = False) -> None:
         """Grow to fit the rows, up to what the screen allows.
@@ -447,6 +481,23 @@ class Flyout(QWidget):
         y = max(screen.top() + 4, min(y, screen.bottom() - h - MARGIN))
         return QPoint(int(x), int(y))
 
+    def resizeEvent(self, ev):
+        """Last line of defence for growing upwards.
+
+        Our own resizing goes through _apply_geometry, but Qt resizes the window
+        itself too — when a layout's minimum grows, for instance after a group is
+        expanded — and that holds the top-left corner, which pushed the footer
+        down under the taskbar. Re-anchoring here catches every case, whoever
+        caused it. Moving does not raise another resize, so this can't loop.
+        """
+        super().resizeEvent(ev)
+        if self._bottom is None or not self.isVisible():
+            return
+        screen = self.screen().availableGeometry()
+        y = max(screen.top() + 4, self._bottom - self.height())
+        if y != self.y():
+            self.move(self.x(), int(y))
+
     def event(self, ev):
         # Clicking away closes it — Qt tells us directly, no foreground polling.
         # But one of our own dialogs (the kill confirmation, an error) also
@@ -454,13 +505,15 @@ class Flyout(QWidget):
         # disorienting, so hold while a modal of ours is up.
         if ev.type() == QEvent.WindowDeactivate and self.isVisible():
             from PySide6.QtWidgets import QApplication
-            if (not self.search.text().strip()
+            if (not self.pinned and not self.search.text().strip()
                     and QApplication.activeModalWidget() is None):
                 QTimer.singleShot(0, self._hide_unless_modal)
         return super().event(ev)
 
     def _hide_unless_modal(self):
         from PySide6.QtWidgets import QApplication
+        if self.pinned:
+            return
         if QApplication.activeModalWidget() is None:
             self.hide()
 

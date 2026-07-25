@@ -86,10 +86,24 @@ def test_export_matches_what_is_on_screen(tmp_path):
     dest = str(tmp_path / "out.csv")
     assert history.export_csv(dest, rows=filtered) == 1
 
+    # Tab separated, with Excel's own sep= hint first: Excel takes the delimiter
+    # for a .csv from the Windows list separator, so a semicolon file landed in
+    # one column. The hint line is honoured in any locale.
     text = open(dest, encoding="utf-8-sig").read().splitlines()
-    assert text[0].split(";") == ["Time", "Service", "Kind", "Event", "Detail",
-                                  "Level", "Source"]
-    assert "A" in text[1] and "B" not in text[1]
+    assert text[0] == "sep=\t"
+    assert text[1].split("\t") == ["Time", "Service", "Kind", "Event", "Detail",
+                                   "Level", "Source"]
+    assert "A" in text[2] and "B" not in text[2]
+
+
+def test_plain_export_stays_parseable_by_other_tools(tmp_path):
+    p = str(tmp_path / "h.jsonl")
+    write(p, [{"ts": iso(1), "service": "A", "to": "Running", "source": st.SRC_SCM}])
+    rows = history.query(service_names=["A"], path=p)
+    dest = str(tmp_path / "plain.csv")
+    history.export_csv(dest, rows=rows, for_excel=False)
+    text = open(dest, encoding="utf-8-sig").read().splitlines()
+    assert text[0].split(",")[:2] == ["Time", "Service"]     # no hint line
 
 
 def test_windows_events_are_merged_when_asked_for(tmp_path, monkeypatch):

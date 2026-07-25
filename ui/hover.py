@@ -9,6 +9,7 @@ is `WA_ShowWithoutActivating` plus a `Qt.ToolTip` window, rather than the
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from core import state as st
@@ -53,6 +54,14 @@ class HoverCard(QWidget):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._show_now)
 
+        # One rule decides when it goes away: the pointer is over neither the
+        # tray icon nor this card. Relying on leaveEvent only worked when the
+        # pointer happened to cross the card — moving off the icon sideways
+        # along the taskbar left the card up indefinitely.
+        self._watch = QTimer(self)
+        self._watch.setInterval(150)
+        self._watch.timeout.connect(self._check_pointer)
+
     # -- API ---------------------------------------------------------------
     def request(self, icon_rect=None) -> None:
         """Pointer is over the tray icon; show after it rests a moment."""
@@ -65,7 +74,21 @@ class HoverCard(QWidget):
 
     def dismiss(self) -> None:
         self._timer.stop()
+        self._watch.stop()
         self.hide()
+
+    #: where the pointer is; replaceable so a test needn't move the real one
+    cursor_pos = staticmethod(QCursor.pos)
+
+    def pointer_is_near(self) -> bool:
+        """Over the tray icon, or over the card itself."""
+        where = self.cursor_pos()
+        if self._rect is not None and not self._rect.isNull():
+            # The icon rect is a few pixels tall; a little slack stops the card
+            # flickering off when the pointer sits on its edge.
+            if self._rect.adjusted(-4, -4, 4, 4).contains(where):
+                return True
+        return self.isVisible() and self.geometry().contains(where)
 
     def refresh(self) -> None:
         if self.isVisible():
@@ -74,11 +97,19 @@ class HoverCard(QWidget):
             self.move(self._anchor())
 
     # -- internals ---------------------------------------------------------
+    def _check_pointer(self) -> None:
+        if not self.isVisible():
+            self._watch.stop()
+            return
+        if not self.pointer_is_near():
+            self.dismiss()
+
     def _show_now(self) -> None:
         self._render()
         self.adjustSize()
         self.move(self._anchor())
         self.show()
+        self._watch.start()
 
     def _render(self) -> None:
         while self._rows.count():
@@ -131,5 +162,8 @@ class HoverCard(QWidget):
         return QPoint(int(x), int(y))
 
     def leaveEvent(self, ev):
-        self.hide()
+        # The poll is what decides; this just makes leaving the card immediate
+        # rather than waiting out a tick.
+        if not self.pointer_is_near():
+            self.dismiss()
         super().leaveEvent(ev)

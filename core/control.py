@@ -158,6 +158,24 @@ def kill_process(service_name: str, machine: str = "") -> int:
     return pid
 
 
+#: Windows refusing because the service is already where you asked it to be.
+#: Not failures — there was nothing to do. 1056 ERROR_SERVICE_ALREADY_RUNNING,
+#: 1062 ERROR_SERVICE_NOT_ACTIVE, 1058 ERROR_SERVICE_DISABLED.
+NOTHING_TO_DO = {1056: "it is already running",
+                 1062: "it is already stopped",
+                 1058: "it is disabled in Windows"}
+
+
+def nothing_to_do(exc) -> str:
+    """A plain reason if this exception only means "no change needed", else "".
+
+    Stopping a stopped service raises "The service has not been started", which
+    is not a problem and must not be reported as one.
+    """
+    code = getattr(exc, "winerror", None)
+    return NOTHING_TO_DO.get(code, "")
+
+
 def host_name() -> str:
     """This computer's name as Windows knows it, so the local machine can be
     named rather than called "this computer"."""

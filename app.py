@@ -240,7 +240,13 @@ class Application(QObject):
                     self.store.expect_stop(name, machine)
                 getattr(control, f"{action}_service")(name, machine=machine)
             except Exception as exc:
-                error = getattr(exc, "strerror", None) or str(exc)
+                # "The service has not been started" when stopping something
+                # already stopped is not a failure, so it isn't reported as one.
+                harmless = control.nothing_to_do(exc)
+                if harmless:
+                    log.info("%s %s: nothing to do, %s", action, name, harmless)
+                else:
+                    error = getattr(exc, "strerror", None) or str(exc)
                 self.store.clear_expected(name, machine)
             finally:
                 self.action_signals.done.emit(name, machine, action, error,
@@ -278,26 +284,31 @@ class Application(QObject):
 
         Asked once for the whole batch, not per service, and reported once at the
         end: a dialog per failure is what made the old per-row loop unusable.
-        Services that can't take the action are named up front rather than
-        failing one by one — a disabled service will never start, and a process
-        on another machine isn't ours to terminate.
+        Services that can't take the action, or don't need it, are set aside up
+        front rather than failing one by one — stopping a stopped service is not a
+        problem worth a warning, it is nothing to do.
         """
         chosen = [(n, m or "") for n, m in targets]
         skipped = []
-        if action == "start":
-            for name, machine in list(chosen):
-                if self.store.is_disabled(name, machine):
-                    chosen.remove((name, machine))
-                    skipped.append(f"{name} — disabled in Windows")
-        if action == "kill":
-            for name, machine in list(chosen):
-                if machine:
-                    chosen.remove((name, machine))
-                    skipped.append(f"{name} — on {machine}, not this computer")
+        #: what each action is trying to achieve, so a service already there can
+        #: be left alone. Restart has no such state — it always does something.
+        settled = {"start": st.RUNNING, "stop": st.STOPPED, "kill": st.STOPPED}
+        for name, machine in list(chosen):
+            reason = None
+            if action == "start" and self.store.is_disabled(name, machine):
+                reason = "disabled in Windows"
+            elif action == "kill" and machine:
+                reason = f"on {machine}, not this computer"
+            elif self.store.status_of(name, machine) == settled.get(action):
+                reason = f"already {settled[action].lower()}"
+            if reason:
+                chosen.remove((name, machine))
+                skipped.append(f"{name} — {reason}")
 
         if not chosen:
-            QMessageBox.information(None, "Service Officer",
-                                   "Nothing to do:\n\n" + "\n".join(skipped))
+            # Nothing failed; there was simply nothing left to do.
+            log.info("bulk %s: nothing to do (%s)", action, "; ".join(skipped))
+            self.refresh()
             return
 
         verb = {"start": "Start", "stop": "Stop", "restart": "Restart",
@@ -305,13 +316,16 @@ class Application(QObject):
         lines = "\n".join(f"  ·  {n}" for n, _m in chosen[:12])
         if len(chosen) > 12:
             lines += f"\n  ·  … and {len(chosen) - 12} more"
-        question = f"{verb} these {len(chosen)} services?\n\n{lines}"
+        subject = ("this service" if len(chosen) == 1
+                   else f"these {len(chosen)} services")
+        question = f"{verb} {subject}?\n\n{lines}"
         if action == "kill":
             question += ("\n\nEach is killed outright, with no chance to shut "
                          "down cleanly.")
         if skipped:
             question += "\n\nSkipping:\n" + "\n".join(f"  ·  {s}" for s in skipped)
-        if QMessageBox.question(None, f"{verb} {len(chosen)} services", question,
+        title = f"{verb} {len(chosen)} service{'s' if len(chosen) != 1 else ''}"
+        if QMessageBox.question(None, title, question,
                                QMessageBox.Yes | QMessageBox.No,
                                QMessageBox.No) != QMessageBox.Yes:
             return
@@ -332,10 +346,15 @@ class Application(QObject):
             self.store.expect_stop(name, machine)
             if self.cfg.history.enabled:
                 history.record_action(name, "kill", st.SRC_PANEL, machine=machine)
-            control.kill_process(name, machine)
+            if not control.process_id(name, machine):
+                # Nothing running to kill — that is the desired end state anyway.
+                log.info("kill %s: no process to kill", name)
+            else:
+                control.kill_process(name, machine)
         except Exception as exc:
             self.store.clear_expected(name, machine)
-            error = getattr(exc, "strerror", None) or str(exc)
+            if not control.nothing_to_do(exc):
+                error = getattr(exc, "strerror", None) or str(exc)
         self._bulk_report(name, error)
         try:
             self.store.update(name, control.query_status(name, machine),
@@ -536,8 +555,10 @@ class Application(QObject):
         icons.clear_cache()
 
         was_visible = self.flyout.isVisible()
+        was_pinned = self.flyout.pinned
         self.flyout.deleteLater()
         self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store)
+        self.flyout.pin.setChecked(was_pinned)     # a repaint isn't an unpin
         self._wire_flyout()
         if was_visible:
             self.flyout.popup(self.tray.geometry())

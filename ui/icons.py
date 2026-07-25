@@ -191,6 +191,15 @@ def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:
         p.drawLine(QPointF(s * 0.33, s * 0.14), QPointF(s * 0.33, s * 0.28))
         p.drawLine(QPointF(s * 0.67, s * 0.14), QPointF(s * 0.67, s * 0.28))
         p.drawEllipse(QRectF(s * 0.44, s * 0.56, s * 0.12, s * 0.12))
+    elif kind in ("pin", "unpin"):               # a drawing pin, head and point
+        # Pinned stands upright; unpinned leans, which reads as "not stuck down"
+        # without needing a second colour to tell them apart.
+        if kind == "pin":
+            p.drawEllipse(QRectF(s * 0.34, s * 0.14, s * 0.32, s * 0.32))
+            p.drawLine(QPointF(s * 0.5, s * 0.46), QPointF(s * 0.5, s * 0.86))
+        else:
+            p.drawEllipse(QRectF(s * 0.44, s * 0.14, s * 0.3, s * 0.3))
+            p.drawLine(QPointF(s * 0.52, s * 0.44), QPointF(s * 0.28, s * 0.82))
     elif kind == "dashboard":                    # four panes
         p.drawRect(QRectF(s * 0.14, s * 0.14, s * 0.31, s * 0.31))
         p.drawRect(QRectF(s * 0.55, s * 0.14, s * 0.31, s * 0.31))

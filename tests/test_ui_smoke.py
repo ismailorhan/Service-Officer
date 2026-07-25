@@ -768,6 +768,136 @@ def test_services_page_names_the_machine_on_the_row(qapp, sample):
     win.deleteLater()
 
 
+def test_the_hover_card_goes_away_in_every_direction(qapp, sample):
+    """It used to hide only when the pointer happened to cross the card, so
+    leaving the icon sideways along the taskbar left it up indefinitely. One rule
+    now: over the icon, or over the card, or gone."""
+    from PySide6.QtCore import QPoint, QRect
+    card = hover_mod.HoverCard(lambda: sample, st.Store())
+    icon = QRect(1400, 1050, 24, 24)
+    card._rect = icon
+    card._show_now()
+    qapp.processEvents()
+    assert card.isVisible() is True
+    assert card._watch.isActive() is True          # the poll is what decides
+
+    where = [icon.center()]                        # no need to move the real one
+    card.cursor_pos = lambda: where[0]
+
+    assert card.pointer_is_near() is True          # on the icon
+    where[0] = card.geometry().center()
+    assert card.pointer_is_near() is True          # on the card
+
+    # Sideways along the taskbar: the direction that used to leave it up.
+    where[0] = QPoint(icon.left() - 300, icon.center().y())
+    assert card.pointer_is_near() is False
+    card._check_pointer()
+    assert card.isVisible() is False
+    assert card._watch.isActive() is False
+
+    # Straight up, off the top of the icon.
+    card._show_now()
+    where[0] = QPoint(icon.center().x(), icon.top() - 400)
+    card._check_pointer()
+    assert card.isVisible() is False
+    card.deleteLater()
+
+
+def test_pinning_keeps_the_panel_open_when_focus_goes_elsewhere(qapp, sample):
+    from PySide6.QtCore import QEvent
+    fly = flyout_mod.Flyout(lambda: sample, st.Store())
+    fly.popup()
+    qapp.processEvents()
+    assert fly.pinned is False
+
+    fly.pin.setChecked(True)
+    assert fly.pinned is True
+    fly._hide_unless_modal()                       # what deactivation triggers
+    assert fly.isVisible() is True                 # pinned: it stays
+
+    fly.pin.setChecked(False)
+    fly._hide_unless_modal()
+    assert fly.isVisible() is False
+    fly.deleteLater()
+
+
+def test_the_panel_only_ever_grows_upwards(qapp, sample):
+    """It is anchored to the tray icon at the bottom of the screen, so a taller
+    panel must open into empty screen — never push its own footer downwards."""
+    from ui import rows as rows_mod
+    rows_mod.collapsed.clear()
+    sample.categories = [cfg_mod.Category(name="SAP")]
+    sample.service("AppEngine").category = "SAP"
+    fly = flyout_mod.Flyout(lambda: sample, st.Store())
+    fly.popup()
+    qapp.processEvents()
+    bottom = fly.y() + fly.height()
+
+    for _ in range(2):                             # fold, then unfold again
+        fly._sections[0].mousePressEvent(_click())
+        for _ in range(4):
+            qapp.processEvents()
+        assert fly.y() + fly.height() == bottom, "bottom edge moved"
+
+    # And a resize from anywhere else is re-anchored too.
+    fly.resize(fly.width(), fly.height() + 60)
+    qapp.processEvents()
+    assert fly.y() + fly.height() == bottom
+    rows_mod.collapsed.clear()
+    fly.deleteLater()
+
+
+def test_history_hides_halfway_states_until_full_detail(qapp, sample, tmp_path):
+    """A restart writing Stopping, Stopped, Starting, Running is four rows saying
+    one thing."""
+    import json
+    from core import history
+    path = tmp_path / "h.jsonl"
+    rows = [
+        {"ts": "2026-07-25T18:03:48+03:00", "service": "AppEngine",
+         "action": "restart", "source": "panel"},
+        {"ts": "2026-07-25T18:03:49+03:00", "service": "AppEngine",
+         "to": "Stopping", "from": "Running", "source": "scm"},
+        {"ts": "2026-07-25T18:03:50+03:00", "service": "AppEngine",
+         "to": "Starting", "from": "Stopped", "source": "scm"},
+        {"ts": "2026-07-25T18:03:54+03:00", "service": "AppEngine",
+         "to": "Running", "from": "Starting", "source": "scm"},
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+
+    basic = history.query(service_names=["AppEngine"], path=str(path))
+    assert [r["event"] for r in basic] == ["Running", "restart requested"]
+
+    full = history.query(service_names=["AppEngine"], path=str(path), full=True)
+    assert len(full) == 4                          # nothing was lost from the file
+
+    # A crash mid-transition still shows, since the exit code is the point.
+    rows.append({"ts": "2026-07-25T18:04:00+03:00", "service": "AppEngine",
+                 "to": "Stopping", "exit_code": 1067, "source": "scm"})
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    kept = history.query(service_names=["AppEngine"], path=str(path))
+    assert any(r["level"] == "Error" for r in kept)
+
+
+def test_categories_can_be_reordered_from_the_services_page(qapp, sample):
+    sample.categories = [cfg_mod.Category(name="SAP"),
+                         cfg_mod.Category(name="SQL")]
+    sample.service("AppEngine").category = "SAP"
+    sample.service("WMSServer").category = "SQL"
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    assert [c.name for c in win.config().categories] == ["SAP", "SQL"]
+
+    page._move_category(1, -1)                     # SQL up
+    assert [c.name for c in win.config().categories] == ["SQL", "SAP"]
+    order = [v for k, v in page._entries if k == "group"]
+    assert order[:2] == ["SQL", "SAP"]             # the list followed
+
+    page._move_category(0, -1)                     # already first: no move
+    assert [c.name for c in win.config().categories] == ["SQL", "SAP"]
+    win.deleteLater()
+
+
 def test_panel_opens_on_a_named_section(qapp, sample):
     win = panel_mod.MainPanel(sample)
     assert win.go_to("history") is True

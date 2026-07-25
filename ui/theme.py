@@ -217,12 +217,16 @@ def sheet() -> str:
         min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
         background: {BG_RAISE};
     }}
+    /* Only the glyph is red. A red border as well made every running service
+       look like it was in trouble, when the button is just an option. */
     QPushButton[kind="kill"] {{
-        border: 1px solid {STOP}; border-radius: 5px; padding: 2px;
+        border: 1px solid {LINE2}; border-radius: 5px; padding: 2px;
         min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
-        background: {STOP_DIM}; color: {STOP_FG}; font-weight: 600;
+        background: {BG_RAISE}; color: {STOP}; font-weight: 700;
     }}
-    QPushButton[kind="kill"]:hover {{ background: {STOP}; color: #ffffff; }}
+    QPushButton[kind="kill"]:hover {{
+        background: {STOP}; color: #ffffff; border-color: {STOP};
+    }}
     /* Same red, but a button with a word in it — "kill" is pinned to 26px
        because in a service row it holds a single glyph. */
     QPushButton[kind="destructive"] {{

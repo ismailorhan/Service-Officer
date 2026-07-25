@@ -102,6 +102,23 @@ def test_store_tracks_start_type(tmp_path):
     assert store.is_disabled("AppEngine") is False
 
 
+def test_windows_refusing_a_no_op_is_not_a_failure():
+    """Stopping a stopped service raises "The service has not been started".
+    Reporting that as an error is what made a bulk stop pop a warning about a
+    service that was already where it was asked to be."""
+    from core import control
+
+    class Refusal(Exception):
+        def __init__(self, code):
+            self.winerror = code
+
+    assert control.nothing_to_do(Refusal(1062)) == "it is already stopped"
+    assert control.nothing_to_do(Refusal(1056)) == "it is already running"
+    assert control.nothing_to_do(Refusal(1058)) == "it is disabled in Windows"
+    assert control.nothing_to_do(Refusal(5)) == ""          # access denied is real
+    assert control.nothing_to_do(RuntimeError("boom")) == ""
+
+
 def test_reading_a_real_start_type():
     """Against the live SCM: a well-known service reports a sensible type."""
     from core import control

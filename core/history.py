@@ -210,14 +210,24 @@ def _within(ts: str, since) -> bool:
         return True
 
 
+#: Transitional states. Every one is written to the log, but a restart producing
+#: "Stopping", "Stopped", "Starting", "Running" is four rows saying one thing, so
+#: the halfway states are held back unless full detail is asked for.
+PENDING_STATES = ("Starting", "Stopping", "Resuming", "Pausing")
+
+
 def query(service_names=None, labels=None, service: str = None, hours: int = None,
           include_windows: bool = False, windows_levels=None, limit: int = 800,
-          path: str = None) -> list:
+          path: str = None, full: bool = False) -> list:
     """One timeline, newest first, in a shape a table can render directly.
 
     Merges three kinds of row: what we asked for (action), what the SCM told us
     (state), and what Windows logged about the service (windows) — so "it
     stopped" sits next to "terminated unexpectedly, .NET exception".
+
+    full=False leaves out the halfway states, so a restart reads as "restart
+    requested" then "Running" instead of four rows. Nothing is dropped from the
+    file — this only decides what is worth looking at.
     """
     since = None
     if hours:
@@ -257,6 +267,9 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
                          "source": SOURCE_TEXT.get(rec.get("source", ""),
                                                    rec.get("source", ""))})
         else:
+            to = rec.get("to", "")
+            if not full and to in PENDING_STATES and not rec.get("exit_code"):
+                continue          # halfway there says nothing on its own
             detail = []
             if rec.get("from"):
                 detail.append(f"was {rec['from']}")
@@ -265,7 +278,7 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
             if rec.get("note"):
                 detail.append(rec["note"])
             level = "Error" if rec.get("exit_code") else ""
-            rows.append({**common, "kind": "state", "event": rec.get("to", ""),
+            rows.append({**common, "kind": "state", "event": to,
                          "detail": " · ".join(detail), "level": level,
                          "source": SOURCE_TEXT.get(rec.get("source", ""),
                                                    rec.get("source", ""))})
@@ -290,14 +303,26 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
     return rows[:limit]
 
 
-def export_csv(dest: str, rows=None, path: str = None, service: str = None) -> int:
-    """Write a timeline to CSV for a ticket. Pass the rows you are looking at so
-    the file matches the filters on screen; otherwise everything is exported."""
+def export_csv(dest: str, rows=None, path: str = None, service: str = None,
+               for_excel: bool = True) -> int:
+    """Write a timeline out for a ticket. Pass the rows you are looking at so the
+    file matches the filters on screen; otherwise everything is exported.
+
+    Excel doesn't read the delimiter from the file — for a .csv it uses whatever
+    the Windows list separator happens to be, which is why a semicolon file
+    arrived as one fat column. Two things fix that for good: tabs, and Excel's own
+    `sep=` first line, which it honours in any locale. Pass for_excel=False for a
+    plain comma file that other tools will parse.
+    """
     import csv
     if rows is None:
         rows = query(service=service, path=path)
+    delimiter = "\t" if for_excel else ","
+    # utf-8-sig: without the BOM, Excel reads a Turkish name as mojibake.
     with open(dest, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f, delimiter=";")
+        if for_excel:
+            f.write(f"sep={delimiter}\n")
+        w = csv.writer(f, delimiter=delimiter)
         w.writerow(["Time", "Service", "Kind", "Event", "Detail", "Level", "Source"])
         for r in rows:
             w.writerow([r.get("ts", ""), r.get("label") or r.get("service", ""),

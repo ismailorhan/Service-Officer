@@ -111,5 +111,6 @@ def test_filter_by_service_and_csv_export(tmp_path):
 
     dest = str(tmp_path / "out.csv")
     assert history.export_csv(dest, path=p) == 2
-    text = open(dest, encoding="utf-8-sig").read()
-    assert "Service" in text.splitlines()[0] and "A" in text
+    lines = open(dest, encoding="utf-8-sig").read().splitlines()
+    assert lines[0] == "sep=\t"                  # so Excel splits the columns
+    assert "Service" in lines[1] and any("A" in line for line in lines[2:])
