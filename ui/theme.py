@@ -223,6 +223,13 @@ def sheet() -> str:
         background: {STOP_DIM}; color: {STOP_FG}; font-weight: 600;
     }}
     QPushButton[kind="kill"]:hover {{ background: {STOP}; color: #ffffff; }}
+    /* Same red, but a button with a word in it — "kill" is pinned to 26px
+       because in a service row it holds a single glyph. */
+    QPushButton[kind="destructive"] {{
+        border: 1px solid {STOP}; background: {STOP_DIM}; color: {STOP_FG};
+        font-weight: 600;
+    }}
+    QPushButton[kind="destructive"]:hover {{ background: {STOP}; color: #ffffff; }}
     QPushButton[kind="kill"]:disabled {{
         border-color: {LINE}; background: transparent; color: {FG4};
     }}
@@ -319,4 +326,8 @@ def sheet() -> str:
     #hline {{ background: {LINE}; border: none; }}
     #flyoutTitle {{ color: {FG}; font-size: 11.5pt; font-weight: 600; }}
     #sectionBar {{ background: {BG_SIDE}; }}
+    /* The bulk bar carries the same controls as the footer, so its background is
+       the only thing saying it acts on a selection rather than on everything. */
+    #bulkBar {{ background: {RUN_DIM}; }}
+    #bulkBar QLabel {{ color: {RUN_FG}; }}
     """

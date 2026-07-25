@@ -16,146 +16,12 @@ from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
 
 from core import state as st
 from . import icons, theme
+from .rows import BulkBar, SectionBar, ServiceRow, StackRow, is_collapsed
 
 WIDTH = 466
 ROW_MIN = 3          # keep a comfortable minimum even with one service
 MARGIN = 12
 
-
-class _Row(QWidget):
-    """One service: tick box, name, short name, status chip, Start/Stop/Restart."""
-
-    act = Signal(str, str, str)      # action, service, machine
-    picked = Signal()                # the tick box changed
-
-    def __init__(self, service, parent=None):
-        super().__init__(parent)
-        self.service = service
-        self.status = st.UNKNOWN
-        self.disabled = False
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setObjectName("row")
-        self.setStyleSheet(f"#row:hover {{ background: {theme.BG_HOVER}; }}")
-
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 8, 14, 8)
-        lay.setSpacing(10)
-
-        # Ticking rows is how a whole SAP stack gets stopped without clicking
-        # five separate buttons and hoping the order held.
-        self.tick = QCheckBox()
-        self.tick.setToolTip("Include in a bulk action")
-        self.tick.toggled.connect(lambda _on: self.picked.emit())
-        lay.addWidget(self.tick)
-
-        who = QVBoxLayout()
-        who.setSpacing(1)
-        self.name = QLabel(service.display())
-        self.name.setProperty("role", "strong")
-        self.short = QLabel(service.name)
-        self.short.setProperty("role", "mono")
-        who.addWidget(self.name)
-        who.addWidget(self.short)
-        lay.addLayout(who, 1)
-
-        self.chip = QLabel("…")
-        self.chip.setAlignment(Qt.AlignCenter)
-        self.chip.setMinimumWidth(74)
-        self.chip.setStyleSheet(theme.chip_style("none"))
-        lay.addWidget(self.chip)
-
-        self.buttons = {}
-        for action, glyph, tip in (("start", "▶", "Start"),
-                                   ("stop", "■", "Stop"),
-                                   ("restart", "↻", "Restart")):
-            b = QPushButton(glyph)
-            b.setProperty("kind", "action")
-            b.setToolTip(tip)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setEnabled(False)
-            b.clicked.connect(lambda _=False, a=action: self.act.emit(
-                a, self.service.name, self.service.machine))
-            self.buttons[action] = b
-            lay.addWidget(b)
-
-        # Last resort, kept visually apart and in red: when a service wedges,
-        # Stop does nothing and the SCM reports "Stopping" for ever.
-        kill = QPushButton("✕")
-        kill.setProperty("kind", "kill")
-        kill.setToolTip("Kill the process — for when Stop doesn't work")
-        kill.setCursor(Qt.PointingHandCursor)
-        kill.setEnabled(False)
-        kill.clicked.connect(lambda: self.act.emit(
-            "kill", self.service.name, self.service.machine))
-        self.buttons["kill"] = kill
-        lay.addSpacing(6)
-        lay.addWidget(kill)
-
-    def set_status(self, status: str, busy_label: str = "",
-                   disabled: bool = False) -> None:
-        self.status = status
-        self.disabled = disabled
-        cat = st.category(status)
-        # A disabled service can't be started at all, so say so instead of
-        # showing "Stopped" next to a Start button that would only fail.
-        if disabled and cat == "stopped":
-            self.chip.setText(busy_label or "Disabled")
-            self.chip.setStyleSheet(theme.chip_style("none"))
-            for action, b in self.buttons.items():
-                b.setEnabled(False)
-            self.setToolTip("This service is disabled in Windows — enable it in "
-                            "services.msc before it can start.")
-            return
-        self.setToolTip("")
-        self.chip.setText(busy_label or status)
-        self.chip.setStyleSheet(theme.chip_style("pending" if busy_label else cat))
-        # Kill stays available while anything is running or stuck mid-transition —
-        # that stuck case is exactly what it is for — but never for a remote
-        # service, where terminating a process isn't something we can do.
-        local = not self.service.machine
-        allowed = {
-            "running": {"start": False, "stop": True, "restart": True, "kill": local},
-            "stopped": {"start": True, "stop": False, "restart": True, "kill": False},
-            "paused":  {"start": False, "stop": True, "restart": True, "kill": local},
-            "pending": {"start": False, "stop": False, "restart": False, "kill": local},
-        }.get(cat, {"start": False, "stop": False, "restart": False, "kill": False})
-        for action, b in self.buttons.items():
-            enabled = bool(allowed.get(action))
-            if action != "kill":
-                enabled = enabled and not busy_label
-            b.setEnabled(enabled)
-
-
-class _StackRow(QWidget):
-    """One stack: name, what it will do, and the button that runs it."""
-
-    run = Signal(str)
-
-    def __init__(self, stack, services, parent=None):
-        super().__init__(parent)
-        self.setObjectName("row")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 8, 14, 8)
-        lay.setSpacing(10)
-
-        col = QVBoxLayout()
-        col.setSpacing(1)
-        name = QLabel(stack.name)
-        name.setProperty("role", "strong")
-        steps = QLabel(stack.summary(services) or "no steps yet")
-        steps.setProperty("role", "hint")
-        col.addWidget(name)
-        col.addWidget(steps)
-        lay.addLayout(col, 1)
-
-        trigger = QPushButton("▶  Run")
-        trigger.setProperty("kind", "primary")
-        trigger.setCursor(Qt.PointingHandCursor)
-        trigger.setEnabled(bool(stack.steps))
-        trigger.setToolTip(stack.describe(services) or "Add steps in Settings")
-        trigger.clicked.connect(lambda: self.run.emit(stack.name))
-        lay.addWidget(trigger)
 
 
 class Flyout(QWidget):
@@ -176,6 +42,8 @@ class Flyout(QWidget):
         self._rows: dict = {}
         self._stack_widgets: list = []
         self._signature = None
+        #: screen y of the bottom edge while shown, so the panel grows upwards
+        self._bottom = None
         self.setFixedWidth(WIDTH)
         self._build()
 
@@ -259,40 +127,6 @@ class Flyout(QWidget):
                 cl.addWidget(lb, 1)
         root.addWidget(cols)
 
-        # bulk actions — hidden until something is ticked, so the panel stays
-        # as quiet as it was for the one-service-at-a-time case
-        self.bulk = QWidget()
-        self.bulk.setObjectName("sectionBar")
-        self.bulk.setAttribute(Qt.WA_StyledBackground, True)
-        bk = QHBoxLayout(self.bulk)
-        bk.setContentsMargins(14, 6, 10, 6)
-        bk.setSpacing(5)
-        self.bulk_count = QLabel("")
-        self.bulk_count.setProperty("role", "strong")
-        bk.addWidget(self.bulk_count)
-        bk.addStretch(1)
-        # Words without glyphs: the panel is 466px wide, and with glyphs the row
-        # pushed Kill off the edge — the one button that must not be ambiguous.
-        for text, action, kind in (("Start", "start", None),
-                                   ("Stop", "stop", None),
-                                   ("Restart", "restart", None),
-                                   ("Kill", "kill", "kill")):
-            b = QPushButton(text)
-            if kind:
-                b.setProperty("kind", kind)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setToolTip(f"{text} every selected service")
-            b.clicked.connect(lambda _=False, a=action: self._bulk(a))
-            bk.addWidget(b)
-        clear = QPushButton("Clear")
-        clear.setProperty("kind", "quiet")
-        clear.setCursor(Qt.PointingHandCursor)
-        clear.setToolTip("Unselect everything")
-        clear.clicked.connect(lambda: self._set_all(False))
-        bk.addWidget(clear)
-        self.bulk.setVisible(False)
-        root.addWidget(self.bulk)
-
         # list
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -304,6 +138,15 @@ class Flyout(QWidget):
         self.list_lay.addStretch(1)
         self.scroll.setWidget(self.list)
         root.addWidget(self.scroll, 1)
+
+        # Bulk actions sit above the footer and match it — same margins, equal
+        # widths — so they read as controls rather than a toolbar wedged into the
+        # list. The row's own background is what says it isn't one of the rows.
+        self.bulk = BulkBar()
+        self.bulk.chosen.connect(self._bulk)
+        self.bulk.cleared.connect(lambda: self._set_all(False))
+        root.addWidget(self._hline())
+        root.addWidget(self.bulk)
 
         # footer
         foot = QWidget()
@@ -339,13 +182,15 @@ class Flyout(QWidget):
         """(Re)create the rows: services on top, stacks underneath."""
         cfg = self._config()
         shown_stacks = [s for s in cfg.stacks if s.show_in_flyout]
-        signature = ([(s.machine, s.name, s.display()) for s in cfg.services],
+        signature = ([(s.machine, s.name, s.display(), s.category)
+                      for s in cfg.services],
+                     [c.name for c in cfg.categories],
                      [(s.name, s.summary(cfg.services)) for s in shown_stacks])
         if signature == self._signature:
             return
         self._signature = signature
 
-        for row in self._rows.values():
+        for row in list(self._rows.values()) + getattr(self, "_sections", []):
             row.setParent(None)
             row.deleteLater()
         self._rows.clear()
@@ -357,12 +202,27 @@ class Flyout(QWidget):
         def add(widget):
             self.list_lay.insertWidget(self.list_lay.count() - 1, widget)
 
-        for svc in cfg.services:
-            row = _Row(svc)
-            row.act.connect(self.action_requested)
-            row.picked.connect(self._selection_changed)
-            self._rows[svc.key] = row
-            add(row)
+        # Grouped by category, with a heading only when there is more than one
+        # group: a single "No category" bar above every service says nothing.
+        groups = cfg.grouped_services()
+        self._sections = []
+        show_headings = len(groups) > 1 or bool(cfg.categories)
+        for name, title, members in groups:
+            if show_headings:
+                bar = SectionBar(name, title, len(members),
+                                 sum(1 for s in members
+                                     if self._store.status_of(s.name, s.machine)
+                                     == st.RUNNING))
+                bar.toggled.connect(self._section_toggled)
+                self._sections.append(bar)
+                add(bar)
+            for svc in members:
+                row = ServiceRow(svc)
+                row.act.connect(self.action_requested)
+                row.picked.connect(self._selection_changed)
+                row.category = name
+                self._rows[svc.key] = row
+                add(row)
 
         if not cfg.services:
             empty = QLabel("No services configured.\nAdd some from Settings.")
@@ -388,11 +248,12 @@ class Flyout(QWidget):
             add(bar)
 
             for stack in shown_stacks:
-                row = _StackRow(stack, cfg.services)
+                row = StackRow(stack, cfg.services)
                 row.run.connect(self.run_stack)
                 self._stack_widgets.append(row)
                 add(row)
 
+        self._apply_collapse()
         self._resize_to_content()
         self.apply_states()
 
@@ -401,7 +262,7 @@ class Flyout(QWidget):
         running = 0
         for svc in cfg.services:
             row = self._rows.get(svc.key)
-            if not isinstance(row, _Row):
+            if not isinstance(row, ServiceRow):
                 continue
             status = self._store.status_of(svc.name, svc.machine)
             row.set_status(status,
@@ -420,12 +281,33 @@ class Flyout(QWidget):
             parts.append(f"{other} other")
         self.summary.setText("  ·  ".join(parts))
 
+    # -- grouping ----------------------------------------------------------
+    def _section_toggled(self, _category: str, _folded: bool) -> None:
+        self._apply_collapse()
+        self._selection_changed()          # a folded tick is not a selection
+
+    def _apply_collapse(self) -> None:
+        """Hide the rows of folded groups. Search wins: a matched row shows even
+        if its group is shut, otherwise searching looks broken."""
+        query = (self.search.text() or "").strip().lower()
+        for row in self._rows.values():
+            if not isinstance(row, ServiceRow):
+                continue
+            matches = (query in row.service.display().lower()
+                       or query in row.service.name.lower())
+            folded = is_collapsed(getattr(row, "category", ""))
+            row.setVisible(matches and (not folded or bool(query)))
+            if row.isHidden() and row.tick.isChecked():
+                row.tick.blockSignals(True)
+                row.tick.setChecked(False)
+                row.tick.blockSignals(False)
+
     # -- bulk actions ------------------------------------------------------
     def _service_rows(self, visible_only: bool = True) -> list:
         # isHidden(), not isVisible(): a row in a window that hasn't been shown
         # yet is invisible without having been filtered out, and asking the wrong
         # question there makes the selection silently empty.
-        return [r for r in self._rows.values() if isinstance(r, _Row)
+        return [r for r in self._rows.values() if isinstance(r, ServiceRow)
                 and (not r.isHidden() or not visible_only)]
 
     def selected(self) -> list:
@@ -448,8 +330,7 @@ class Flyout(QWidget):
     def _selection_changed(self) -> None:
         rows = self._service_rows()
         chosen = [r for r in rows if r.tick.isChecked()]
-        self.bulk.setVisible(bool(chosen))
-        self.bulk_count.setText(f"{len(chosen)} selected")
+        self.bulk.set_count(len(chosen))
         self.tick_all.blockSignals(True)
         if not chosen:
             self.tick_all.setCheckState(Qt.Unchecked)
@@ -469,20 +350,14 @@ class Flyout(QWidget):
 
     def mark_busy(self, name: str, machine: str, label: str) -> None:
         row = self._rows.get((machine or "", name))
-        if isinstance(row, _Row):
+        if isinstance(row, ServiceRow):
             row.set_status(row.status, busy_label=label)
 
-    def _filter(self, text: str) -> None:
-        q = (text or "").strip().lower()
-        for key, row in self._rows.items():
-            if isinstance(row, _Row):
-                hit = q in row.service.display().lower() or q in row.service.name.lower()
-                row.setVisible(hit)
-                if not hit and row.tick.isChecked():
-                    # A tick you can't see is a bulk action you didn't mean.
-                    row.tick.blockSignals(True)
-                    row.tick.setChecked(False)
-                    row.tick.blockSignals(False)
+    def _filter(self, _text: str = "") -> None:
+        # Visibility has two inputs now — the search box and folded groups — so
+        # one place decides it. A tick you can't see is a bulk action you didn't
+        # mean, and _apply_collapse drops those too.
+        self._apply_collapse()
         self._selection_changed()
 
     def _resize_to_content(self, settled: bool = False) -> None:
@@ -507,8 +382,24 @@ class Flyout(QWidget):
 
         self.scroll.setFixedHeight(int(max(floor, min(content, ceiling))))
         self.adjustSize()
+        self._keep_bottom()
         if not settled:
             QTimer.singleShot(0, lambda: self._resize_to_content(True))
+
+    def _keep_bottom(self) -> None:
+        """Grow upwards, not downwards.
+
+        The panel is anchored to the tray icon at the bottom of the screen, so
+        adjustSize() — which holds the top-left corner — pushed the footer down
+        under the taskbar whenever a row appeared. Holding the bottom edge
+        instead means the bulk bar and extra rows open into empty screen.
+        """
+        if self._bottom is None or not self.isVisible():
+            return
+        screen = self.screen().availableGeometry()
+        y = max(screen.top() + 4, self._bottom - self.height())
+        if y != self.y():
+            self.move(self.x(), int(y))
 
     def refresh(self) -> None:
         self.rebuild()
@@ -521,7 +412,9 @@ class Flyout(QWidget):
         self.search.clear()
         self._set_all(False)
         self.adjustSize()
-        self.move(self._anchor(icon_rect))
+        where = self._anchor(icon_rect)
+        self.move(where)
+        self._bottom = where.y() + self.height()      # the edge to grow away from
         self.show()
         self.raise_()
         self.activateWindow()

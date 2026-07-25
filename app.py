@@ -214,6 +214,8 @@ class Application(QObject):
         self.tray.apply_state()
         if self.flyout.isVisible():
             self.flyout.apply_states()
+        if self.panel is not None and self.panel.isVisible():
+            self.panel.dashboard.apply_states()
         self.hover.refresh()
         if event.status == st.RUNNING and self.cfg.notifications.on_recovery:
             if self.watchdog.attempts_for(event.name, event.state.machine):
@@ -226,7 +228,7 @@ class Application(QObject):
             self.kill_process(name, machine)
             return
         verb = {"start": "Starting", "stop": "Stopping", "restart": "Restarting"}[action]
-        self.flyout.mark_busy(name, machine, verb + "…")
+        self._mark_busy(name, machine, verb + "…")
         self.tray.action_started()
         if self.cfg.history.enabled:
             history.record_action(name, action, st.SRC_PANEL, machine=machine)
@@ -255,6 +257,8 @@ class Application(QObject):
             pass
         if self.flyout.isVisible():
             self.flyout.apply_states()
+        if self.panel is not None and self.panel.isVisible():
+            self.panel.dashboard.apply_states()
 
         if bulk:
             self._bulk_report(name, error)
@@ -503,6 +507,12 @@ class Application(QObject):
                                            or not self.panel.isVisible()):
             self.hover.request(self.tray.geometry())
 
+    def _mark_busy(self, name: str, machine: str, label: str) -> None:
+        """Both lists show the same service, so both have to say it is busy."""
+        self.flyout.mark_busy(name, machine, label)
+        if self.panel is not None and self.panel.isVisible():
+            self.panel.dashboard.mark_busy(name, machine, label)
+
     def refresh(self):
         for svc in self.cfg.services:
             try:
@@ -514,6 +524,8 @@ class Application(QObject):
             except Exception:
                 pass
         self.flyout.refresh()
+        if self.panel is not None:
+            self.panel.dashboard.apply_states()
         self.tray.apply_state()
 
     def apply_theme(self, requested: str) -> None:
@@ -544,11 +556,19 @@ class Application(QObject):
             self.panel.raise_()
             self.panel.activateWindow()
             return
-        win = panel_mod.MainPanel(self.cfg)
+        win = panel_mod.MainPanel(self.cfg, store=self.store,
+                                  live_config=lambda: self.cfg)
         win.saved.connect(self._settings_saved)
         win.test_run.connect(self.run_stack)
         win.run_trigger.connect(self.run_trigger)
         win.theme_changed.connect(self.apply_theme)
+        # The dashboard's controls act on real services, through the same paths
+        # as the tray flyout's.
+        win.action_requested.connect(self.do_action)
+        win.bulk_requested.connect(self.do_bulk)
+        win.run_stack.connect(self.run_stack)
+        win.refresh_requested.connect(self.refresh)
+        win.open_services_mmc.connect(self._open_services_mmc)
         self.panel = win
         if page:
             win.go_to(page)
@@ -575,6 +595,9 @@ class Application(QObject):
         self.tray.rebuild_menu()
         self._prime_states()
         self.flyout.rebuild()
+        # The dashboard reads the saved config, so it only changes now.
+        if self.panel is not None:
+            self.panel.dashboard.rebuild()
         self.tray.apply_state()
         log.info("settings saved: %d service(s), %d stack(s)",
                  len(self.cfg.services), len(self.cfg.stacks))

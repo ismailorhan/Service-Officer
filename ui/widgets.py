@@ -29,6 +29,47 @@ def button(text, kind=None, slot=None) -> QPushButton:
     return b
 
 
+class Elide(QLabel):
+    """A label that shortens its text instead of widening its row.
+
+    A QLabel's minimum width is its text, so one long display name pushed the
+    tray panel's rows past the window and clipped the Kill button off the right
+    edge — measured: 469px of content in a 466px panel, less 9px once a
+    scrollbar appeared. The full text stays in the tooltip.
+    """
+
+    def __init__(self, text: str = "", role: str = None, parent=None):
+        super().__init__(parent)
+        self._full = text
+        if role:
+            self.setProperty("role", role)
+        self.setMinimumWidth(40)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:          # noqa: N802 - Qt naming
+        self._full = text
+        self.setToolTip("")
+        super().setText(text)
+        self._reflow()
+
+    def _reflow(self):
+        room = self.width()
+        if room <= 0 or not self._full:
+            return
+        metrics = self.fontMetrics()
+        if metrics.horizontalAdvance(self._full) <= room:
+            if super().text() != self._full:
+                super().setText(self._full)
+            self.setToolTip("")
+            return
+        super().setText(metrics.elidedText(self._full, Qt.ElideRight, room))
+        self.setToolTip(self._full)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow()
+
+
 class ReorderList(QListWidget):
     """A list whose rows are dragged into their order.
 

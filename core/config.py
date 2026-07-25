@@ -63,11 +63,29 @@ class Machine:
         return self.label or self.name or "This computer"
 
 
+NO_CATEGORY = ""                   # a service that hasn't been filed anywhere
+NO_CATEGORY_TITLE = "No category"
+
+
+@dataclass
+class Category:
+    """A heading services are grouped under in the panel and the dashboard.
+
+    Purely how the lists are organised — nothing acts on a category — so it
+    carries a name and nothing else.
+    """
+    name: str
+
+    def display(self) -> str:
+        return self.name or NO_CATEGORY_TITLE
+
+
 @dataclass
 class Service:
     name: str                      # Windows short name
     label: str = ""                # what the user sees
     machine: str = LOCAL_MACHINE   # which machine it belongs to
+    category: str = NO_CATEGORY    # which heading it is listed under
     recovery: Recovery = field(default_factory=Recovery)
 
     def display(self) -> str:
@@ -237,6 +255,7 @@ class Config:
     stacks: list = field(default_factory=list)        # list[Stack]
     triggers: list = field(default_factory=list)      # list[Trigger]
     machines: list = field(default_factory=lambda: [Machine()])
+    categories: list = field(default_factory=list)     # list[Category]
     history: History = field(default_factory=History)
     notifications: Notifications = field(default_factory=Notifications)
     auto_start: bool = True
@@ -265,6 +284,29 @@ class Config:
 
     def service_names(self) -> list:
         return [s.name for s in self.services]
+
+    def category(self, name: str) -> Category | None:
+        return next((c for c in self.categories if c.name == (name or "")), None)
+
+    def grouped_services(self) -> list:
+        """[(category name, title, [services])] for the panel and the dashboard.
+
+        Categories keep the order they were defined in; services keep theirs
+        inside each one. Uncategorised services come last under their own
+        heading rather than being hidden, and a category with nothing in it is
+        left out — an empty heading is noise in a list you read at a glance.
+        """
+        groups = []
+        for cat in self.categories:
+            members = [s for s in self.services if (s.category or "") == cat.name]
+            if members:
+                groups.append((cat.name, cat.display(), members))
+        loose = [s for s in self.services
+                 if (s.category or "") == NO_CATEGORY
+                 or not self.category(s.category)]
+        if loose:
+            groups.append((NO_CATEGORY, NO_CATEGORY_TITLE, loose))
+        return groups
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +352,7 @@ def _service_from(raw) -> Service | None:
         name=str(raw["name"]),
         label=str(raw.get("label") or raw["name"]),
         machine=str(raw.get("machine") or ""),
+        category=str(raw.get("category") or NO_CATEGORY),
         recovery=_recovery_from(raw.get("recovery")),
     )
 
@@ -354,6 +397,12 @@ def _machine_from(raw) -> Machine | None:
         return None
     name = str(raw.get("name") or "")
     return Machine(name=name, label=str(raw.get("label") or name or "This computer"))
+
+
+def _category_from(raw) -> Category | None:
+    name = raw if isinstance(raw, str) else (raw or {}).get("name")
+    name = str(name or "").strip()
+    return Category(name=name) if name else None
 
 
 def _trigger_from(raw) -> Trigger | None:
@@ -421,6 +470,17 @@ def from_dict(data: dict) -> Config:
             machines.append(Machine(name=svc.machine, label=svc.machine))
             known.add(svc.machine)
 
+    # Categories are grouping only, so one a service refers to but that isn't
+    # listed is kept rather than dropped — losing the grouping silently would be
+    # worse than an extra heading.
+    categories = [c for c in (_category_from(x)
+                              for x in data.get("categories", [])) if c]
+    seen = {c.name for c in categories}
+    for svc in services:
+        if svc.category and svc.category not in seen:
+            categories.append(Category(name=svc.category))
+            seen.add(svc.category)
+
     h = data.get("history") if isinstance(data.get("history"), dict) else {}
     n = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
 
@@ -429,6 +489,7 @@ def from_dict(data: dict) -> Config:
         stacks=stacks,
         triggers=triggers,
         machines=machines,
+        categories=categories,
         history=History(
             enabled=bool(h.get("enabled", True)),
             retention_days=max(1, _as_int(h.get("retention_days"), 30)),
@@ -452,6 +513,7 @@ def to_dict(cfg: Config) -> dict:
         "stacks": [asdict(s) for s in cfg.stacks],
         "triggers": [asdict(t) for t in cfg.triggers],
         "machines": [asdict(m) for m in cfg.machines],
+        "categories": [asdict(c) for c in cfg.categories],
         "history": asdict(cfg.history),
         "notifications": asdict(cfg.notifications),
         "auto_start": cfg.auto_start,

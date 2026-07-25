@@ -462,7 +462,7 @@ def test_bulk_selection_drives_one_action_for_many_services(qapp, sample):
     fly._rows[("", "AppEngine")].tick.setChecked(True)
     fly._rows[("", "WMSServer")].tick.setChecked(True)
     assert fly.bulk.isVisible() is True
-    assert fly.bulk_count.text() == "2 selected"
+    assert fly.bulk.count.text() == "2 selected"
     assert fly.tick_all.checkState() == Qt.PartiallyChecked
 
     fly._bulk("stop")
@@ -491,6 +491,153 @@ def test_filtering_drops_ticks_you_can_no_longer_see(qapp, sample):
     assert fly.selected() == []
     assert fly._rows[("", "AppEngine")].tick.isChecked() is False
     fly.deleteLater()
+
+
+def test_dashboard_offers_the_same_controls_as_the_flyout(qapp, sample):
+    """The dashboard is the flyout with room to breathe — same rows, so the same
+    rules about which buttons may be pressed."""
+    store = st.Store()
+    store.update("AppEngine", st.RUNNING)
+    store.update("WMSServer", st.STOPPED)
+    store.set_start_type("WMSServer", "Disabled")
+    win = panel_mod.MainPanel(sample, store=store, live_config=lambda: sample)
+    dash = win.dashboard
+    assert win.pages.currentWidget() is dash          # what opening shows
+
+    running = dash._rows[("", "AppEngine")]
+    assert running.buttons["start"].isEnabled() is False
+    assert running.buttons["stop"].isEnabled() is True
+    disabled = dash._rows[("", "WMSServer")]
+    assert disabled.chip.text() == "Disabled"
+    assert all(not b.isEnabled() for b in disabled.buttons.values())
+    assert "1 of 3 running" in dash.badge.text()
+    assert "1 disabled in Windows" in dash.summary.text()
+
+    asked = []
+    dash.action_requested.connect(lambda *a: asked.append(a))
+    running.buttons["stop"].click()
+    assert asked == [("stop", "AppEngine", "")]
+
+    bulk = []
+    dash.bulk_requested.connect(lambda a, t: bulk.append((a, t)))
+    running.tick.setChecked(True)
+    assert dash.bulk.count.text() == "1 selected"
+    dash._bulk("restart")
+    assert bulk == [("restart", [("AppEngine", "")])]
+    win.deleteLater()
+
+
+def test_dashboard_shows_the_saved_config_not_unsaved_edits(qapp, sample):
+    """Acting on a service the app isn't watching yet would be a lie about what
+    happened, so the dashboard reads the live config."""
+    win = panel_mod.MainPanel(sample, store=st.Store(), live_config=lambda: sample)
+    before = len(win.dashboard._rows)
+    win.config().services.append(cfg_mod.Service(name="Spooler", label="Spooler"))
+    win.services_page.refresh()
+    assert len(win.dashboard._rows) == before      # not until it is saved
+    win.deleteLater()
+
+
+def test_categories_group_the_lists_and_fold_away(qapp, sample):
+    from ui import rows as rows_mod
+    rows_mod.collapsed.clear()
+    sample.categories = [cfg_mod.Category(name="SAP"), cfg_mod.Category(name="SQL")]
+    sample.service("AppEngine").category = "SAP"
+    sample.service("WMSServer").category = "SAP"
+    # MSSQLSERVER is left unfiled on purpose.
+
+    groups = sample.grouped_services()
+    assert [(name, [s.name for s in members]) for name, _t, members in groups] == [
+        ("SAP", ["AppEngine", "WMSServer"]),
+        ("", ["MSSQLSERVER"]),                     # empty SQL is left out
+    ]
+    assert groups[-1][1] == cfg_mod.NO_CATEGORY_TITLE
+
+    store = st.Store()
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+    assert [b.category for b in fly._sections] == ["SAP", ""]
+
+    sap = fly._sections[0]
+    sap.mousePressEvent(_click())
+    assert rows_mod.is_collapsed("SAP") is True
+    assert fly._rows[("", "AppEngine")].isHidden() is True
+    assert fly._rows[("", "MSSQLSERVER")].isHidden() is False   # other group
+
+    # Searching beats a folded group, or search would look broken.
+    fly.search.setText("appengine")
+    assert fly._rows[("", "AppEngine")].isHidden() is False
+
+    fly.search.clear()
+    sap.mousePressEvent(_click())
+    assert fly._rows[("", "AppEngine")].isHidden() is False
+    rows_mod.collapsed.clear()
+    fly.deleteLater()
+
+
+def _click():
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QEvent, QPointF
+    return QMouseEvent(QEvent.MouseButtonPress, QPointF(2, 2), Qt.LeftButton,
+                       Qt.LeftButton, Qt.NoModifier)
+
+
+def test_a_folded_service_is_not_part_of_a_bulk_action(qapp, sample):
+    from ui import rows as rows_mod
+    rows_mod.collapsed.clear()
+    sample.categories = [cfg_mod.Category(name="SAP")]
+    sample.service("AppEngine").category = "SAP"
+    fly = flyout_mod.Flyout(lambda: sample, st.Store())
+    fly.rebuild()
+    fly._rows[("", "AppEngine")].tick.setChecked(True)
+    assert len(fly.selected()) == 1
+
+    fly._sections[0].mousePressEvent(_click())
+    assert fly.selected() == []
+    assert fly._rows[("", "AppEngine")].tick.isChecked() is False
+    rows_mod.collapsed.clear()
+    fly.deleteLater()
+
+
+def test_a_category_survives_the_round_trip_and_renaming(qapp, sample, tmp_path):
+    sample.categories = [cfg_mod.Category(name="SAP")]
+    sample.service("AppEngine").category = "SAP"
+    path = str(tmp_path / "services.json")
+    cfg_mod.save(sample, path)
+    back = cfg_mod.load(path)
+    assert [c.name for c in back.categories] == ["SAP"]
+    assert back.service("AppEngine").category == "SAP"
+
+    win = panel_mod.MainPanel(back)
+    page = win.categories_page
+    assert page.list.count() == 1
+    # Renaming has to carry the services with it — they point at it by name.
+    page.list.setCurrentRow(0)
+    page._ask = lambda *_a, **_k: "SAP Business One"
+    page._rename()
+    assert win.config().service("AppEngine").category == "SAP Business One"
+    assert [c.name for c in win.config().categories] == ["SAP Business One"]
+    win.deleteLater()
+
+
+def test_a_category_a_service_names_but_nobody_defined_is_kept(tmp_path):
+    """Dropping it would silently lose the grouping."""
+    import json
+    path = tmp_path / "services.json"
+    path.write_text(json.dumps({"services": [
+        {"name": "AppEngine", "category": "Ghost"}]}), encoding="utf-8")
+    cfg = cfg_mod.load(str(path))
+    assert [c.name for c in cfg.categories] == ["Ghost"]
+    assert cfg.grouped_services()[0][0] == "Ghost"
+
+
+def test_services_page_names_the_machine_on_the_row(qapp, sample):
+    from core import control
+    win = panel_mod.MainPanel(sample)
+    row = win.services_page.list.itemWidget(win.services_page.list.item(0))
+    texts = [lb.text() for lb in row.findChildren(QLabel)]
+    assert control.host_name() in texts or "This PC" in texts
+    win.deleteLater()
 
 
 def test_panel_opens_on_a_named_section(qapp, sample):

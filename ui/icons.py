@@ -191,6 +191,16 @@ def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:
         p.drawLine(QPointF(s * 0.33, s * 0.14), QPointF(s * 0.33, s * 0.28))
         p.drawLine(QPointF(s * 0.67, s * 0.14), QPointF(s * 0.67, s * 0.28))
         p.drawEllipse(QRectF(s * 0.44, s * 0.56, s * 0.12, s * 0.12))
+    elif kind == "dashboard":                    # four panes
+        p.drawRect(QRectF(s * 0.14, s * 0.14, s * 0.31, s * 0.31))
+        p.drawRect(QRectF(s * 0.55, s * 0.14, s * 0.31, s * 0.31))
+        p.drawRect(QRectF(s * 0.14, s * 0.55, s * 0.31, s * 0.31))
+        p.drawRect(QRectF(s * 0.55, s * 0.55, s * 0.31, s * 0.31))
+    elif kind == "categories":                   # a folder
+        p.drawLine(QPointF(s * 0.14, s * 0.28), QPointF(s * 0.42, s * 0.28))
+        p.drawLine(QPointF(s * 0.42, s * 0.28), QPointF(s * 0.5, s * 0.4))
+        p.drawRect(QRectF(s * 0.14, s * 0.4, s * 0.72, s * 0.42))
+        p.drawLine(QPointF(s * 0.14, s * 0.28), QPointF(s * 0.14, s * 0.4))
     else:                                        # gear
         c = s / 2.0
         p.drawEllipse(QRectF(c - s * 0.17, c - s * 0.17, s * 0.34, s * 0.34))

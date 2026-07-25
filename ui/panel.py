@@ -33,6 +33,7 @@ from core import config as cfg_mod
 from core import control, history
 from core import state as st
 from . import icons, theme
+from .dashboard import DashboardPage
 from .widgets import (Duration, FlatEdit, FlatFactor, FlatSpin, Grip, PadSpin,
                       ReorderList, SearchableList, Spin, button as _button,
                       label as _label)
@@ -243,10 +244,18 @@ class ServicesPage(QWidget):
                 note = f"recovers automatically, up to {rec.max_attempts} attempts"
             else:
                 note = "recovers automatically, unlimited attempts"
-            # Name the machine on every row: a service now always belongs to one.
-            where = self.cfg().machine_label(svc.machine)
+            # The machine is the service's source, so it goes on the right as a
+            # chip rather than buried in the middle of the secondary line.
+            machine = self.cfg().machine(svc.machine)
+            where = (control.host_name() or "This PC") if (
+                machine and machine.is_local) else (svc.machine or "?")
+            category = svc.category or ""
+            second = f"{svc.name}  ·  {note}"
+            if category:
+                second = f"{category}  ·  {second}"
             item = QListWidgetItem()
-            widget = _ListRow(svc.display(), f"{where} · {svc.name} · {note}", "none")
+            widget = _ListRow(svc.display(), second, "none", tag=where,
+                              tag_category="none")
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
@@ -310,7 +319,7 @@ class ServicesPage(QWidget):
             QMessageBox.information(self, "Service Officer",
                                     "Select one service to open.")
             return
-        self.detail.load(self.cfg().services[rows[0]])
+        self.detail.load(self.cfg().services[rows[0]], self.cfg().categories)
         self.stack.setCurrentWidget(self.detail)
 
     def _show_list(self):
@@ -350,6 +359,17 @@ class ServiceDetail(_Page):
         self.label_edit.setMaximumWidth(340)
         self.label_edit.textChanged.connect(self._label_changed)
         body.addWidget(self.label_edit)
+        body.addSpacing(18)
+
+        body.addWidget(_label("CATEGORY", "section"))
+        body.addSpacing(8)
+        self.category = QComboBox()
+        self.category.setFixedWidth(240)
+        self.category.currentIndexChanged.connect(self._category_changed)
+        body.addWidget(self.category)
+        body.addWidget(_label("Groups this service under a heading in the "
+                              "dashboard and the tray panel. Define the headings "
+                              "on the Categories page.", "hint", wrap=True))
         body.addSpacing(24)
 
         body.addWidget(_label("RECOVERY", "section"))
@@ -395,12 +415,20 @@ class ServiceDetail(_Page):
         body.addStretch(1)
         self.root.addLayout(body, 1)
 
-    def load(self, svc):
+    def load(self, svc, categories=()):
         self.svc = None                     # suppress signals while populating
         self.title.setText(svc.display())
         self.crumb_name.setText(svc.display())
         self.short.setText(f"{svc.machine}\\{svc.name}" if svc.machine else svc.name)
         self.label_edit.setText(svc.label or svc.name)
+        self.category.blockSignals(True)
+        self.category.clear()
+        self.category.addItem(cfg_mod.NO_CATEGORY_TITLE, cfg_mod.NO_CATEGORY)
+        for cat in categories:
+            self.category.addItem(cat.name, cat.name)
+        wanted = self.category.findData(svc.category or cfg_mod.NO_CATEGORY)
+        self.category.setCurrentIndex(wanted if wanted >= 0 else 0)
+        self.category.blockSignals(False)
         r = svc.recovery
         self.keep.setChecked(r.enabled)
         self.attempts.setValue(r.max_attempts)
@@ -428,6 +456,11 @@ class ServiceDetail(_Page):
             self.crumb_name.setText(self.svc.display())
             self.changed.emit()
 
+    def _category_changed(self, _index):
+        if self.svc is not None:
+            self.svc.category = self.category.currentData() or cfg_mod.NO_CATEGORY
+            self.changed.emit()
+
     def _save_rules(self, *_):
         if self.svc is None:
             return
@@ -441,6 +474,130 @@ class ServiceDetail(_Page):
             flap_window_minutes=max(1, self.flap_window.seconds() // 60),
         )
         self.changed.emit()
+
+
+class CategoriesPage(_Page):
+    """Headings the service lists are grouped under.
+
+    Grouping only — nothing acts on a category — so this page is a list of names
+    and their order, which is the order the groups appear in.
+    """
+
+    changed = Signal()
+
+    def __init__(self, cfg_ref):
+        super().__init__("Categories",
+                         "Group your services under headings — SAP, SQL, "
+                         "printing — so the dashboard and the tray panel can "
+                         "fold away the ones you aren't looking at. Drag to "
+                         "change the order the groups appear in.")
+        self.cfg = cfg_ref
+
+        self.list = ReorderList()
+        self.list.reordered.connect(self._reorder)
+        self.list.itemDoubleClicked.connect(lambda _i: self._rename())
+        self.root.addWidget(self.list, 1)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        bar.addWidget(_button("Add category…", "primary", self._add))
+        bar.addWidget(_button("Rename…", None, self._rename))
+        bar.addWidget(_button("Remove", "danger", self._remove))
+        bar.addStretch(1)
+        self.root.addSpacing(14)
+        self.root.addLayout(bar)
+        self.root.addSpacing(10)
+        self.root.addWidget(_label(
+            "Services you haven't filed anywhere are listed together under "
+            f"“{cfg_mod.NO_CATEGORY_TITLE}”, so nothing goes missing.",
+            "hint", wrap=True))
+        self.refresh()
+
+    def refresh(self):
+        keep = self.list.currentRow()
+        self.list.clear()
+        cfg = self.cfg()
+        for cat in cfg.categories:
+            members = [s for s in cfg.services if (s.category or "") == cat.name]
+            names = ", ".join(s.display() for s in members[:4])
+            if len(members) > 4:
+                names += f", and {len(members) - 4} more"
+            item = QListWidgetItem()
+            widget = _ListRow(cat.name,
+                              names or "nothing filed here yet",
+                              tag=f"{len(members)}", tag_category="none")
+            item.setSizeHint(widget.sizeHint())
+            self.list.addItem(item)
+            self.list.setItemWidget(item, widget)
+        if 0 <= keep < self.list.count():
+            self.list.setCurrentRow(keep)
+
+    def _ask(self, title: str, initial: str = "") -> str:
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, title, "Category name:",
+                                        text=initial)
+        return (name or "").strip() if ok else ""
+
+    def _add(self):
+        name = self._ask("Add category")
+        if not name:
+            return
+        if self.cfg().category(name):
+            QMessageBox.information(self, "Service Officer",
+                                    "That category already exists.")
+            return
+        self.cfg().categories.append(cfg_mod.Category(name=name))
+        self.refresh()
+        self.changed.emit()
+
+    def _rename(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        cat = self.cfg().categories[row]
+        name = self._ask("Rename category", cat.name)
+        if not name or name == cat.name:
+            return
+        if self.cfg().category(name):
+            QMessageBox.information(self, "Service Officer",
+                                    "That category already exists.")
+            return
+        # Services point at the category by name, so they have to come along.
+        for svc in self.cfg().services:
+            if (svc.category or "") == cat.name:
+                svc.category = name
+        cat.name = name
+        self.refresh()
+        self.changed.emit()
+
+    def _remove(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        cfg = self.cfg()
+        cat = cfg.categories[row]
+        members = [s for s in cfg.services if (s.category or "") == cat.name]
+        message = f'Remove the category "{cat.name}"?'
+        if members:
+            message += (f"\n\nIts {len(members)} service(s) stay, listed under "
+                        f"“{cfg_mod.NO_CATEGORY_TITLE}”.")
+        if QMessageBox.question(self, "Remove category",
+                                message) != QMessageBox.Yes:
+            return
+        for svc in members:
+            svc.category = cfg_mod.NO_CATEGORY
+        del cfg.categories[row]
+        self.refresh()
+        self.changed.emit()
+
+    def _reorder(self, source, target):
+        cats = self.cfg().categories
+        if not (0 <= source < len(cats) and 0 <= target < len(cats)):
+            return
+        cats.insert(target, cats.pop(source))
+        self.refresh()
+        self.changed.emit()
+        self.list.setCurrentRow(target)
 
 
 class StacksPage(QWidget):
@@ -1650,9 +1807,19 @@ class MainPanel(QDialog):
     test_run = Signal(object, str)       # the stack being edited, action
     run_trigger = Signal(object)         # a trigger, run on demand from its page
     theme_changed = Signal(str)          # applied immediately, saved with the rest
+    # Dashboard controls act on live services, so the app does the work.
+    action_requested = Signal(str, str, str)     # action, service, machine
+    bulk_requested = Signal(str, list)
+    run_stack = Signal(str)
+    refresh_requested = Signal()
+    open_services_mmc = Signal()
 
-    def __init__(self, cfg, parent=None):
+    def __init__(self, cfg, parent=None, store=None, live_config=None):
         super().__init__(parent)
+        # Without a running app behind it (tests, a screenshot) the dashboard
+        # falls back to what it was handed, and to the global store.
+        self._store = store if store is not None else st.store
+        self._live = live_config or (lambda: self._cfg)
         self.setWindowTitle("Service Officer — Service Management Panel")
         self.setWindowIcon(icons.base_icon("green"))
         # A dialog by class, a window by behaviour: this is where the work
@@ -1685,7 +1852,17 @@ class MainPanel(QDialog):
         self.pages = QStackedWidget()
         get = lambda: self._cfg
 
+        # The dashboard acts on real services, so it reads the saved config and
+        # the live store — not the copy being edited on the other pages.
+        self.dashboard = DashboardPage(self._live, self._store)
+        self.dashboard.action_requested.connect(self.action_requested)
+        self.dashboard.bulk_requested.connect(self.bulk_requested)
+        self.dashboard.run_stack.connect(self.run_stack)
+        self.dashboard.refresh_requested.connect(self.refresh_requested)
+        self.dashboard.open_services_mmc.connect(self.open_services_mmc)
+
         self.services_page = ServicesPage(get)
+        self.categories_page = CategoriesPage(get)
         self.stacks_page = StacksPage(get)
         self.schedule_page = SchedulePage(get)
         self.machines_page = MachinesPage(get)
@@ -1699,16 +1876,22 @@ class MainPanel(QDialog):
         self.general_page.theme_changed.connect(self.theme_changed)
         self.general_page.theme_changed.connect(lambda _m: self.restyle())
         self.machines_page.changed.connect(self.services_page.refresh)
-        for page in (self.services_page, self.stacks_page, self.schedule_page,
-                     self.machines_page, self.history_page, self.general_page):
+        # Renaming or removing a category changes what the Services rows say.
+        self.categories_page.changed.connect(self.services_page.refresh)
+        for page in (self.services_page, self.categories_page, self.stacks_page,
+                     self.schedule_page, self.machines_page, self.history_page,
+                     self.general_page):
             page.changed.connect(self._refresh_save_state)
 
         self._nav_buttons = []
         self._by_name = {}
         self._buttons_by_name = {}
         # Settings are one section here, not the name of the window.
-        sections = [("Manage", None, None),
+        sections = [("Overview", None, None),
+                    ("Dashboard", "dashboard", self.dashboard),
+                    ("Manage", None, None),
                     ("Services", "services", self.services_page),
+                    ("Categories", "categories", self.categories_page),
                     ("Stacks", "stacks", self.stacks_page),
                     ("Schedule", "schedule", self.schedule_page),
                     ("History", "history", self.history_page),
@@ -1759,7 +1942,7 @@ class MainPanel(QDialog):
 
         self.history_page.load_from(self._cfg)
         self.general_page.load_from(self._cfg)
-        self._select(self.services_page, self._nav_buttons[0])
+        self.go_to("dashboard")            # what you want on opening: the status
         self._refresh_save_state()
 
     def _select(self, page, button):
@@ -1781,13 +1964,14 @@ class MainPanel(QDialog):
     def restyle(self) -> None:
         """Repaint what the global stylesheet can't reach after a mode change:
         the nav icons and the few values drawn with inline colours."""
-        for kind, btn in zip(("services", "stacks", "schedule", "history",
-                              "machines", "general"), self._nav_buttons):
+        for kind, btn in self._buttons_by_name.items():
             btn.setIcon(icons.nav_icon(kind, 19))
         for widget in self.findChildren(FlatEdit):
             widget.restyle()
         self.services_page.refresh()
+        self.categories_page.refresh()
         self.stacks_page.refresh()
+        self.dashboard.rebuild()
         if self.stacks_page.detail.stack is not None:
             self.stacks_page.detail._rebuild()
 
