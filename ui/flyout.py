@@ -8,7 +8,7 @@ arrive on the GUI thread through a signal instead of a hand-built queue.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QScrollArea, QSizePolicy,
@@ -82,9 +82,21 @@ class _Row(QWidget):
         lay.addSpacing(6)
         lay.addWidget(kill)
 
-    def set_status(self, status: str, busy_label: str = "") -> None:
+    def set_status(self, status: str, busy_label: str = "",
+                   disabled: bool = False) -> None:
         self.status = status
         cat = st.category(status)
+        # A disabled service can't be started at all, so say so instead of
+        # showing "Stopped" next to a Start button that would only fail.
+        if disabled and cat == "stopped":
+            self.chip.setText(busy_label or "Disabled")
+            self.chip.setStyleSheet(theme.chip_style("none"))
+            for action, b in self.buttons.items():
+                b.setEnabled(False)
+            self.setToolTip("This service is disabled in Windows — enable it in "
+                            "services.msc before it can start.")
+            return
+        self.setToolTip("")
         self.chip.setText(busy_label or status)
         self.chip.setStyleSheet(theme.chip_style("pending" if busy_label else cat))
         # Kill stays available while anything is running or stuck mid-transition —
@@ -182,9 +194,15 @@ class Flyout(QWidget):
         self.badge = QLabel("")
         self.badge.setStyleSheet(theme.chip_style("running"))
         head.addWidget(self.badge)
-        close = QPushButton("✕")
+        # Drawn, not typed: the ✕ glyph came out blank in both themes because
+        # the button's font had no such character.
+        close = QPushButton()
         close.setProperty("kind", "quiet")
         close.setFixedSize(26, 24)
+        close.setIcon(icons.nav_icon("close", 12, theme.FG3))
+        close.setIconSize(QSize(12, 12))
+        close.setToolTip("Close")
+        close.setCursor(Qt.PointingHandCursor)
         close.clicked.connect(self.hide)
         head.addWidget(close)
         root.addLayout(head)
@@ -267,8 +285,9 @@ class Flyout(QWidget):
     def rebuild(self) -> None:
         """(Re)create the rows: services on top, stacks underneath."""
         cfg = self._config()
+        shown_stacks = [s for s in cfg.stacks if s.show_in_flyout]
         signature = ([(s.machine, s.name, s.display()) for s in cfg.services],
-                     [(s.name, s.summary(cfg.services)) for s in cfg.stacks])
+                     [(s.name, s.summary(cfg.services)) for s in shown_stacks])
         if signature == self._signature:
             return
         self._signature = signature
@@ -301,7 +320,7 @@ class Flyout(QWidget):
 
         # Stacks live in the same scrolling list, under their own heading, so a
         # whole sequence is one click away from where you read the statuses.
-        if cfg.stacks:
+        if shown_stacks:
             bar = QWidget()
             bar.setObjectName("sectionBar")
             bar.setAttribute(Qt.WA_StyledBackground, True)
@@ -314,7 +333,7 @@ class Flyout(QWidget):
             self._stack_widgets.append(bar)
             add(bar)
 
-            for stack in cfg.stacks:
+            for stack in shown_stacks:
                 row = _StackRow(stack, cfg.services)
                 row.run.connect(self.run_stack)
                 self._stack_widgets.append(row)
@@ -331,7 +350,8 @@ class Flyout(QWidget):
             if not isinstance(row, _Row):
                 continue
             status = self._store.status_of(svc.name, svc.machine)
-            row.set_status(status)
+            row.set_status(status,
+                           disabled=self._store.is_disabled(svc.name, svc.machine))
             if status == st.RUNNING:
                 running += 1
 
@@ -415,10 +435,20 @@ class Flyout(QWidget):
 
     def event(self, ev):
         # Clicking away closes it — Qt tells us directly, no foreground polling.
+        # But one of our own dialogs (the kill confirmation, an error) also
+        # deactivates this window, and closing the panel underneath it is
+        # disorienting, so hold while a modal of ours is up.
         if ev.type() == QEvent.WindowDeactivate and self.isVisible():
-            if not self.search.text().strip():
-                QTimer.singleShot(0, self.hide)
+            from PySide6.QtWidgets import QApplication
+            if (not self.search.text().strip()
+                    and QApplication.activeModalWidget() is None):
+                QTimer.singleShot(0, self._hide_unless_modal)
         return super().event(ev)
+
+    def _hide_unless_modal(self):
+        from PySide6.QtWidgets import QApplication
+        if QApplication.activeModalWidget() is None:
+            self.hide()
 
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key_Escape:

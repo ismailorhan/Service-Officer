@@ -176,6 +176,15 @@ def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:
         p.drawEllipse(QRectF(s * 0.14, s * 0.14, s * 0.72, s * 0.72))
         p.drawLine(QPointF(s * 0.5, s * 0.5), QPointF(s * 0.5, s * 0.28))
         p.drawLine(QPointF(s * 0.5, s * 0.5), QPointF(s * 0.68, s * 0.58))
+    elif kind == "machines":                     # two stacked boxes
+        p.drawRect(QRectF(s * 0.16, s * 0.2, s * 0.68, s * 0.24))
+        p.drawRect(QRectF(s * 0.16, s * 0.56, s * 0.68, s * 0.24))
+        p.drawPoint(QPointF(s * 0.72, s * 0.32))
+        p.drawPoint(QPointF(s * 0.72, s * 0.68))
+    elif kind == "close":                        # an X, drawn so no font can
+        m = s * 0.3                              # fail to provide the glyph
+        p.drawLine(QPointF(m, m), QPointF(s - m, s - m))
+        p.drawLine(QPointF(s - m, m), QPointF(m, s - m))
     elif kind == "schedule":                     # a calendar
         p.drawRect(QRectF(s * 0.15, s * 0.22, s * 0.7, s * 0.63))
         p.drawLine(QPointF(s * 0.15, s * 0.4), QPointF(s * 0.85, s * 0.4))

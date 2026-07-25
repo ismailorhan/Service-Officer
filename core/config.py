@@ -46,11 +46,28 @@ class Recovery:
         return float(min(d, cap_seconds))
 
 
+LOCAL_MACHINE = ""                 # empty name means this computer
+
+
+@dataclass
+class Machine:
+    """A computer whose services we manage. The local one always exists."""
+    name: str = LOCAL_MACHINE      # "" = this computer, else a host name
+    label: str = "This computer"
+
+    @property
+    def is_local(self) -> bool:
+        return not self.name
+
+    def display(self) -> str:
+        return self.label or self.name or "This computer"
+
+
 @dataclass
 class Service:
     name: str                      # Windows short name
     label: str = ""                # what the user sees
-    machine: str = ""              # "" = this computer (roadmap #4)
+    machine: str = LOCAL_MACHINE   # which machine it belongs to
     recovery: Recovery = field(default_factory=Recovery)
 
     def display(self) -> str:
@@ -92,6 +109,7 @@ class Step:
 class Stack:
     name: str
     steps: list = field(default_factory=list)   # list[Step]
+    show_in_flyout: bool = True                 # offer it in the tray panel
 
     def summary(self, services=None) -> str:
         labels = {s.name: s.display() for s in (services or [])}
@@ -133,14 +151,31 @@ class Trigger:
     delay_seconds: int = 30        # startup: settle time before firing
     time_of_day: str = "03:00"     # time: local HH:MM
     days: list = field(default_factory=list)   # empty = every day, else 0=Mon…6=Sun
+    repeat_seconds: int = 0        # 0 = once a day; else repeat from that time
 
     # -- action --------------------------------------------------------------
     action: str = "stack"          # "stack" | "service"
     stack: str = ""
     service: str = ""
     service_action: str = "start"  # start | stop | restart
+    machine: str = LOCAL_MACHINE
+
+    #: when to tell the user: never | success | failed | both | all (incl. skipped)
+    notify: str = "failed"
 
     DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+    def repeat_text(self) -> str:
+        if not self.repeat_seconds:
+            return ""
+        seconds = self.repeat_seconds
+        if seconds % 3600 == 0:
+            every = f"{seconds // 3600}h"
+        elif seconds % 60 == 0:
+            every = f"{seconds // 60}m"
+        else:
+            every = f"{seconds}s"
+        return f", then every {every}"
 
     def when_text(self) -> str:
         if self.when == "startup":
@@ -149,8 +184,18 @@ class Trigger:
             return "when Windows starts"
         if self.days and len(self.days) < 7:
             days = ", ".join(self.DAY_NAMES[d] for d in sorted(self.days))
-            return f"{days} at {self.time_of_day}"
-        return f"every day at {self.time_of_day}"
+            return f"{days} at {self.time_of_day}{self.repeat_text()}"
+        return f"every day at {self.time_of_day}{self.repeat_text()}"
+
+    def wants_notice(self, outcome: str) -> bool:
+        """outcome is "success", "failed" or "skipped"."""
+        if self.notify == "never":
+            return False
+        if self.notify == "all":
+            return True
+        if self.notify == "both":
+            return outcome in ("success", "failed")
+        return self.notify == outcome
 
     def action_text(self, services=None) -> str:
         if self.action == "stack":
@@ -184,6 +229,7 @@ class Config:
     services: list = field(default_factory=list)      # list[Service]
     stacks: list = field(default_factory=list)        # list[Stack]
     triggers: list = field(default_factory=list)      # list[Trigger]
+    machines: list = field(default_factory=lambda: [Machine()])
     history: History = field(default_factory=History)
     notifications: Notifications = field(default_factory=Notifications)
     auto_start: bool = True
@@ -202,6 +248,13 @@ class Config:
 
     def trigger(self, name: str) -> Trigger | None:
         return next((t for t in self.triggers if t.name == name), None)
+
+    def machine(self, name: str) -> Machine | None:
+        return next((m for m in self.machines if m.name == (name or "")), None)
+
+    def machine_label(self, name: str) -> str:
+        found = self.machine(name)
+        return found.display() if found else (name or "This computer")
 
     def service_names(self) -> list:
         return [s.name for s in self.services]
@@ -283,7 +336,17 @@ def _stack_from(raw) -> Stack | None:
     if not isinstance(raw, dict) or not raw.get("name"):
         return None
     steps = [s for s in (_step_from(x) for x in raw.get("steps", [])) if s]
-    return Stack(name=str(raw["name"]), steps=steps)
+    return Stack(name=str(raw["name"]), steps=steps,
+                 show_in_flyout=bool(raw.get("show_in_flyout", True)))
+
+
+def _machine_from(raw) -> Machine | None:
+    if isinstance(raw, str):
+        return Machine(name=raw, label=raw or "This computer")
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "")
+    return Machine(name=name, label=str(raw.get("label") or name or "This computer"))
 
 
 def _trigger_from(raw) -> Trigger | None:
@@ -302,6 +365,9 @@ def _trigger_from(raw) -> Trigger | None:
     time_of_day = str(raw.get("time_of_day") or "03:00")
     if not _valid_hhmm(time_of_day):
         time_of_day = "03:00"
+    notify = raw.get("notify", "failed")
+    if notify not in ("never", "success", "failed", "both", "all"):
+        notify = "failed"
     return Trigger(
         name=str(raw["name"]),
         enabled=bool(raw.get("enabled", True)),
@@ -309,10 +375,13 @@ def _trigger_from(raw) -> Trigger | None:
         delay_seconds=max(0, _as_int(raw.get("delay_seconds"), 30)),
         time_of_day=time_of_day,
         days=sorted(set(days)),
+        repeat_seconds=max(0, _as_int(raw.get("repeat_seconds"), 0)),
         action=action,
         stack=str(raw.get("stack") or ""),
         service=str(raw.get("service") or ""),
         service_action=svc_action,
+        machine=str(raw.get("machine") or ""),
+        notify=notify,
     )
 
 
@@ -334,6 +403,17 @@ def from_dict(data: dict) -> Config:
     stacks = [s for s in (_stack_from(x) for x in data.get("stacks", [])) if s]
     triggers = [t for t in (_trigger_from(x) for x in data.get("triggers", [])) if t]
 
+    # Every service belongs to a machine, and this computer is always one of
+    # them — an install with no machines section still gets it.
+    machines = [m for m in (_machine_from(x) for x in data.get("machines", [])) if m]
+    if not any(m.is_local for m in machines):
+        machines.insert(0, Machine())
+    known = {m.name for m in machines}
+    for svc in services:
+        if svc.machine not in known:
+            machines.append(Machine(name=svc.machine, label=svc.machine))
+            known.add(svc.machine)
+
     h = data.get("history") if isinstance(data.get("history"), dict) else {}
     n = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
 
@@ -341,6 +421,7 @@ def from_dict(data: dict) -> Config:
         services=services,
         stacks=stacks,
         triggers=triggers,
+        machines=machines,
         history=History(
             enabled=bool(h.get("enabled", True)),
             retention_days=max(1, _as_int(h.get("retention_days"), 30)),
@@ -363,6 +444,7 @@ def to_dict(cfg: Config) -> dict:
         "services": [asdict(s) for s in cfg.services],
         "stacks": [asdict(s) for s in cfg.stacks],
         "triggers": [asdict(t) for t in cfg.triggers],
+        "machines": [asdict(m) for m in cfg.machines],
         "history": asdict(cfg.history),
         "notifications": asdict(cfg.notifications),
         "auto_start": cfg.auto_start,

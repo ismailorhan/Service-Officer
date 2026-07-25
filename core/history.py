@@ -71,6 +71,38 @@ def record_action(service: str, action: str, source: str, machine: str = "",
         pass
 
 
+def record_run(kind: str, name: str, outcome: str, seconds: float = 0.0,
+               detail: str = "", source: str = "", path: str = None) -> None:
+    """A whole run: a stack, or a trigger firing. Outcome is success / failed /
+    skipped / cancelled. Kept in the same file as everything else so one export
+    tells the entire story."""
+    path = path or HISTORY_PATH
+    line = {"ts": _now_iso(), "run": kind, "name": name, "outcome": outcome,
+            "seconds": round(float(seconds), 1), "detail": detail,
+            "source": source or kind}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _lock, open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def runs(path: str = None, limit: int = 200, kind: str = None,
+         name: str = None) -> list:
+    """Recent executions, newest first — what the Schedule page lists."""
+    out = []
+    for rec in read(path=path, limit=100000):
+        if not rec.get("run"):
+            continue
+        if kind and rec["run"] != kind:
+            continue
+        if name and rec.get("name") != name:
+            continue
+        out.append(rec)
+    return out[:limit]
+
+
 def read(path: str = None, limit: int = 500, service: str = None) -> list:
     """Most recent first. Malformed lines are skipped, not fatal."""
     path = path or HISTORY_PATH
@@ -196,7 +228,23 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
         name = rec.get("service", "")
         common = {"ts": rec.get("ts", ""), "service": name,
                   "label": label_of.get(name, name), "level": ""}
-        if rec.get("action"):
+        if rec.get("run"):
+            # A whole run — shown in the timeline too, so a stack's outcome sits
+            # among the state changes it caused.
+            if service:
+                continue
+            level = {"failed": "Error", "skipped": "Warning"}.get(rec["outcome"], "")
+            rows.append({**common, "kind": "run", "service": rec.get("name", ""),
+                         "label": rec.get("name", ""),
+                         "event": f"{rec['run']} {rec['outcome']}",
+                         "detail": " · ".join(x for x in (
+                             rec.get("detail", ""),
+                             f"{rec.get('seconds', 0)}s" if rec.get("seconds") else "")
+                             if x),
+                         "level": level,
+                         "source": SOURCE_TEXT.get(rec.get("source", ""),
+                                                   rec.get("source", ""))})
+        elif rec.get("action"):
             rows.append({**common, "kind": "action",
                          "event": ACTION_TEXT.get(rec["action"], rec["action"]),
                          "detail": rec.get("note", ""),

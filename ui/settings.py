@@ -25,8 +25,8 @@ from core import config as cfg_mod
 from core import control, history
 from core import state as st
 from . import icons, theme
-from .widgets import (Duration, FlatEdit, FlatFactor, FlatSpin, SearchableList,
-                      Spin, button as _button, label as _label)
+from .widgets import (Duration, FlatEdit, FlatFactor, FlatSpin, PadSpin,
+                      SearchableList, Spin, button as _button, label as _label)
 
 
 def _spin(value, lo, hi, width=64, step=1):
@@ -230,9 +230,10 @@ class ServicesPage(QWidget):
                 note = f"recovers automatically, up to {rec.max_attempts} attempts"
             else:
                 note = "recovers automatically, unlimited attempts"
-            where = f"{svc.machine}\\" if svc.machine else ""
+            # Name the machine on every row: a service now always belongs to one.
+            where = self.cfg().machine_label(svc.machine)
             item = QListWidgetItem()
-            widget = _ListRow(svc.display(), f"{where}{svc.name} · {note}", "none")
+            widget = _ListRow(svc.display(), f"{where} · {svc.name} · {note}", "none")
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
@@ -248,11 +249,22 @@ class ServicesPage(QWidget):
 
     def _add(self):
         cfg = self.cfg()
-        dlg = ServicePicker({s.name for s in cfg.services}, self)
-        if dlg.exec() != QDialog.Accepted:
+        machine = cfg_mod.LOCAL_MACHINE
+        if len(cfg.machines) > 1:
+            # More than one machine exists, so which one has to be asked.
+            dlg = SearchableList("Add services", "On which machine?",
+                                [(m.display(), m.name) for m in cfg.machines], self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            machine = dlg.picked[0]
+
+        taken = {s.name for s in cfg.services if (s.machine or "") == machine}
+        picker = ServicePicker(taken, self, machine=machine)
+        if picker.exec() != QDialog.Accepted:
             return
-        for s in dlg.picked:
-            cfg.services.append(cfg_mod.Service(name=s["name"], label=s["display"]))
+        for s in picker.picked:
+            cfg.services.append(cfg_mod.Service(name=s["name"], label=s["display"],
+                                                machine=machine))
         self._refresh_and_signal()
 
     def _remove(self):
@@ -534,6 +546,11 @@ class StackDetail(_Page):
             "Each step starts, then waits before the next one begins. Some "
             "services report Running before they can actually serve, so a fixed "
             "wait is sometimes the honest answer.", "hint", wrap=True))
+        self.in_flyout = QCheckBox("Show in the tray panel")
+        self.in_flyout.setToolTip("Offer this stack with a Run button under the "
+                                  "services, next to where you notice a problem.")
+        self.in_flyout.toggled.connect(self._toggle_flyout)
+        self.head.addWidget(self.in_flyout)
 
         self.steps_area = QScrollArea()
         self.steps_area.setWidgetResizable(True)
@@ -562,10 +579,19 @@ class StackDetail(_Page):
         self._selected = -1
 
     def load(self, stack):
-        self.stack = stack
+        self.stack = None
         self.title.setText(stack.name)
         self.crumb_name.setText(stack.name)
+        self.in_flyout.blockSignals(True)
+        self.in_flyout.setChecked(stack.show_in_flyout)
+        self.in_flyout.blockSignals(False)
+        self.stack = stack
         self._rebuild()
+
+    def _toggle_flyout(self, on):
+        if self.stack is not None:
+            self.stack.show_in_flyout = on
+            self.changed.emit()
 
     def _rebuild(self):
         for row in self._rows:
@@ -763,6 +789,91 @@ class StackDetail(_Page):
             self.changed.emit()
 
 
+class MachinesPage(_Page):
+    """Every service belongs to a machine; this computer is always one of them."""
+
+    changed = Signal()
+
+    def __init__(self, cfg_ref):
+        super().__init__("Machines",
+                         "Where your services live. This computer is always "
+                         "here; adding another lets its services appear in the "
+                         "same panel.")
+        self.cfg = cfg_ref
+
+        self.list = QListWidget()
+        self.root.addWidget(self.list, 1)
+        bar = QHBoxLayout()
+        bar.addWidget(_button("Add machine…", "primary", self._add))
+        bar.addWidget(_button("Remove", "danger", self._remove))
+        bar.addStretch(1)
+        self.root.addSpacing(14)
+        self.root.addLayout(bar)
+        self.root.addSpacing(10)
+        self.root.addWidget(_label(
+            "Managing another machine needs administrator rights on it and the "
+            "usual Windows service ports reachable. Its services are added on "
+            "the Services page, where each one names the machine it belongs to.",
+            "hint", wrap=True))
+        self.refresh()
+
+    def refresh(self):
+        self.list.clear()
+        cfg = self.cfg()
+        for machine in cfg.machines:
+            count = sum(1 for s in cfg.services if (s.machine or "") == machine.name)
+            secondary = f"{count} service{'s' if count != 1 else ''}"
+            if machine.is_local:
+                secondary += "  ·  this computer"
+            item = QListWidgetItem()
+            widget = _ListRow(machine.display(), secondary)
+            item.setSizeHint(widget.sizeHint())
+            self.list.addItem(item)
+            self.list.setItemWidget(item, widget)
+
+    def _add(self):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Add machine",
+                                        "Computer name (as Windows knows it):")
+        name = (name or "").strip().lstrip("\\")
+        if not ok or not name:
+            return
+        if self.cfg().machine(name):
+            QMessageBox.information(self, "Service Officer",
+                                    "That machine is already listed.")
+            return
+        if not control.reachable(name):
+            if QMessageBox.question(
+                    self, "Service Officer",
+                    f"Could not reach {name} — its service manager did not "
+                    "answer.\n\nAdd it anyway?") != QMessageBox.Yes:
+                return
+        self.cfg().machines.append(cfg_mod.Machine(name=name, label=name))
+        self.refresh()
+        self.changed.emit()
+
+    def _remove(self):
+        row = self.list.currentRow()
+        if row < 0:
+            return
+        machine = self.cfg().machines[row]
+        if machine.is_local:
+            QMessageBox.information(self, "Service Officer",
+                                    "This computer can't be removed.")
+            return
+        using = [s.display() for s in self.cfg().services
+                 if (s.machine or "") == machine.name]
+        if using:
+            QMessageBox.information(
+                self, "Service Officer",
+                f"{machine.display()} still has {len(using)} service(s) here. "
+                "Remove them first:\n\n" + "\n".join(using[:8]))
+            return
+        del self.cfg().machines[row]
+        self.refresh()
+        self.changed.emit()
+
+
 class SchedulePage(QWidget):
     """Triggers: a When and an Action, listed then edited on their own page."""
 
@@ -791,6 +902,29 @@ class SchedulePage(QWidget):
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
 
+        # What actually happened, so a schedule isn't something you have to
+        # trust blindly.
+        self.list_page.root.addSpacing(22)
+        exec_head = QHBoxLayout()
+        exec_head.addWidget(_label("RECENT EXECUTIONS", "section"))
+        exec_head.addStretch(1)
+        exec_head.addWidget(_button("Refresh", "quiet", self.refresh_executions))
+        self.list_page.root.addLayout(exec_head)
+        self.list_page.root.addSpacing(8)
+        self.executions = QTableWidget(0, 5)
+        self.executions.setHorizontalHeaderLabels(
+            ["Time", "What", "Name", "Outcome", "Took"])
+        self.executions.verticalHeader().setVisible(False)
+        self.executions.setShowGrid(False)
+        self.executions.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.executions.setSelectionBehavior(QTableWidget.SelectRows)
+        self.executions.setMaximumHeight(190)
+        head = self.executions.horizontalHeader()
+        for col in (0, 1, 3, 4):
+            head.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        head.setSectionResizeMode(2, QHeaderView.Stretch)
+        self.list_page.root.addWidget(self.executions)
+
         self.detail = TriggerDetail(cfg_ref)
         self.detail.back.connect(self._show_list)
         self.detail.changed.connect(self._refresh_and_signal)
@@ -800,7 +934,37 @@ class SchedulePage(QWidget):
         self.stack_widget.addWidget(self.detail)
         self.refresh()
 
+    OUTCOME_COLOUR = {"failed": "STOP_FG", "skipped": "PEND_FG",
+                      "cancelled": "PEND_FG", "success": "RUN_FG"}
+
+    def refresh_executions(self):
+        try:
+            rows = history.runs(limit=60)
+        except Exception:
+            rows = []
+        self.executions.setRowCount(0)
+        for rec in rows:
+            row = self.executions.rowCount()
+            self.executions.insertRow(row)
+            ts = str(rec.get("ts", ""))
+            day, _, clock = ts.partition("T")
+            took = rec.get("seconds") or 0
+            cells = [f"{day} {clock[:8]}", rec.get("run", ""), rec.get("name", ""),
+                     rec.get("outcome", ""), f"{took:g}s" if took else ""]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(str(text))
+                if col == 0:
+                    item.setFont(QFont(theme.MONO, 8))
+                if col == 3:
+                    colour = self.OUTCOME_COLOUR.get(rec.get("outcome", ""))
+                    if colour:
+                        item.setForeground(QColor(getattr(theme, colour)))
+                if rec.get("detail"):
+                    item.setToolTip(rec["detail"])
+                self.executions.setItem(row, col, item)
+
     def refresh(self):
+        self.refresh_executions()
         self.list.clear()
         services = self.cfg().services
         for t in self.cfg().triggers:
@@ -862,6 +1026,7 @@ class TriggerDetail(_Page):
 
     WHENS = ("startup", "time")
     DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    NOTIFY = ("never", "success", "failed", "both", "all")
 
     def __init__(self, cfg_ref):
         super().__init__("", "")
@@ -890,27 +1055,42 @@ class TriggerDetail(_Page):
         # -- when ----------------------------------------------------------
         body.addWidget(_label("WHEN", "section"))
         body.addSpacing(10)
+        # When, and its parameters, on one line — the choice and its detail
+        # belong together.
         self.when = QComboBox()
         self.when.addItems(["Windows starts", "At a time of day"])
-        self.when.setFixedWidth(190)
+        self.when.setFixedWidth(170)
         self.when.currentIndexChanged.connect(self._when_changed)
-        body.addWidget(self.when)
-        body.addSpacing(10)
 
-        self.startup_row = _sentence("wait", Duration(30), "after startup, then act")
-        self.startup_delay = self.startup_row.findChild(Duration)
+        self.startup_delay = Duration(30)
         self.startup_delay.changed.connect(self._commit)
-        body.addWidget(self.startup_row)
+        self.startup_row = _sentence("after", self.startup_delay)
+
+        self.hour = PadSpin(3, 0, 23, 48)
+        self.minute = PadSpin(0, 0, 59, 48)
+        self.hour.valueChanged.connect(self._commit)
+        self.minute.valueChanged.connect(self._commit)
+        self.repeat = Duration(0)
+        self.repeat.changed.connect(self._commit)
+        self.time_inline = _sentence("at", self.hour, ":", self.minute,
+                                     "· then every", self.repeat,
+                                     "(leave 0 for once a day)")
+
+        when_line = QWidget()
+        wl = QHBoxLayout(when_line)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(10)
+        wl.addWidget(self.when)
+        wl.addWidget(self.startup_row)
+        wl.addWidget(self.time_inline)
+        wl.addStretch(1)
+        body.addWidget(when_line)
+        body.addSpacing(8)
 
         self.time_row = QWidget()
         tl = QVBoxLayout(self.time_row)
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(10)
-        self.hour = _spin(3, 0, 23, 52)
-        self.minute = _spin(0, 0, 59, 52)
-        self.hour.valueChanged.connect(self._commit)
-        self.minute.valueChanged.connect(self._commit)
-        tl.addWidget(_sentence("at", self.hour, ":", self.minute))
         days = QWidget()
         dl = QHBoxLayout(days)
         dl.setContentsMargins(0, 0, 0, 0)
@@ -933,29 +1113,48 @@ class TriggerDetail(_Page):
         # -- action --------------------------------------------------------
         body.addWidget(_label("ACTION", "section"))
         body.addSpacing(10)
+        # Action and its parameters on one line too.
         self.action = QComboBox()
         self.action.addItems(["Run a stack", "Act on one service"])
-        self.action.setFixedWidth(190)
+        self.action.setFixedWidth(170)
         self.action.currentIndexChanged.connect(self._action_changed)
-        body.addWidget(self.action)
-        body.addSpacing(10)
 
         self.stack_pick = QComboBox()
-        self.stack_pick.setMinimumWidth(240)
+        self.stack_pick.setMinimumWidth(220)
         self.stack_pick.currentIndexChanged.connect(self._commit)
-        self.stack_row = _sentence("run", self.stack_pick)
-        body.addWidget(self.stack_row)
-
         self.service_action = QComboBox()
         self.service_action.addItems(["start", "stop", "restart"])
         self.service_action.setFixedWidth(96)
         self.service_action.currentIndexChanged.connect(self._commit)
         self.service_pick = QComboBox()
-        self.service_pick.setMinimumWidth(240)
+        self.service_pick.setMinimumWidth(220)
         self.service_pick.currentIndexChanged.connect(self._commit)
-        self.service_row = _sentence(self.service_action, self.service_pick)
-        body.addWidget(self.service_row)
 
+        action_line = QWidget()
+        al = QHBoxLayout(action_line)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(10)
+        al.addWidget(self.action)
+        al.addWidget(self.stack_pick)
+        al.addWidget(self.service_action)
+        al.addWidget(self.service_pick)
+        al.addStretch(1)
+        body.addWidget(action_line)
+        self.stack_row = self.stack_pick          # visibility handled per widget
+        self.service_row = self.service_pick
+        body.addSpacing(20)
+
+        body.addWidget(_label("TELL ME", "section"))
+        body.addSpacing(9)
+        self.notify = QComboBox()
+        self.notify.addItems(["Never", "On success", "On failure",
+                              "On success or failure", "Every run, even skipped"])
+        self.notify.setFixedWidth(240)
+        self.notify.currentIndexChanged.connect(self._commit)
+        body.addWidget(self.notify)
+        body.addWidget(_label("Skipped means there was nothing to do — asking a "
+                              "service to start when it is already running.",
+                              "hint", wrap=True))
         body.addSpacing(20)
         self.summary = _label("", "hint", wrap=True)
         body.addWidget(self.summary)
@@ -983,6 +1182,9 @@ class TriggerDetail(_Page):
             hour, minute = 3, 0
         self.hour.setValue(hour)
         self.minute.setValue(minute)
+        self.repeat.set_seconds(trigger.repeat_seconds)
+        self.notify.setCurrentIndex(self.NOTIFY.index(
+            trigger.notify if trigger.notify in self.NOTIFY else "failed"))
         for index, box in enumerate(self.day_boxes):
             box.setChecked(index in trigger.days)
 
@@ -1014,10 +1216,12 @@ class TriggerDetail(_Page):
     def _sync_visibility(self):
         by_time = self.when.currentIndex() == 1
         self.startup_row.setVisible(not by_time)
+        self.time_inline.setVisible(by_time)
         self.time_row.setVisible(by_time)
         by_service = self.action.currentIndex() == 1
-        self.stack_row.setVisible(not by_service)
-        self.service_row.setVisible(by_service)
+        self.stack_pick.setVisible(not by_service)
+        self.service_action.setVisible(by_service)
+        self.service_pick.setVisible(by_service)
 
     def _when_changed(self, _index):
         self._sync_visibility()
@@ -1036,6 +1240,8 @@ class TriggerDetail(_Page):
         t.delay_seconds = self.startup_delay.seconds()
         t.time_of_day = f"{self.hour.value():02d}:{self.minute.value():02d}"
         t.days = [i for i, box in enumerate(self.day_boxes) if box.isChecked()]
+        t.repeat_seconds = self.repeat.seconds()
+        t.notify = self.NOTIFY[self.notify.currentIndex()]
         t.action = "stack" if self.action.currentIndex() == 0 else "service"
         t.stack = self.stack_pick.currentData() or ""
         t.service = self.service_pick.currentData() or ""
@@ -1056,6 +1262,15 @@ class HistoryPage(_Page):
     COLUMNS = ("Time", "Service", "Event", "Detail", "Source")
     RANGES = (("Last hour", 1), ("Last 8 hours", 8), ("Last 24 hours", 24),
               ("Last 7 days", 24 * 7), ("Last 30 days", 24 * 30), ("Everything", 0))
+    #: which cause produced the row. "observed" covers anything we didn't do —
+    #: a crash, or someone stopping the service outside this app.
+    SOURCES = (("Any trigger", None),
+               ("You, from the panel", "you, from the panel"),
+               ("Scheduled trigger", "scheduled trigger"),
+               ("Stack run", "stack run"),
+               ("Watchdog", "watchdog"),
+               ("Outside this app", "observed"),
+               ("Windows event log", "Windows event log"))
 
     def __init__(self, cfg_ref):
         super().__init__("History",
@@ -1093,6 +1308,13 @@ class HistoryPage(_Page):
         self.range_filter.currentIndexChanged.connect(self.reload)
         filt.addWidget(_label("Range", "hint"))
         filt.addWidget(self.range_filter)
+
+        self.source_filter = QComboBox()
+        for text, value in self.SOURCES:
+            self.source_filter.addItem(text, value)
+        self.source_filter.currentIndexChanged.connect(self.reload)
+        filt.addWidget(_label("Trigger", "hint"))
+        filt.addWidget(self.source_filter)
 
         self.include_windows = QCheckBox("Windows event log")
         self.include_windows.setToolTip(
@@ -1158,13 +1380,17 @@ class HistoryPage(_Page):
         names = [s.name for s in cfg.services]
         labels = [s.display() for s in cfg.services]
         try:
-            return history.query(
+            rows = history.query(
                 service_names=names, labels=labels,
                 service=self.service_filter.currentData(),
                 hours=self.range_filter.currentData() or None,
                 include_windows=self.include_windows.isChecked())
         except Exception:
             return []
+        wanted = self.source_filter.currentData()
+        if wanted:
+            rows = [r for r in rows if r.get("source", "").startswith(wanted)]
+        return rows
 
     def reload(self):
         rows = self._current_rows()
@@ -1332,6 +1558,7 @@ class SettingsWindow(QDialog):
         self.services_page = ServicesPage(get)
         self.stacks_page = StacksPage(get)
         self.schedule_page = SchedulePage(get)
+        self.machines_page = MachinesPage(get)
         self.history_page = HistoryPage(get)
         self.general_page = GeneralPage(get)
         self.services_page.changed.connect(self.stacks_page.refresh)
@@ -1341,8 +1568,9 @@ class SettingsWindow(QDialog):
         self.schedule_page.run_now.connect(self.run_trigger)
         self.general_page.theme_changed.connect(self.theme_changed)
         self.general_page.theme_changed.connect(lambda _m: self.restyle())
+        self.machines_page.changed.connect(self.services_page.refresh)
         for page in (self.services_page, self.stacks_page, self.schedule_page,
-                     self.history_page, self.general_page):
+                     self.machines_page, self.history_page, self.general_page):
             page.changed.connect(self._refresh_save_state)
 
         self._nav_buttons = []
@@ -1352,6 +1580,7 @@ class SettingsWindow(QDialog):
                     ("Schedule", "schedule", self.schedule_page),
                     ("History", "history", self.history_page),
                     ("Application", None, None),
+                    ("Machines", "machines", self.machines_page),
                     ("General", "general", self.general_page)]
         for text, kind, page in sections:
             if page is None:
@@ -1408,8 +1637,8 @@ class SettingsWindow(QDialog):
     def restyle(self) -> None:
         """Repaint what the global stylesheet can't reach after a mode change:
         the nav icons and the few values drawn with inline colours."""
-        for kind, btn in zip(("services", "stacks", "schedule", "history", "general"),
-                             self._nav_buttons):
+        for kind, btn in zip(("services", "stacks", "schedule", "history",
+                              "machines", "general"), self._nav_buttons):
             btn.setIcon(icons.nav_icon(kind, 19))
         for widget in self.findChildren(FlatEdit):
             widget.restyle()

@@ -11,6 +11,7 @@ import ctypes
 import os
 import sys
 import threading
+import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -59,6 +60,9 @@ class Application(QObject):
 
         self.cfg = cfg_mod.load()
         self.store = st.store
+        #: set while a trigger's action is in flight, so its outcome is recorded
+        self._pending_trigger = None
+        self._announce_errors = True
         theme.set_mode(self.cfg.theme)
         self.qt.setStyleSheet(theme.sheet())
         # With "system" chosen, follow Windows when it flips light/dark.
@@ -150,6 +154,12 @@ class Application(QObject):
             except Exception:
                 status = st.UNKNOWN
             self.store.update(svc.name, status, machine=svc.machine)
+            try:
+                self.store.set_start_type(svc.name,
+                                          control.start_type(svc.name, svc.machine),
+                                          machine=svc.machine)
+            except Exception:
+                pass
 
     # -- core events -------------------------------------------------------
     def _on_scm(self, name, status, exit_code=0, pid=0):
@@ -166,10 +176,12 @@ class Application(QObject):
                 self.tray.notify("Service Officer", f"{event.name} is running again.")
 
     # -- actions -----------------------------------------------------------
-    def do_action(self, action: str, name: str, machine: str = ""):
+    def do_action(self, action: str, name: str, machine: str = "",
+                  announce_errors: bool = True):
         if action == "kill":
             self.kill_process(name, machine)
             return
+        self._announce_errors = announce_errors
         verb = {"start": "Starting", "stop": "Stopping", "restart": "Restarting"}[action]
         self.flyout.mark_busy(name, machine, verb + "…")
         self.tray.action_started()
@@ -198,9 +210,16 @@ class Application(QObject):
             pass
         if self.flyout.isVisible():
             self.flyout.apply_states()
-        if error:
+
+        pending = self._pending_trigger
+        self._pending_trigger = None
+        if pending is not None:
+            _trigger, finish = pending
+            finish("failed" if error else "success", error or "")
+        elif error and self._announce_errors:
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not {action} '{name}':\n{error}")
+        self._announce_errors = True
 
     def kill_process(self, name: str, machine: str = ""):
         """Terminate the service's process — abrupt, so it asks first."""
@@ -240,19 +259,48 @@ class Application(QObject):
         self.refresh()
 
     def run_trigger(self, trigger):
-        """Do what a trigger says. Shared by the scheduler and its Run now button."""
+        """Do what a trigger says. Shared by the scheduler and its Run now button.
+
+        A trigger that asks for something already true is *skipped*, not failed:
+        "start AppEngine" at 03:00 when it is already running is the normal case,
+        and it used to raise "service already running" in the user's face.
+        """
         if trigger is None:
             return
-        if self.cfg.history.enabled:
-            target = trigger.stack if trigger.action == "stack" else trigger.service
-            history.record_action(target or trigger.name,
-                                  trigger.service_action if trigger.action == "service"
-                                  else "run stack",
-                                  st.SRC_SCHEDULE, note=f"trigger “{trigger.name}”")
-        if trigger.action == "stack":
-            self.run_stack(trigger.stack)
-        elif trigger.service:
-            self.do_action(trigger.service_action, trigger.service)
+        began = time.monotonic()
+
+        def finish(outcome: str, detail: str = ""):
+            history.record_run("trigger", trigger.name, outcome,
+                               seconds=time.monotonic() - began, detail=detail,
+                               source=st.SRC_SCHEDULE)
+            if trigger.wants_notice(outcome):
+                self.tray.notify("Service Officer",
+                                 f"{trigger.name}: {outcome}"
+                                 + (f" — {detail}" if detail else ""))
+
+        if trigger.action == "service":
+            if not trigger.service:
+                finish("failed", "no service chosen")
+                return
+            target = {"start": st.RUNNING, "stop": st.STOPPED}.get(
+                trigger.service_action)
+            current = self.store.status_of(trigger.service, trigger.machine)
+            if target and current == target:
+                log.info("trigger “%s” skipped: %s is already %s",
+                         trigger.name, trigger.service, current.lower())
+                finish("skipped", f"{trigger.service} was already {current.lower()}")
+                return
+            self._pending_trigger = (trigger, finish)
+            self.do_action(trigger.service_action, trigger.service, trigger.machine,
+                           announce_errors=False)
+            return
+
+        stack = self.cfg.stack(trigger.stack)
+        if not stack or not stack.steps:
+            finish("skipped", "the stack has no steps")
+            return
+        self._pending_trigger = (trigger, finish)
+        self.run_stack(stack)
 
     def run_stack(self, stack_or_name, _action=None):
         """The second argument exists only because Settings' test-run signal
@@ -291,7 +339,19 @@ class Application(QObject):
         self.tray.action_finished()
         self.refresh()
         log.info(result.summary())
-        self.tray.notify("Service Officer", result.summary())
+        outcome = ("cancelled" if result.cancelled
+                   else "success" if result.ok else "failed")
+        history.record_run("stack", result.stack, outcome,
+                           seconds=sum(s.seconds for s in result.steps),
+                           detail=result.summary(), source=st.SRC_STACK)
+
+        pending = self._pending_trigger
+        self._pending_trigger = None
+        if pending is not None:
+            _trigger, finish = pending
+            finish(outcome, result.summary())
+        else:
+            self.tray.notify("Service Officer", result.summary())
 
     # -- ui plumbing -------------------------------------------------------
     def _toggle_flyout(self):
@@ -311,6 +371,9 @@ class Application(QObject):
             try:
                 self.store.update(svc.name, control.query_status(svc.name, svc.machine),
                                   machine=svc.machine)
+                self.store.set_start_type(svc.name,
+                                          control.start_type(svc.name, svc.machine),
+                                          machine=svc.machine)
             except Exception:
                 pass
         self.flyout.refresh()

@@ -60,24 +60,47 @@ class Scheduler:
             return False
         if trigger.days and now.weekday() not in trigger.days:
             return False
-        if self._last_run.get(trigger.name) == now.date():
-            return False               # already fired today
         try:
             hour, minute = (int(p) for p in trigger.time_of_day.split(":"))
         except (ValueError, AttributeError):
             return False
-        scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if now < scheduled:
+        start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now < start:
             return False
-        # Fire late if we were asleep or the app was closed, but not all day.
-        return now - scheduled <= timedelta(minutes=CATCH_UP_MINUTES)
+
+        repeat = max(0, int(trigger.repeat_seconds or 0))
+        if not repeat:
+            if self._last_run.get(trigger.name) == now.date():
+                return False           # once a day, already done
+            # Fire late if we were asleep or the app was closed, but not all day.
+            return now - start <= timedelta(minutes=CATCH_UP_MINUTES)
+
+        # "at 03:00, then every 2 hours": the due moments are start + n*repeat,
+        # and we fire at the most recent one we haven't already run.
+        elapsed = (now - start).total_seconds()
+        occurrence = start + timedelta(seconds=(int(elapsed // repeat) * repeat))
+        if self._last_run.get(trigger.name) == occurrence:
+            return False
+        return (now - occurrence) <= timedelta(minutes=CATCH_UP_MINUTES)
+
+    def occurrence_for(self, trigger, now: datetime):
+        """Which scheduled moment a firing belongs to, so repeats aren't
+        double-counted. A once-a-day trigger is keyed by date."""
+        repeat = max(0, int(trigger.repeat_seconds or 0))
+        if trigger.when != "time" or not repeat:
+            return now.date()
+        hour, minute = (int(p) for p in trigger.time_of_day.split(":"))
+        start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        elapsed = max(0.0, (now - start).total_seconds())
+        return start + timedelta(seconds=(int(elapsed // repeat) * repeat))
 
     def due_now(self, now: datetime = None) -> list:
         now = now or self._now()
         return [t for t in self._config().triggers if self._time_due(t, now)]
 
-    def mark_ran(self, trigger, when: date = None) -> None:
-        self._last_run[trigger.name] = (when or self._now().date())
+    def mark_ran(self, trigger, when=None) -> None:
+        self._last_run[trigger.name] = (when if when is not None
+                                        else self.occurrence_for(trigger, self._now()))
 
     # -- the loop ----------------------------------------------------------
     def run_startup_triggers(self) -> None:
@@ -105,6 +128,7 @@ class Scheduler:
             self._stop.wait(self._tick)
             if self._stop.is_set():
                 break
-            for trigger in self.due_now():
-                self.mark_ran(trigger)
+            now = self._now()
+            for trigger in self.due_now(now):
+                self.mark_ran(trigger, self.occurrence_for(trigger, now))
                 self._fire(trigger)

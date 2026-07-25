@@ -100,6 +100,9 @@ class Store:
         #: services whose next stop we caused ourselves, so the watchdog can
         #: tell "I stopped it" from "it fell over".
         self._expected: dict = {}
+        #: start type per service (Automatic/Manual/Disabled). Not part of the
+        #: SCM notification, so it is filled in by our own queries.
+        self._start_types: dict = {}
 
     # -- subscription ------------------------------------------------------
     def subscribe(self, fn) -> None:
@@ -176,6 +179,18 @@ class Store:
         event = Event(state=state, previous=previous, source=src)
         self._emit(event)
         return event
+
+    # -- start type --------------------------------------------------------
+    def set_start_type(self, name: str, value: str, machine: str = "") -> None:
+        with self._lock:
+            self._start_types[(machine or "", name)] = value or ""
+
+    def start_type(self, name: str, machine: str = "") -> str:
+        with self._lock:
+            return self._start_types.get((machine or "", name), "")
+
+    def is_disabled(self, name: str, machine: str = "") -> bool:
+        return self.start_type(name, machine) == "Disabled"
 
     # -- intent ------------------------------------------------------------
     def expect_stop(self, name: str, machine: str = "") -> None:

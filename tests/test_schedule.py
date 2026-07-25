@@ -73,6 +73,45 @@ def test_startup_triggers_are_separate_from_time_ones():
     assert fired == [boot]
 
 
+def test_repeat_fires_on_each_interval_from_the_start_time():
+    """"at 03:00, then every 2 hours" — the point of a repeat is that it keeps
+    going, so once-a-day bookkeeping must not block it."""
+    t = cfg_mod.Trigger(name="every2h", when="time", time_of_day="03:00",
+                        repeat_seconds=2 * 3600)
+    sched, _fired, _cfg = build([t])
+
+    assert sched.due_now(at(20, 2, 59)) == []
+    first = at(20, 3, 0)
+    assert sched.due_now(first) == [t]
+    sched.mark_ran(t, sched.occurrence_for(t, first))
+    assert sched.due_now(at(20, 3, 30)) == []       # same slot, already done
+    assert sched.due_now(at(20, 4, 59)) == []       # next slot not reached
+    third = at(20, 5, 0)
+    assert sched.due_now(third) == [t]              # 03:00 + 2h
+    sched.mark_ran(t, sched.occurrence_for(t, third))
+    assert sched.due_now(at(20, 7, 0)) == [t]       # and again at 07:00
+
+
+def test_repeat_summary_reads_naturally():
+    t = cfg_mod.Trigger(name="r", when="time", time_of_day="03:00",
+                        repeat_seconds=2 * 3600, action="stack", stack="S")
+    assert t.when_text() == "every day at 03:00, then every 2h"
+    t.repeat_seconds = 90 * 60
+    assert "every 90m" in t.when_text()
+
+
+def test_notification_preference():
+    t = cfg_mod.Trigger(name="n", notify="failed")
+    assert t.wants_notice("failed") and not t.wants_notice("success")
+    t.notify = "both"
+    assert t.wants_notice("success") and t.wants_notice("failed")
+    assert not t.wants_notice("skipped")
+    t.notify = "all"
+    assert t.wants_notice("skipped")
+    t.notify = "never"
+    assert not any(t.wants_notice(o) for o in ("success", "failed", "skipped"))
+
+
 def test_summaries_read_as_sentences():
     boot = cfg_mod.Trigger(name="b", when="startup", delay_seconds=30,
                            action="stack", stack="SAP B1")

@@ -125,6 +125,36 @@ def test_mixed_states_show_the_amber_icon(qapp):
     assert icons.colour_for(0, 4) == "red"
 
 
+def test_a_disabled_service_says_so_and_offers_nothing(qapp, sample):
+    """Windows refuses to start a disabled service, so a Start button would only
+    ever fail."""
+    store = st.Store()
+    store.update("WMSServer", st.STOPPED)
+    store.set_start_type("WMSServer", "Disabled")
+
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+    fly.apply_states()
+    row = fly._rows[("", "WMSServer")]
+    assert row.chip.text() == "Disabled"
+    assert all(not b.isEnabled() for b in row.buttons.values())
+    assert "disabled in Windows" in row.toolTip()
+    fly.deleteLater()
+
+
+def test_hidden_stacks_stay_out_of_the_flyout(qapp, sample):
+    sample.stacks.append(cfg_mod.Stack(name="internal only", show_in_flyout=False,
+                                       steps=[cfg_mod.Step(service="AppEngine")]))
+    store = st.Store()
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+    from PySide6.QtWidgets import QPushButton
+    names = [b.toolTip() for b in fly.findChildren(QPushButton)
+             if b.text().endswith("Run")]
+    assert len(names) == 1                      # only the visible stack
+    fly.deleteLater()
+
+
 def test_flyout_filter_hides_rows(qapp, sample):
     store = st.Store()
     fly = flyout_mod.Flyout(lambda: sample, store)

@@ -67,6 +67,41 @@ def list_all_services(machine: str = "") -> list:
     return services
 
 
+_START_TYPES = {
+    win32service.SERVICE_BOOT_START:   "Boot",
+    win32service.SERVICE_SYSTEM_START: "System",
+    win32service.SERVICE_AUTO_START:   "Automatic",
+    win32service.SERVICE_DEMAND_START: "Manual",
+    win32service.SERVICE_DISABLED:     "Disabled",
+}
+
+
+def start_type(service_name: str, machine: str = "") -> str:
+    """Automatic / Manual / Disabled …
+
+    Worth knowing because a disabled service cannot be started at all — Windows
+    refuses with "the service cannot be started because it is disabled", and
+    offering a Start button for it is a lie.
+    """
+    try:
+        scm = win32service.OpenSCManager(_m(machine), None,
+                                         win32service.SC_MANAGER_CONNECT)
+    except pywintypes.error:
+        return ""
+    try:
+        handle = win32service.OpenService(scm, service_name,
+                                         win32service.SERVICE_QUERY_CONFIG)
+        try:
+            config = win32service.QueryServiceConfig(handle)
+            return _START_TYPES.get(config[1], "")
+        finally:
+            win32service.CloseServiceHandle(handle)
+    except pywintypes.error:
+        return ""
+    finally:
+        win32service.CloseServiceHandle(scm)
+
+
 def process_id(service_name: str, machine: str = "") -> int:
     """The service's process, or 0 if it isn't running.
 

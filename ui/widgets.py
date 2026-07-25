@@ -213,6 +213,19 @@ class FlatFactor(FlatEdit):
             self._set_editing(False)
 
 
+class PadSpin(Spin):
+    """Two-digit display, so 04 stays 04 instead of collapsing to 4."""
+
+    def textFromValue(self, value):
+        return f"{int(value):02d}"
+
+    def valueFromText(self, text):
+        try:
+            return int(str(text).strip() or 0)
+        except ValueError:
+            return self.minimum()
+
+
 class Duration(FlatEdit):
     """A number plus a unit, stored as seconds.
 
