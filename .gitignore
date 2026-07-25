@@ -9,3 +9,5 @@ ServiceOfficer.exe
 
 # Claude Code worktrees and per-session files
 .claude/
+
+core/version.py.orig

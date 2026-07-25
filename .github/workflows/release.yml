@@ -32,6 +32,12 @@ jobs:
       - name: Run tests
         run: python -m pytest tests -q
 
+      # The release builds are the ones that most need to say which commit they
+      # are, and this step is what puts it there. It also fails the build if the
+      # tag, installer.iss and core/version.py disagree about the version.
+      - name: Stamp the build
+        run: python stamp_version.py
+
       - name: Build ServiceOfficer (one-dir; a Qt app re-extracted on every
               launch starts slowly)
         run: >

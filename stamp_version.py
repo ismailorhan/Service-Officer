@@ -8,6 +8,7 @@ unless --keep is passed, so a build never leaves the working tree dirty.
 from __future__ import annotations
 
 import datetime
+import os
 import pathlib
 import re
 import shutil
@@ -37,12 +38,43 @@ def stamp() -> tuple:
     return commit, built
 
 
+def declared_versions() -> dict:
+    """The version as each place spells it. Three copies exist — core/version.py,
+    installer.iss, and the git tag — and a release that disagrees with itself is
+    worse than no version at all."""
+    found = {}
+    text = TARGET.read_text(encoding="utf-8")
+    match = re.search(r'^VERSION = "(.*)"$', text, flags=re.M)
+    if match:
+        found["core/version.py"] = match.group(1)
+
+    iss = TARGET.parent.parent / "installer.iss"
+    if iss.exists():
+        match = re.search(r'^#define MyAppVersion\s+"(.*)"$',
+                          iss.read_text(encoding="utf-8"), flags=re.M)
+        if match:
+            found["installer.iss"] = match.group(1)
+
+    # On a tag build, GitHub tells us the tag; locally there may be none.
+    ref = os.environ.get("GITHUB_REF_NAME", "")
+    if re.fullmatch(r"v\d+\.\d+\.\d+", ref):
+        found["git tag"] = ref[1:]
+    return found
+
+
 def main() -> int:
     if "--restore" in sys.argv:
         if BACKUP.exists():
             shutil.move(str(BACKUP), str(TARGET))
             print("version.py restored")
         return 0
+
+    declared = declared_versions()
+    if len(set(declared.values())) > 1:
+        print("[ERROR] the version is spelled differently in each place:")
+        for where, value in declared.items():
+            print(f"          {where}: {value}")
+        return 1
 
     commit, built = stamp()
     text = TARGET.read_text(encoding="utf-8")
