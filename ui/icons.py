@@ -33,6 +33,12 @@ _FRAMES = 12
 _cache: dict = {}
 
 
+def clear_cache() -> None:
+    """Drop everything painted with palette colours — call after a theme change."""
+    for key in [k for k in _cache if k[0] in ("nav", "dot")]:
+        del _cache[key]
+
+
 def base_pixmap(colour: str = "green", size: int = 64) -> QPixmap:
     key = ("base", colour, size)
     if key not in _cache:

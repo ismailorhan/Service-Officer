@@ -32,17 +32,35 @@ class StackSignals(QObject):
     done = Signal(object)
 
 
+class ActionSignals(QObject):
+    """Same for a single service action.
+
+    It has to be a signal, not QTimer.singleShot: a worker thread has no Qt
+    event loop, so a timer started there never fires — which left the tray
+    spinning forever after every start/stop because the completion handler that
+    clears the busy counter was never called.
+    """
+    done = Signal(str, str, str, object)        # service, machine, action, error
+
+
 class Application(QObject):
     def __init__(self, argv):
         super().__init__()
         self.qt = QApplication(argv)
         self.qt.setApplicationName("Service Officer")
         self.qt.setQuitOnLastWindowClosed(False)
-        self.qt.setStyleSheet(theme.sheet())
         self.qt.setWindowIcon(icons.base_icon("green"))
 
         self.cfg = cfg_mod.load()
         self.store = st.store
+        theme.set_mode(self.cfg.theme)
+        self.qt.setStyleSheet(theme.sheet())
+        # With "system" chosen, follow Windows when it flips light/dark.
+        try:
+            self.qt.styleHints().colorSchemeChanged.connect(
+                lambda _s: self.apply_theme(self.cfg.theme))
+        except Exception:
+            pass
 
         # --- core ---------------------------------------------------------
         history.attach(self.store, lambda: self.cfg.history.enabled)
@@ -74,6 +92,9 @@ class Application(QObject):
         self.stack_signals.step.connect(self._on_stack_step)
         self.stack_signals.done.connect(self._on_stack_done)
 
+        self.action_signals = ActionSignals()
+        self.action_signals.done.connect(self._action_done)
+
         self.tray.left_clicked.connect(self._toggle_flyout)
         self.tray.hover.connect(self._on_hover)
         self.tray.settings_requested.connect(self.open_settings)
@@ -84,6 +105,7 @@ class Application(QObject):
         self.tray.menu_opened.connect(self.hover.dismiss)
 
         self.flyout.action_requested.connect(self.do_action)
+        self.flyout.run_stack.connect(self.run_stack)
         self.flyout.open_settings.connect(self.open_settings)
         self.flyout.open_services_mmc.connect(self._open_services_mmc)
 
@@ -142,8 +164,7 @@ class Application(QObject):
                 error = getattr(exc, "strerror", None) or str(exc)
                 self.store.clear_expected(name, machine)
             finally:
-                QTimer.singleShot(0, lambda: self._action_done(name, machine,
-                                                              action, error))
+                self.action_signals.done.emit(name, machine, action, error)
         threading.Thread(target=work, daemon=True).start()
 
     def _action_done(self, name, machine, action, error):
@@ -159,7 +180,9 @@ class Application(QObject):
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not {action} '{name}':\n{error}")
 
-    def run_stack(self, stack_or_name):
+    def run_stack(self, stack_or_name, _action=None):
+        """The second argument exists only because Settings' test-run signal
+        still carries one; a stack has a single way to run."""
         """Accepts a name (tray menu) or a Stack (a test run from Settings, which
         must use the values currently on screen rather than the saved ones)."""
         stack = (self.cfg.stack(stack_or_name)
@@ -216,6 +239,28 @@ class Application(QObject):
         self.flyout.refresh()
         self.tray.apply_state()
 
+    def apply_theme(self, requested: str) -> None:
+        """Repaint everything. The flyout and hover card are rebuilt rather than
+        restyled: they carry per-status colours that are chosen when built."""
+        theme.set_mode(requested)
+        self.qt.setStyleSheet(theme.sheet())
+        icons.clear_cache()
+
+        was_visible = self.flyout.isVisible()
+        self.flyout.deleteLater()
+        self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store)
+        self.flyout.action_requested.connect(self.do_action)
+        self.flyout.run_stack.connect(self.run_stack)
+        self.flyout.open_settings.connect(self.open_settings)
+        self.flyout.open_services_mmc.connect(self._open_services_mmc)
+        if was_visible:
+            self.flyout.popup(self.tray.geometry())
+
+        self.hover.deleteLater()
+        self.hover = hover_mod.HoverCard(lambda: self.cfg, self.store)
+        self.tray.apply_state()
+        log.info("theme set to %s (%s)", requested, theme.resolved)
+
     def open_settings(self):
         self.hover.dismiss()
         if self.settings_window is not None and self.settings_window.isVisible():
@@ -225,6 +270,7 @@ class Application(QObject):
         win = settings_mod.SettingsWindow(self.cfg)
         win.saved.connect(self._settings_saved)
         win.test_run.connect(self.run_stack)
+        win.theme_changed.connect(self.apply_theme)
         self.settings_window = win
         win.show()
 

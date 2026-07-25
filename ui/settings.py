@@ -23,7 +23,8 @@ from core import config as cfg_mod
 from core import control, history
 from core import state as st
 from . import icons, theme
-from .widgets import Duration, SearchableList, Spin, button as _button, label as _label
+from .widgets import (Duration, FlatEdit, FlatFactor, FlatSpin, SearchableList,
+                      Spin, button as _button, label as _label)
 
 
 def _spin(value, lo, hi, width=64, step=1):
@@ -336,25 +337,27 @@ class ServiceDetail(_Page):
         body.addWidget(_label("If it stops on its own, start it again.", "hint"))
         body.addSpacing(10)
 
-        self.attempts = _spin(3, 0, 99)
-        self.delay = _spin(10, 0, 3600)
-        self.backoff = _dspin(2.0, 1.0, 10.0)
-        self.flap_count = _spin(5, 2, 50)
-        self.flap_window = _spin(30, 1, 1440)
-        for w in (self.attempts, self.delay, self.flap_count, self.flap_window):
-            w.valueChanged.connect(self._save_rules)
-        self.backoff.valueChanged.connect(self._save_rules)
+        # Same treatment as the stack editor: values read as text and only turn
+        # into controls when clicked.
+        self.attempts = FlatSpin(3, 0, 99)
+        self.delay = Duration(10)
+        self.backoff = FlatFactor(2.0)
+        self.flap_count = FlatSpin(5, 2, 50)
+        self.flap_window = Duration(30 * 60, minimum=60)
+        for w in (self.attempts, self.delay, self.backoff,
+                  self.flap_count, self.flap_window):
+            w.changed.connect(self._save_rules)
 
         self.rules = QWidget()
         rl = QVBoxLayout(self.rules)
         rl.setContentsMargins(24, 0, 0, 0)
         rl.setSpacing(10)
         rl.addWidget(_sentence("Try up to", self.attempts, "times, waiting",
-                               self.delay, "seconds first"))
+                               self.delay, "first"))
         rl.addWidget(_sentence("and multiplying that wait by", self.backoff,
                                "each time."))
         rl.addWidget(_sentence("Give up if it stops", self.flap_count,
-                               "times within", self.flap_window, "minutes."))
+                               "times within", self.flap_window, "."))
         body.addWidget(self.rules)
         body.addSpacing(16)
 
@@ -378,10 +381,10 @@ class ServiceDetail(_Page):
         r = svc.recovery
         self.keep.setChecked(r.enabled)
         self.attempts.setValue(r.max_attempts)
-        self.delay.setValue(r.delay_seconds)
+        self.delay.set_seconds(r.delay_seconds)
         self.backoff.setValue(r.backoff)
         self.flap_count.setValue(r.flap_threshold)
-        self.flap_window.setValue(r.flap_window_minutes)
+        self.flap_window.set_seconds(r.flap_window_minutes * 60)
         self.clean.setChecked(r.restart_on_clean_stop)
         self.svc = svc
         self._sync_enabled()
@@ -408,11 +411,11 @@ class ServiceDetail(_Page):
         self.svc.recovery = cfg_mod.Recovery(
             enabled=self.keep.isChecked(),
             max_attempts=self.attempts.value(),
-            delay_seconds=self.delay.value(),
+            delay_seconds=self.delay.seconds(),
             backoff=self.backoff.value(),
             restart_on_clean_stop=self.clean.isChecked(),
             flap_threshold=self.flap_count.value(),
-            flap_window_minutes=self.flap_window.value(),
+            flap_window_minutes=max(1, self.flap_window.seconds() // 60),
         )
         self.changed.emit()
 
@@ -591,37 +594,13 @@ class StackDetail(_Page):
 
             col = QVBoxLayout()
             col.setSpacing(3)
+            col.addWidget(_label(labels.get(step.service, step.service), "strong"))
 
-            # name + what to do to it
-            first = QWidget()
-            fl = QHBoxLayout(first)
-            fl.setContentsMargins(0, 0, 0, 0)
-            fl.setSpacing(8)
-            fl.addWidget(_label(labels.get(step.service, step.service), "strong"))
-            act = QComboBox()
-            act.addItems(["start", "stop", "restart"])
-            act.setCurrentIndex(["start", "stop", "restart"].index(step.action))
-            act.setFixedWidth(96)
-            act.setToolTip("What this step does to the service. The stack runs "
-                           "these in order, so it reads as a script.")
-
-            def commit_action(_=None, s=step, a=act):
-                s.action = ["start", "stop", "restart"][a.currentIndex()]
-                self._rebuild()          # the wait's target state changed with it
-                self.changed.emit()
-            act.currentIndexChanged.connect(commit_action)
-            fl.addWidget(act)
-            fl.addStretch(1)
-            col.addWidget(first)
-
+            # Second line reads as a sentence: "Start this service, then wait …"
             # The wait describes the gap *to the next step*, so the last row has
-            # nothing to configure — with a single step there is no transition.
-            if i < len(self.stack.steps):
-                col.addWidget(self._gap_editor(step))
-            else:
-                col.addWidget(_label(
-                    f"last step — verified {step.target_state.lower()}, up to "
-                    f"{step.timeout_seconds}s", "hint"))
+            # nothing to configure — a single step has no transition at all.
+            is_last = (i == len(self.stack.steps))
+            col.addWidget(self._step_line(step, is_last))
             rl.addLayout(col, 1)
 
             def select(_ev=None, idx=i - 1):
@@ -638,6 +617,37 @@ class StackDetail(_Page):
             self._rows.append(empty)
         self._highlight()
 
+    def _step_line(self, step, is_last: bool) -> QWidget:
+        """`[start ▾] this service, then wait …` — the action leads the sentence."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        act = QComboBox()
+        act.addItems(["start", "stop", "restart"])
+        act.setCurrentIndex(["start", "stop", "restart"].index(step.action))
+        act.setFixedWidth(96)
+        act.setToolTip("What this step does to the service. The stack runs these "
+                       "in order, so it reads as a script.")
+
+        def commit_action(_=None, s=step, a=act):
+            s.action = ["start", "stop", "restart"][a.currentIndex()]
+            self._rebuild()              # the wait's target state changed with it
+            self.changed.emit()
+        act.currentIndexChanged.connect(commit_action)
+        lay.addWidget(act)
+
+        if is_last:
+            lay.addWidget(_label(
+                f"this service — verified {step.target_state.lower()}, up to "
+                f"{step.timeout_seconds}s", "hint"))
+            lay.addStretch(1)
+        else:
+            lay.addWidget(_label("this service, then wait", "hint"))
+            lay.addWidget(self._gap_editor(step), 1)
+        return row
+
     def _gap_editor(self, step) -> QWidget:
         """Controls for the gap between this step and the next.
 
@@ -651,7 +661,6 @@ class StackDetail(_Page):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
-        lay.addWidget(_label("then wait", "hint"))
         mode = QComboBox()
         # One option covers both directions: "applied" means the state the step
         # was trying to produce — Running for start/restart, Stopped for stop.
@@ -878,10 +887,23 @@ class HistoryPage(_Page):
 
 class GeneralPage(_Page):
     changed = Signal()
+    theme_changed = Signal(str)      # applied live, so you can see the choice
 
     def __init__(self, cfg_ref):
         super().__init__("General", "How the app itself behaves.")
         self.cfg = cfg_ref
+
+        self.root.addWidget(_label("APPEARANCE", "section"))
+        self.root.addSpacing(9)
+        self.theme = QComboBox()
+        self.theme.addItems(["System", "Dark", "Light"])
+        self.theme.setFixedWidth(150)
+        self.theme.currentIndexChanged.connect(self._set_theme)
+        self.root.addWidget(_sentence("Theme", self.theme))
+        self.root.addWidget(_label(
+            "System follows the Windows setting and switches with it.",
+            "hint", wrap=True))
+        self.root.addSpacing(24)
 
         self.root.addWidget(_label("STARTUP", "section"))
         self.root.addSpacing(9)
@@ -911,6 +933,14 @@ class GeneralPage(_Page):
             "groundwork is done.", "hint", wrap=True))
         self.root.addStretch(1)
 
+    _THEMES = ("system", "dark", "light")
+
+    def _set_theme(self, index):
+        value = self._THEMES[index]
+        self.cfg().theme = value
+        self.changed.emit()
+        self.theme_changed.emit(value)
+
     def _set_auto(self, on):
         self.cfg().auto_start = on
         self.changed.emit()
@@ -927,12 +957,17 @@ class GeneralPage(_Page):
             box.blockSignals(True)
             box.setChecked(value)
             box.blockSignals(False)
+        self.theme.blockSignals(True)
+        self.theme.setCurrentIndex(self._THEMES.index(
+            cfg.theme if cfg.theme in self._THEMES else "system"))
+        self.theme.blockSignals(False)
 
 
 # ── the window ─────────────────────────────────────────────────────────────
 class SettingsWindow(QDialog):
     saved = Signal(object)               # the new Config
     test_run = Signal(object, str)       # the stack being edited, action
+    theme_changed = Signal(str)          # applied immediately, saved with the rest
 
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
@@ -953,9 +988,9 @@ class SettingsWindow(QDialog):
         body.setSpacing(0)
 
         nav = QWidget()
+        nav.setObjectName("navPanel")
+        nav.setAttribute(Qt.WA_StyledBackground, True)
         nav.setFixedWidth(186)
-        nav.setStyleSheet(f"background:{theme.BG_SIDE};"
-                          f"border-right:1px solid {theme.LINE};")
         nl = QVBoxLayout(nav)
         nl.setContentsMargins(0, 14, 0, 14)
         nl.setSpacing(0)
@@ -969,6 +1004,8 @@ class SettingsWindow(QDialog):
         self.general_page = GeneralPage(get)
         self.services_page.changed.connect(self.stacks_page.refresh)
         self.stacks_page.test_run.connect(self.test_run)
+        self.general_page.theme_changed.connect(self.theme_changed)
+        self.general_page.theme_changed.connect(lambda _m: self.restyle())
         for page in (self.services_page, self.stacks_page,
                      self.history_page, self.general_page):
             page.changed.connect(self._refresh_save_state)
@@ -1005,12 +1042,15 @@ class SettingsWindow(QDialog):
         outer.addLayout(body, 1)
 
         foot = QWidget()
-        foot.setStyleSheet(f"background:#1b1b1b; border-top:1px solid {theme.LINE};")
+        foot.setObjectName("footerBar")
+        foot.setAttribute(Qt.WA_StyledBackground, True)
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(16, 11, 16, 11)
+        # Next to the buttons, not stranded in the far corner.
+        fl.addStretch(1)
         self.status = _label("", "hint")
         fl.addWidget(self.status)
-        fl.addStretch(1)
+        fl.addSpacing(8)
         fl.addWidget(_button("Close", None, self.reject))
         self.save_button = _button("Save", "primary", self._save)
         fl.addWidget(self.save_button)
@@ -1028,6 +1068,19 @@ class SettingsWindow(QDialog):
 
     def config(self):
         return self._cfg
+
+    def restyle(self) -> None:
+        """Repaint what the global stylesheet can't reach after a mode change:
+        the nav icons and the few values drawn with inline colours."""
+        for kind, btn in zip(("services", "stacks", "history", "general"),
+                             self._nav_buttons):
+            btn.setIcon(icons.nav_icon(kind, 19))
+        for widget in self.findChildren(FlatEdit):
+            widget.restyle()
+        self.services_page.refresh()
+        self.stacks_page.refresh()
+        if self.stacks_page.detail.stack is not None:
+            self.stacks_page.detail._rebuild()
 
     def is_dirty(self) -> bool:
         return cfg_mod.to_dict(self._cfg) != self._baseline

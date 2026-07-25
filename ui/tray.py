@@ -7,6 +7,8 @@ The tray tooltip is left empty on purpose so only our hover card appears.
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -101,7 +103,19 @@ class Tray(QObject):
         self.icon.setIcon(icons.base_icon(icons.colour_for(running, total)))
 
     def _should_spin(self) -> bool:
-        return self._busy > 0 or self._store.any_pending()
+        """Spin while something is genuinely in flight.
+
+        A pending state is only trusted for a while: if the SCM's final
+        notification is ever missed, a stale "Stopping" would otherwise leave the
+        icon spinning forever with nothing happening.
+        """
+        if self._busy > 0:
+            return True
+        if not self._store.any_pending():
+            return False
+        oldest = min((s.since for s in self._store.snapshot().values()
+                      if st.is_pending(s.status)), default=None)
+        return oldest is None or (time.monotonic() - oldest) < 120
 
     def _tick(self):
         self._frame = (self._frame + 1) % icons.frame_count()

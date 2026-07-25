@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidget, QListWidgetItem,
-                               QPushButton, QSizePolicy, QSpinBox, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from . import theme
 
@@ -53,73 +52,74 @@ class Spin(QSpinBox):
             QTimer.singleShot(0, self.selectAll)
 
 
-class Duration(QWidget):
-    """A number plus a unit, stored as seconds.
+class FlatEdit(QWidget):
+    """A value that reads as text and only becomes a control when you click it.
 
-    Reads as plain text ("30 s") until you point at it, then turns into editable
-    controls — a settings page full of boxes is heavy to look at, and most of the
-    time you are reading these values rather than changing them. The unit is
-    short when idle and spelled out in the dropdown.
+    Three states:
+      idle     plain text            "30 s", "3"
+      hover    underlined text       hints that it is editable
+      editing  real input widgets    the only state that shows any chrome
 
-    Changing the unit reinterprets the number rather than converting it: typing
-    30 and picking "minutes" means thirty minutes, which is what people expect.
+    A settings page is read far more often than it is edited, and a page full of
+    input boxes is heavy to look at. Editing continues until focus leaves — the
+    pointer moving away doesn't mean you have finished typing.
     """
 
     changed = Signal()
-    UNITS = (("seconds", "s", 1), ("minutes", "min", 60), ("hours", "h", 3600))
 
-    def __init__(self, seconds: int = 0, minimum: int = 0, parent=None):
-        super().__init__(parent)
-        self._min = minimum
-        self.setCursor(Qt.PointingHandCursor)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(5)
-
-        unit_index, amount = self._split(int(seconds))
-
-        self.flat = QLabel()
-        self.flat.setStyleSheet(f"color:{theme.FG}; padding:4px 2px;")
-        lay.addWidget(self.flat)
-
-        self.spin = Spin(amount, minimum, 9999, 62)
-        self.unit = QComboBox()
-        self.unit.addItems([long for long, _short, _f in self.UNITS])
-        self.unit.setCurrentIndex(unit_index)
-        self.unit.setFixedWidth(88)
-        lay.addWidget(self.spin)
-        lay.addWidget(self.unit)
-
-        self.spin.valueChanged.connect(self._on_edit)
-        self.unit.currentIndexChanged.connect(self._on_edit)
-        self.spin.editingFinished.connect(self._maybe_flatten)
-        for w in (self.spin, self.unit):
-            w.installEventFilter(self)
-        self._editing = True              # so the first call actually collapses
-        self._set_editing(False)
-
-    # -- flat / editing ----------------------------------------------------
-    #  flat            plain text            "30 s"
-    #  hover           underlined text       hints that it can be edited
-    #  click / focus   spin + unit boxes     the only state that shows chrome
-    _FLAT = "color:{fg}; padding:4px 2px;"
+    _IDLE = "color:{fg}; padding:4px 2px;"
     _HOVER = "color:{fg}; padding:4px 2px; text-decoration:underline;"
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(5)
+        self.flat = QLabel()
+        self._lay.addWidget(self.flat)
+        self._editing = True                 # so the first collapse takes effect
+
+    # -- subclass hooks ----------------------------------------------------
+    def _editors(self) -> list:
+        raise NotImplementedError
+
+    def _flat_text(self) -> str:
+        raise NotImplementedError
+
+    def _focus_target(self):
+        return self._editors()[0]
+
+    def _wire(self) -> None:
+        """Call once the editors exist."""
+        for w in self._editors():
+            self._lay.addWidget(w)
+            w.installEventFilter(self)
+        self._set_editing(False)
+
+    # -- state -------------------------------------------------------------
     def _set_editing(self, editing: bool) -> None:
         self._editing = editing
         self.flat.setVisible(not editing)
-        self.spin.setVisible(editing)
-        self.unit.setVisible(editing)
+        for w in self._editors():
+            w.setVisible(editing)
         if not editing:
-            short = self.UNITS[self.unit.currentIndex()][1]
-            self.flat.setText(f"{self.spin.value()} {short}")
-            self.flat.setStyleSheet(self._FLAT.format(fg=theme.FG))
+            self.flat.setText(self._flat_text())
+            self.flat.setStyleSheet(self._IDLE.format(fg=theme.FG))
+
+    def restyle(self) -> None:
+        """Re-read the palette after a theme change."""
+        if not self._editing:
+            self.flat.setStyleSheet(self._IDLE.format(fg=theme.FG))
 
     def _busy(self) -> bool:
-        """Editing continues while a control has focus or its list is open — the
-        pointer being elsewhere doesn't mean you're finished typing."""
-        return (self.spin.hasFocus() or self.unit.hasFocus()
-                or self.unit.view().isVisible())
+        for w in self._editors():
+            if w.hasFocus():
+                return True
+            view = getattr(w, "view", None)
+            if callable(view) and view().isVisible():
+                return True
+        return False
 
     def enterEvent(self, ev):
         if not self._editing:
@@ -128,14 +128,16 @@ class Duration(QWidget):
 
     def leaveEvent(self, ev):
         if not self._editing:
-            self.flat.setStyleSheet(self._FLAT.format(fg=theme.FG))
+            self.flat.setStyleSheet(self._IDLE.format(fg=theme.FG))
         super().leaveEvent(ev)
 
     def mousePressEvent(self, ev):
         if not self._editing:
             self._set_editing(True)
-            self.spin.setFocus()
-            QTimer.singleShot(0, self.spin.selectAll)
+            target = self._focus_target()
+            target.setFocus()
+            if hasattr(target, "selectAll"):
+                QTimer.singleShot(0, target.selectAll)
         super().mousePressEvent(ev)
 
     def eventFilter(self, obj, ev):
@@ -150,7 +152,96 @@ class Duration(QWidget):
     def _on_edit(self, *_):
         self.changed.emit()
         if not self._editing:
-            self._set_editing(False)      # refresh the flat text
+            self._set_editing(False)      # refresh the idle text
+
+
+class FlatSpin(FlatEdit):
+    """A whole number, shown as text until clicked."""
+
+    def __init__(self, value=0, lo=0, hi=9999, suffix="", parent=None):
+        super().__init__(parent)
+        self._suffix = suffix
+        self.spin = Spin(value, lo, hi, 62)
+        self.spin.valueChanged.connect(self._on_edit)
+        self.spin.editingFinished.connect(self._maybe_flatten)
+        self._wire()
+
+    def _editors(self):
+        return [self.spin]
+
+    def _flat_text(self):
+        return f"{self.spin.value()}{self._suffix}"
+
+    def value(self) -> int:
+        return self.spin.value()
+
+    def setValue(self, v) -> None:
+        self.spin.setValue(int(v))
+        if not self._editing:
+            self._set_editing(False)
+
+
+class FlatFactor(FlatEdit):
+    """A multiplier such as the recovery backoff, shown as text until clicked."""
+
+    def __init__(self, value=2.0, lo=1.0, hi=10.0, parent=None):
+        super().__init__(parent)
+        self.spin = QDoubleSpinBox()
+        self.spin.setRange(lo, hi)
+        self.spin.setDecimals(1)
+        self.spin.setSingleStep(0.5)
+        self.spin.setValue(float(value))
+        self.spin.setFixedWidth(66)
+        self.spin.setAlignment(Qt.AlignCenter)
+        self.spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self.spin.valueChanged.connect(self._on_edit)
+        self.spin.editingFinished.connect(self._maybe_flatten)
+        self._wire()
+
+    def _editors(self):
+        return [self.spin]
+
+    def _flat_text(self):
+        return f"×{self.spin.value():.1f}"
+
+    def value(self) -> float:
+        return self.spin.value()
+
+    def setValue(self, v) -> None:
+        self.spin.setValue(float(v))
+        if not self._editing:
+            self._set_editing(False)
+
+
+class Duration(FlatEdit):
+    """A number plus a unit, stored as seconds.
+
+    Changing the unit reinterprets the number rather than converting it: typing
+    30 and picking "minutes" means thirty minutes, which is what people expect.
+    """
+
+    UNITS = (("seconds", "s", 1), ("minutes", "min", 60), ("hours", "h", 3600))
+
+    def __init__(self, seconds: int = 0, minimum: int = 0, parent=None):
+        super().__init__(parent)
+        self._min = minimum
+        unit_index, amount = self._split(int(seconds))
+        self.spin = Spin(amount, minimum, 9999, 62)
+        self.unit = QComboBox()
+        self.unit.addItems([long for long, _short, _f in self.UNITS])
+        self.unit.setCurrentIndex(unit_index)
+        self.unit.setFixedWidth(88)
+        self.spin.valueChanged.connect(self._on_edit)
+        self.unit.currentIndexChanged.connect(self._on_edit)
+        self.spin.editingFinished.connect(self._maybe_flatten)
+        self._wire()
+
+    def _editors(self):
+        return [self.spin, self.unit]
+
+    def _flat_text(self):
+        short = self.UNITS[self.unit.currentIndex()][1]
+        return f"{self.spin.value()} {short}"
 
     @classmethod
     def _split(cls, seconds: int):

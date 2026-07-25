@@ -137,6 +137,7 @@ class Config:
     history: History = field(default_factory=History)
     notifications: Notifications = field(default_factory=Notifications)
     auto_start: bool = True
+    theme: str = "system"          # "system" follows Windows; else "dark"/"light"
     version: int = CURRENT_VERSION
 
     # -- lookup helpers ---------------------------------------------------
@@ -254,6 +255,8 @@ def from_dict(data: dict) -> Config:
             on_give_up=bool(n.get("on_give_up", True)),
         ),
         auto_start=bool(data.get("auto_start", True)),
+        theme=(data.get("theme") if data.get("theme") in ("system", "dark", "light")
+               else "system"),
         version=CURRENT_VERSION,
     )
 
@@ -266,6 +269,7 @@ def to_dict(cfg: Config) -> dict:
         "history": asdict(cfg.history),
         "notifications": asdict(cfg.notifications),
         "auto_start": cfg.auto_start,
+        "theme": cfg.theme,
     }
 
 

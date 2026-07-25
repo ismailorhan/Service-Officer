@@ -75,6 +75,49 @@ def test_flyout_builds_and_reflects_state(qapp, sample):
     fly.deleteLater()
 
 
+def test_flyout_grows_to_fit_every_row(qapp, sample):
+    """Four services must not be clipped into a scrolling list: the height came
+    from a row's sizeHint multiplied by the count, which under-measured."""
+    store = st.Store()
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.show()
+    fly.rebuild()
+    fly.apply_states()
+    qapp.processEvents()
+
+    needed = fly.list_lay.sizeHint().height()
+    assert fly.scroll.height() >= needed, (fly.scroll.height(), needed)
+    fly.deleteLater()
+
+
+def test_tray_stops_spinning_once_nothing_is_pending(qapp, sample):
+    """The busy counter has to come back down, and a stale pending state must
+    not keep the gear turning for ever."""
+    from ui.tray import Tray
+    store = st.Store()
+    tray = Tray(lambda: sample, store)
+
+    store.update("AppEngine", "Stopping")
+    assert tray._should_spin() is True
+
+    store.update("AppEngine", st.STOPPED)
+    assert tray._should_spin() is False
+
+    tray.action_started()
+    assert tray._should_spin() is True
+    tray.action_finished()
+    assert tray._should_spin() is False
+    # Balance is kept even if finished is called more often than started.
+    tray.action_finished()
+    assert tray._should_spin() is False
+
+
+def test_mixed_states_show_the_amber_icon(qapp):
+    assert icons.colour_for(3, 4) == "yellow"      # something is not running
+    assert icons.colour_for(4, 4) == "green"
+    assert icons.colour_for(0, 4) == "red"
+
+
 def test_flyout_filter_hides_rows(qapp, sample):
     store = st.Store()
     fly = flyout_mod.Flyout(lambda: sample, store)
@@ -116,7 +159,7 @@ def test_editing_recovery_updates_the_config_copy(qapp, sample):
     d = win.services_page.detail
     d.keep.setChecked(True)
     d.attempts.setValue(7)
-    d.delay.setValue(20)
+    d.delay.set_seconds(20)
     d.clean.setChecked(True)
 
     edited = win.config().service("WMSServer").recovery
@@ -230,6 +273,54 @@ def test_test_run_carries_the_edited_stack_not_its_name(qapp, sample):
     detail.test_run.emit(detail.stack, "start")
     assert got and got[0][0].steps[0].timeout_seconds == 999
     win.deleteLater()
+
+
+def test_theme_modes_produce_different_palettes(qapp):
+    theme.set_mode("dark")
+    dark_bg, dark_fg = theme.BG, theme.FG
+    assert theme.resolved == "dark"
+
+    theme.set_mode("light")
+    assert theme.resolved == "light"
+    assert theme.BG != dark_bg and theme.FG != dark_fg
+    assert "background: " + theme.BG in theme.sheet()
+    # Status colours have to be legible on the new ground, not reused verbatim.
+    assert theme.chip("running")[2] != "#9ae6b4"
+
+    assert theme.resolve("system") in ("dark", "light")   # asks the OS
+    theme.set_mode("system")
+    assert theme.mode == "system"
+    theme.set_mode("dark")                                # leave tests dark
+
+
+def test_flyout_lists_stacks_with_a_run_button(qapp, sample):
+    """Stacks belong next to the statuses: one click from where you notice a
+    problem to the sequence that fixes it."""
+    store = st.Store()
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+
+    from PySide6.QtWidgets import QPushButton
+    triggers = [b for b in fly.findChildren(QPushButton)
+                if b.text().endswith("Run")]
+    assert len(triggers) == 1                       # one per configured stack
+
+    fired = []
+    fly.run_stack.connect(fired.append)
+    triggers[0].click()
+    assert fired == ["SAP B1"]
+    fly.deleteLater()
+
+
+def test_a_stack_with_no_steps_cannot_be_run(qapp, sample):
+    sample.stacks.append(cfg_mod.Stack(name="empty"))
+    store = st.Store()
+    fly = flyout_mod.Flyout(lambda: sample, store)
+    fly.rebuild()
+    from PySide6.QtWidgets import QPushButton
+    triggers = [b for b in fly.findChildren(QPushButton) if b.text().endswith("Run")]
+    assert [b.isEnabled() for b in triggers] == [True, False]
+    fly.deleteLater()
 
 
 def test_state_bridge_forwards_events(qapp):

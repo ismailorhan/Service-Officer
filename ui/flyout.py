@@ -83,10 +83,43 @@ class _Row(QWidget):
             b.setEnabled(bool(allowed.get(action)) and not busy_label)
 
 
+class _StackRow(QWidget):
+    """One stack: name, what it will do, and the button that runs it."""
+
+    run = Signal(str)
+
+    def __init__(self, stack, services, parent=None):
+        super().__init__(parent)
+        self.setObjectName("row")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(10)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        name = QLabel(stack.name)
+        name.setProperty("role", "strong")
+        steps = QLabel(stack.summary(services) or "no steps yet")
+        steps.setProperty("role", "hint")
+        col.addWidget(name)
+        col.addWidget(steps)
+        lay.addLayout(col, 1)
+
+        trigger = QPushButton("▶  Run")
+        trigger.setProperty("kind", "primary")
+        trigger.setCursor(Qt.PointingHandCursor)
+        trigger.setEnabled(bool(stack.steps))
+        trigger.setToolTip(stack.describe(services) or "Add steps in Settings")
+        trigger.clicked.connect(lambda: self.run.emit(stack.name))
+        lay.addWidget(trigger)
+
+
 class Flyout(QWidget):
     """Anchored above the tray icon, closes when the user clicks elsewhere."""
 
     action_requested = Signal(str, str, str)   # action, service, machine
+    run_stack = Signal(str)
     open_settings = Signal()
     open_services_mmc = Signal()
 
@@ -97,10 +130,9 @@ class Flyout(QWidget):
         self._config = config_getter
         self._store = store
         self._rows: dict = {}
+        self._stack_widgets: list = []
         self._signature = None
         self.setFixedWidth(WIDTH)
-        self.setStyleSheet(f"QWidget#shell {{ background:{theme.BG}; "
-                           f"border:1px solid #3a3a3a; }}")
         self._build()
 
     # -- construction ------------------------------------------------------
@@ -123,7 +155,7 @@ class Flyout(QWidget):
         logo.setPixmap(icons.base_pixmap("green", 20))
         head.addWidget(logo)
         title = QLabel("Service Officer")
-        title.setStyleSheet(f"color:{theme.FG}; font-size:11.5pt; font-weight:600;")
+        title.setObjectName("flyoutTitle")
         head.addWidget(title)
         head.addStretch(1)
         self.badge = QLabel("")
@@ -154,7 +186,8 @@ class Flyout(QWidget):
 
         # column header
         cols = QWidget()
-        cols.setStyleSheet(f"background:{theme.BG_RAISE};")
+        cols.setObjectName("columnHeader")
+        cols.setAttribute(Qt.WA_StyledBackground, True)
         cl = QHBoxLayout(cols)
         cl.setContentsMargins(14, 4, 14, 4)
         for text, width, align in (("SERVICE", 0, Qt.AlignLeft),
@@ -184,7 +217,8 @@ class Flyout(QWidget):
 
         # footer
         foot = QWidget()
-        foot.setStyleSheet(f"background:#1b1b1b; border-top:1px solid {theme.LINE};")
+        foot.setObjectName("footerBar")
+        foot.setAttribute(Qt.WA_StyledBackground, True)
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(10, 9, 10, 9)
         fl.setSpacing(6)
@@ -199,9 +233,9 @@ class Flyout(QWidget):
     @staticmethod
     def _hline() -> QFrame:
         line = QFrame()
+        line.setObjectName("hline")
         line.setFrameShape(QFrame.HLine)
         line.setFixedHeight(1)
-        line.setStyleSheet(f"background:{theme.LINE}; border:none;")
         return line
 
     def _settings(self):
@@ -210,9 +244,10 @@ class Flyout(QWidget):
 
     # -- content -----------------------------------------------------------
     def rebuild(self) -> None:
-        """(Re)create rows for the configured services."""
+        """(Re)create the rows: services on top, stacks underneath."""
         cfg = self._config()
-        signature = [(s.machine, s.name, s.display()) for s in cfg.services]
+        signature = ([(s.machine, s.name, s.display()) for s in cfg.services],
+                     [(s.name, s.summary(cfg.services)) for s in cfg.stacks])
         if signature == self._signature:
             return
         self._signature = signature
@@ -221,12 +256,19 @@ class Flyout(QWidget):
             row.setParent(None)
             row.deleteLater()
         self._rows.clear()
+        for w in self._stack_widgets:
+            w.setParent(None)
+            w.deleteLater()
+        self._stack_widgets.clear()
+
+        def add(widget):
+            self.list_lay.insertWidget(self.list_lay.count() - 1, widget)
 
         for svc in cfg.services:
             row = _Row(svc)
             row.act.connect(self.action_requested)
             self._rows[svc.key] = row
-            self.list_lay.insertWidget(self.list_lay.count() - 1, row)
+            add(row)
 
         if not cfg.services:
             empty = QLabel("No services configured.\nAdd some from Settings.")
@@ -234,7 +276,28 @@ class Flyout(QWidget):
             empty.setProperty("role", "hint")
             empty.setContentsMargins(0, 26, 0, 26)
             self._rows[("", "__empty__")] = empty
-            self.list_lay.insertWidget(self.list_lay.count() - 1, empty)
+            add(empty)
+
+        # Stacks live in the same scrolling list, under their own heading, so a
+        # whole sequence is one click away from where you read the statuses.
+        if cfg.stacks:
+            bar = QWidget()
+            bar.setObjectName("sectionBar")
+            bar.setAttribute(Qt.WA_StyledBackground, True)
+            bl = QHBoxLayout(bar)
+            bl.setContentsMargins(14, 5, 14, 5)
+            head = QLabel("STACKS")
+            head.setProperty("role", "section")
+            bl.addWidget(head)
+            bl.addStretch(1)
+            self._stack_widgets.append(bar)
+            add(bar)
+
+            for stack in cfg.stacks:
+                row = _StackRow(stack, cfg.services)
+                row.run.connect(self.run_stack)
+                self._stack_widgets.append(row)
+                add(row)
 
         self._resize_to_content()
         self.apply_states()
@@ -275,15 +338,30 @@ class Flyout(QWidget):
                 row.setVisible(hit)
         self._resize_to_content()
 
-    def _resize_to_content(self) -> None:
+    def _resize_to_content(self, settled: bool = False) -> None:
+        """Grow to fit the rows, up to what the screen allows.
+
+        Measure the list's own layout rather than multiplying a row's sizeHint:
+        the hint is smaller than a row actually renders, so the multiplication
+        clipped the last row and forced a scrollbar with only a few services.
+
+        The first measurement happens before Qt has laid the rows out, so it
+        comes up a few pixels short; one follow-up pass on the next event-loop
+        turn gets the final number.
+        """
         rows = [r for r in self._rows.values() if isinstance(r, _Row) and r.isVisible()]
+        self.list.adjustSize()
+        content = self.list_lay.sizeHint().height()
+
         row_h = rows[0].sizeHint().height() if rows else 46
-        visible = max(ROW_MIN, len(rows)) if rows else ROW_MIN
+        floor = ROW_MIN * row_h                      # comfortable minimum
         screen = self.screen().availableGeometry()
-        chrome = 250
-        max_rows = max(ROW_MIN, (screen.height() - chrome - 50) // max(1, row_h))
-        self.scroll.setFixedHeight(int(min(visible, max_rows) * row_h))
+        ceiling = max(floor, screen.height() - 260)  # leave room for the chrome
+
+        self.scroll.setFixedHeight(int(max(floor, min(content, ceiling))))
         self.adjustSize()
+        if not settled:
+            QTimer.singleShot(0, lambda: self._resize_to_content(True))
 
     def refresh(self) -> None:
         self.rebuild()
