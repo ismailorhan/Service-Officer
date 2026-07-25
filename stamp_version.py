@@ -17,6 +17,10 @@ import sys
 
 TARGET = pathlib.Path(__file__).with_name("core") / "version.py"
 BACKUP = TARGET.with_suffix(".py.orig")
+#: The build counter. Not committed: it counts builds *on this machine*, which is
+#: what "which build is this" means while iterating. The commit in About is what
+#: identifies the code absolutely.
+COUNTER = pathlib.Path(__file__).with_name(".build-number")
 
 
 def git(*args) -> str:
@@ -28,23 +32,40 @@ def git(*args) -> str:
         return ""
 
 
-def stamp() -> tuple:
+def next_build(version: str, release: bool) -> int:
+    """The build number for this build.
+
+    Counts builds, not commits: several builds can come off one commit while
+    something is being tried, and "which build is this" has to tell them apart.
+    Restarts at 1 when the release version changes, so 2.1.0's builds don't carry
+    on from 2.0.0's. A tagged release build is 0 — the release has no fourth part.
+    """
+    if release:
+        return 0
+    previous_version, count = "", 0
+    if COUNTER.exists():
+        try:
+            previous_version, _, text = COUNTER.read_text(
+                encoding="utf-8").strip().partition(" ")
+            count = int(text or 0)
+        except (OSError, ValueError):
+            previous_version, count = "", 0
+    count = count + 1 if previous_version == version else 1
+    try:
+        COUNTER.write_text(f"{version} {count}\n", encoding="utf-8")
+    except OSError:
+        pass                       # a read-only checkout still builds
+    return count
+
+
+def stamp(version: str, release: bool) -> tuple:
     commit = git("rev-parse", "--short", "HEAD") or "unknown"
     # A build from an edited tree is not the commit it claims to be, and that is
     # exactly the confusion this stamp exists to prevent.
     if git("status", "--porcelain"):
         commit += "-dirty"
     built = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    # Commits since the last release tag: 0 means this is the release, anything
-    # else is an internal build and becomes the fourth part of the version.
-    # Counted rather than kept in a file, so it can't drift and needs no state.
-    build = 0
-    tag = git("describe", "--tags", "--abbrev=0")
-    if tag:
-        counted = git("rev-list", "--count", f"{tag}..HEAD")
-        build = int(counted) if counted.isdigit() else 0
-    return commit, built, build
+    return commit, built, next_build(version, release)
 
 
 def declared_versions() -> dict:
@@ -85,7 +106,11 @@ def main() -> int:
             print(f"          {where}: {value}")
         return 1
 
-    commit, built, build = stamp()
+    version = declared.get("core/version.py", "0.0.0")
+    # A build from a version tag is the release itself; anything else is an
+    # internal build and gets a build number.
+    release = "git tag" in declared
+    commit, built, build = stamp(version, release)
     text = TARGET.read_text(encoding="utf-8")
     shutil.copy2(str(TARGET), str(BACKUP))
     text = re.sub(r'^COMMIT = ".*"$', f'COMMIT = "{commit}"', text,

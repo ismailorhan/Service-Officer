@@ -17,9 +17,11 @@ import sys
 #: bumped by hand for a release, and matched by installer.iss
 VERSION = "2.0.0"
 
-#: Commits since that release tag, stamped by build.bat. Zero means this *is* the
-#: release; anything else is an internal build, and shows as 2.0.0.7 — three parts
-#: for what customers get, a fourth for what we build in between.
+#: Which build this is, counted by build.bat and restarted when VERSION changes.
+#: Zero means this *is* the release; anything else is an internal build and shows
+#: as 2.0.0.3 — three parts for what customers get, a fourth for what we build in
+#: between. It counts builds rather than commits, because several builds can come
+#: off one commit while something is being tried.
 BUILD = 0
 #: filled in by build.bat — short commit, and "dirty" if the tree had edits
 COMMIT = "dev"

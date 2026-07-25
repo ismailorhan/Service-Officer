@@ -11,3 +11,5 @@ ServiceOfficer.exe
 .claude/
 
 core/version.py.orig
+
+.build-number

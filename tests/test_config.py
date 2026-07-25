@@ -153,6 +153,25 @@ def test_the_newest_of_several_old_homes_wins(tmp_path):
     assert "history.jsonl" in brought
 
 
+def test_the_build_number_counts_builds_not_commits(tmp_path, monkeypatch):
+    """Several builds can come off one commit while something is being tried, and
+    "which build is this" has to tell them apart."""
+    import stamp_version
+    monkeypatch.setattr(stamp_version, "COUNTER", tmp_path / ".build-number")
+
+    assert stamp_version.next_build("2.0.0", release=False) == 1
+    assert stamp_version.next_build("2.0.0", release=False) == 2
+    assert stamp_version.next_build("2.0.0", release=False) == 3
+
+    # A tagged release has no fourth part, and must not disturb the count.
+    assert stamp_version.next_build("2.0.0", release=True) == 0
+    assert stamp_version.next_build("2.0.0", release=False) == 4
+
+    # A new release version restarts the numbering rather than carrying on.
+    assert stamp_version.next_build("2.1.0", release=False) == 1
+    assert stamp_version.next_build("2.1.0", release=False) == 2
+
+
 def test_the_build_identifies_itself():
     """Three parts for a release, a fourth for the internal builds in between —
     2.0.0 is what a customer has, 2.0.0.7 is the seventh commit after it."""
