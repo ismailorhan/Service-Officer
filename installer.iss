@@ -13,6 +13,10 @@
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyAppId          "{{A4F1F8C2-3D7B-4A8D-9E5F-1B2C3D4E5F60}}"
+; The data folder has no space in it, and must match core/config.APP_DIR exactly.
+; Using MyAppName here created C:\ProgramData\Service Officer and set the
+; permissions on that, while the app wrote to ...\ServiceOfficer.
+#define MyDataDir        "ServiceOfficer"
 
 [Setup]
 AppId={#MyAppId}
@@ -54,7 +58,7 @@ Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm
 ; must see the same setup and the same history. Administrators get write access
 ; explicitly — the default ACL on a ProgramData subfolder only lets the creating
 ; user modify it, and the app can be started by any admin on the box.
-Name: "{commonappdata}\{#MyAppName}"; Permissions: admins-modify
+Name: "{commonappdata}\{#MyDataDir}"; Permissions: admins-modify
 
 [Files]
 ; One-dir build: a Qt app re-extracted from a one-file exe on every launch is
