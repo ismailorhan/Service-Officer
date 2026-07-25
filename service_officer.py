@@ -12,6 +12,7 @@ import pystray
 from PIL import Image, ImageDraw
 
 import config
+import hover
 import panel
 import service_control
 import settings_dialog
@@ -305,6 +306,39 @@ def _poll_loop(icon: pystray.Icon) -> None:
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
+class _NOTIFYICONIDENTIFIER(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.wintypes.DWORD),
+                ("hWnd", ctypes.wintypes.HWND),
+                ("uID", ctypes.wintypes.UINT),
+                ("guidItem", ctypes.c_byte * 16)]
+
+
+def _tray_icon_rect(icon: pystray.Icon):
+    """Screen rect of our tray icon, so the hover flyout knows when the pointer
+    has left it. Returns (l, t, r, b) or None."""
+    try:
+        nid = _NOTIFYICONIDENTIFIER()
+        nid.cbSize = ctypes.sizeof(_NOTIFYICONIDENTIFIER)
+        nid.hWnd = icon._hwnd                    # pystray's message window
+        nid.uID = ctypes.c_uint(id(icon) & 0xFFFFFFFF).value
+        rect = ctypes.wintypes.RECT()
+        if ctypes.windll.shell32.Shell_NotifyIconGetRect(
+                ctypes.byref(nid), ctypes.byref(rect)) == 0:  # S_OK
+            return (rect.left, rect.top, rect.right, rect.bottom)
+    except Exception:
+        pass
+    return None
+
+
+def _hover_items() -> list:
+    """(label, status) for every configured service, in configured order."""
+    services = config.load_services()
+    with _cache_lock:
+        snapshot = dict(_status_cache)
+    return [(svc.get("label") or svc["name"],
+             snapshot.get(svc["name"], "Unknown")) for svc in services]
+
+
 def _open_services() -> None:
     """Open services.msc."""
     ctypes.windll.shell32.ShellExecuteW(None, "open", "services.msc", None, None, 1)
@@ -392,11 +426,20 @@ def main() -> None:
             if index > 0:
                 descriptors[index - 1](icon)
 
+        WM_MOUSEMOVE = 0x0200
+        _icon_rect = [None]
+
         def _patched_on_notify(wparam, lparam):
             if lparam in (WM_LBUTTONUP, NIN_SELECT):
+                hover.hide()
                 panel.open_panel()
             elif lparam == WM_RBUTTONUP:
+                hover.hide()
                 _show_menu_for(icon._right_menu)
+            elif lparam == WM_MOUSEMOVE:
+                if _icon_rect[0] is None:
+                    _icon_rect[0] = _tray_icon_rect(icon)
+                hover.request(_hover_items, _icon_rect[0])
 
         icon._on_notify = _patched_on_notify
         from pystray._util import win32 as _win32
