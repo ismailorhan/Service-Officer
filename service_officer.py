@@ -109,11 +109,16 @@ def _draw_gear(size: int) -> Image.Image:
     return img
 
 
-def _spin_frames() -> list:
-    """Frames of the gear turning clockwise (lazily rendered, once).
+_SPIN_PULSE = 0.06   # how far it breathes: 6% smaller at mid-cycle
 
-    With 8 teeth the shape repeats every 45°, so a 45° sweep loops seamlessly.
-    PIL rotates counter-clockwise for positive angles, hence the negative step.
+
+def _spin_frames() -> list:
+    """Frames of the gear turning clockwise, breathing very slightly as it goes
+    (lazily rendered, once).
+
+    With 8 teeth the shape repeats every 45°, so a 45° sweep loops seamlessly;
+    the scale pulse runs over exactly the same cycle, so it loops too. PIL
+    rotates counter-clockwise for positive angles, hence the negative step.
     """
     if _SPIN_FRAMES:
         return _SPIN_FRAMES
@@ -121,10 +126,16 @@ def _spin_frames() -> list:
     base = _draw_gear(size)
     steps = 12
     for i in range(steps):
-        angle = -(360 / _GEAR_TEETH) * (i / steps)      # clockwise
-        _SPIN_FRAMES.append(
-            base.rotate(angle, resample=Image.BICUBIC)
-                .resize((size, size), Image.LANCZOS))
+        frac = i / steps
+        angle = -(360 / _GEAR_TEETH) * frac                       # clockwise
+        scale = 1.0 - _SPIN_PULSE * (1 - math.cos(2 * math.pi * frac)) / 2
+        side = max(1, int(round(size * scale)))
+        gear = (base.rotate(angle, resample=Image.BICUBIC)
+                    .resize((side, side), Image.LANCZOS))
+        frame = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        off = (size - side) // 2                     # keep it centred
+        frame.alpha_composite(gear, (off, off))
+        _SPIN_FRAMES.append(frame)
     return _SPIN_FRAMES
 
 
