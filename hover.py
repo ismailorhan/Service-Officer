@@ -14,6 +14,7 @@ import ctypes
 import ctypes.wintypes
 import queue
 import threading
+import time
 import tkinter as tk
 
 from panel import BG, BG2, FG, FG2, FG3, LINE
@@ -31,8 +32,13 @@ _DOT = {
 }
 
 SHOW_DELAY = 0.35   # seconds the pointer must rest on the icon
+PING_GRACE = 1.0    # keep it up this long after the last pointer report
+MIN_VISIBLE = 0.5   # never hide sooner than this after showing
 ROW_H = 20
 MARGIN = 12
+
+_last_ping = [0.0]
+_shown_at = [0.0]
 
 _q: "queue.Queue" = queue.Queue()
 _thread = None
@@ -52,6 +58,7 @@ def request(items_provider, icon_rect):
     second and gathering the statuses reads the config from disk.
     icon_rect: (l, t, r, b) or None.
     """
+    _last_ping[0] = time.monotonic()   # the tray saw the pointer on the icon
     _ensure_thread()
     if _visible.is_set() or _pending.is_set():
         return
@@ -180,6 +187,7 @@ def _loop():
         win.deiconify()
         win.lift()
         _no_activate(win)
+        _shown_at[0] = time.monotonic()
         _visible.set()
 
     def _hide():
@@ -193,9 +201,15 @@ def _loop():
                 wr = (win.winfo_rootx(), win.winfo_rooty(),
                       win.winfo_rootx() + win.winfo_width(),
                       win.winfo_rooty() + win.winfo_height())
+                now = time.monotonic()
                 on_win = _cursor_in(wr, pad=6)
                 on_icon = bool(state["rect"]) and _cursor_in(state["rect"], pad=4)
-                if not on_win and not on_icon:
+                # The ping grace and minimum-visible time keep it steady even if
+                # the icon rect is unavailable — without them, a missing rect
+                # made it hide 200ms after every show and blink continuously.
+                fresh_ping = (now - _last_ping[0]) < PING_GRACE
+                too_soon = (now - _shown_at[0]) < MIN_VISIBLE
+                if not (on_win or on_icon or fresh_ping or too_soon):
                     _hide()
             except Exception:
                 pass

@@ -159,29 +159,8 @@ def _make_action_hook(icon: pystray.Icon):
     return hook
 
 
-# ---------------------------------------------------------------------------
-# Status symbols — shared by menu items and tooltip
-# ---------------------------------------------------------------------------
-_STATUS_SYMBOLS = {
-    "Running":  "🟢",
-    "Stopped":  "🔴",
-    "Starting": "🟡",
-    "Stopping": "🟡",
-    "Paused":   "🟠",
-    "Pausing":  "🟠",
-    "Resuming": "🟡",
-    "Not Found":"⚪",
-}
-
 # Statuses that mean "the SCM is still working on it".
 _PENDING_STATUSES = {"Starting", "Stopping", "Resuming", "Pausing"}
-
-# szTip is a WCHAR[128] buffer, so 127 units plus the terminator.
-_TIP_MAX = 127
-
-# Most-worrying first, so the tooltip spends its budget on what matters.
-_SEVERITY = ["Stopped", "Not Found", "Paused", "Stopping", "Pausing",
-             "Starting", "Resuming", "Unknown"]
 
 
 # ---------------------------------------------------------------------------
@@ -213,86 +192,6 @@ def _force_refresh(icon: pystray.Icon) -> None:
     _sync_spinner(icon)
     if not _spinning():          # don't fight the spinner for the icon
         icon.icon = create_icon_image(_icon_color_key())
-    _update_tooltip(icon)
-
-
-def _utf16_len(text: str) -> int:
-    """Length in UTF-16 code units — what the Windows szTip buffer counts."""
-    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
-
-
-def _clip_utf16(text: str, max_units: int = _TIP_MAX) -> str:
-    """Clip to at most max_units UTF-16 code units without splitting a
-    surrogate pair. The Windows tray tooltip (szTip) is a 128-WCHAR buffer, and
-    status emoji outside the BMP each take TWO units — so counting Python chars
-    (len) undercounts and can overflow Shell_NotifyIcon. Count units instead."""
-    out, units = [], 0
-    for ch in text:
-        n = 2 if ord(ch) > 0xFFFF else 1
-        if units + n > max_units:
-            out.append("…")  # …
-            break
-        out.append(ch)
-        units += n
-    return "".join(out)
-
-
-def _update_tooltip(icon: pystray.Icon) -> None:
-    services = config.load_services()
-    with _cache_lock:
-        snapshot = dict(_status_cache)
-
-    if not snapshot:
-        icon.title = "Service Officer — No services configured"
-        return
-
-    label_map = {svc["name"]: svc.get("label") or svc["name"] for svc in services}
-    total   = len(snapshot)
-    running = sum(1 for s in snapshot.values() if s == "Running")
-
-    # szTip is only 128 UTF-16 units, so a full list can't fit once there are
-    # more than a handful of services. Lead with a summary, then spend the
-    # remaining room on the services that need attention (anything not Running)
-    # — those are what you actually want from a hover.
-    head = f"Service Officer — {running}/{total} running"
-
-    groups: dict = {}
-    for name, status in snapshot.items():
-        if status != "Running":
-            groups.setdefault(status, []).append(label_map.get(name, name))
-
-    if not groups:
-        icon.title = _clip_utf16(head + "\nAll services running")
-        return
-
-    def _build(reserve: int):
-        """Group by status ("🔴 Stopped: a, b, c") — naming each status once
-        instead of per service fits several times as many names in szTip.
-        reserve leaves room for a trailing "+N more" line."""
-        lines, omitted = [head], 0
-        for status in sorted(groups, key=lambda s: _SEVERITY.index(s)
-                             if s in _SEVERITY else len(_SEVERITY)):
-            labels = groups[status]
-            prefix = f"{_STATUS_SYMBOLS.get(status, '⚪')} {status}: "
-            line = None
-            for i, lab in enumerate(labels):
-                candidate = f"{line}, {lab}" if line else prefix + lab
-                if _utf16_len("\n".join(lines + [candidate])) + reserve > _TIP_MAX:
-                    omitted += len(labels) - i
-                    break
-                line = candidate
-            if line:
-                lines.append(line)
-            else:
-                omitted += len(labels)
-        return lines, omitted
-
-    lines, omitted = _build(0)
-    if omitted:                      # need a "+N more" line — rebuild with room
-        lines, omitted = _build(12)
-        if omitted:
-            lines.append(f"+{omitted} more")
-    icon.title = _clip_utf16("\n".join(lines))
 
 
 def _poll_loop(icon: pystray.Icon) -> None:
@@ -319,8 +218,11 @@ def _tray_icon_rect(icon: pystray.Icon):
     try:
         nid = _NOTIFYICONIDENTIFIER()
         nid.cbSize = ctypes.sizeof(_NOTIFYICONIDENTIFIER)
-        nid.hWnd = icon._hwnd                    # pystray's message window
-        nid.uID = ctypes.c_uint(id(icon) & 0xFFFFFFFF).value
+        nid.hWnd = icon._hwnd   # pystray's message window
+        # pystray builds NOTIFYICONDATAW with a bogus "hID" keyword, so the real
+        # uID field is never assigned and stays 0. Verified: uID=0 returns S_OK
+        # and the true rect, while any other value fails with E_FAIL.
+        nid.uID = 0
         rect = ctypes.wintypes.RECT()
         if ctypes.windll.shell32.Shell_NotifyIconGetRect(
                 ctypes.byref(nid), ctypes.byref(rect)) == 0:  # S_OK
@@ -387,12 +289,14 @@ def main() -> None:
     icon = pystray.Icon(
         name="ServiceOfficer",
         icon=create_icon_image(_icon_color_key()),
-        title="Service Officer",
+        # Empty szTip: Windows then draws no native tooltip, leaving the hover
+        # flyout (hover.py) as the only thing that appears on hover. The native
+        # one is capped at 128 UTF-16 units and couldn't list the services.
+        title="",
     )
 
     icon._right_menu = _build_right_menu(icon)
     icon.menu        = icon._right_menu
-    _update_tooltip(icon)
     panel.ACTION_HOOK[0] = _make_action_hook(icon)
 
     threading.Thread(target=_poll_loop, args=(icon,), daemon=True).start()
