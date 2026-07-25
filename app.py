@@ -28,7 +28,7 @@ log = applog.get("app")
 
 class StackSignals(QObject):
     """A stack run happens on a worker thread; these carry it back to the UI."""
-    step = Signal(int, int, str, str)
+    step = Signal(int, int, str, str, str)      # index, total, service, action, phase
     done = Signal(object)
 
 
@@ -81,6 +81,7 @@ class Application(QObject):
         self.tray.refresh_requested.connect(self.refresh)
         self.tray.quit_requested.connect(self.quit)
         self.tray.stack_requested.connect(self.run_stack)
+        self.tray.menu_opened.connect(self.hover.dismiss)
 
         self.flyout.action_requested.connect(self.do_action)
         self.flyout.open_settings.connect(self.open_settings)
@@ -158,29 +159,33 @@ class Application(QObject):
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not {action} '{name}':\n{error}")
 
-    def run_stack(self, stack_name: str, action: str):
-        stack = self.cfg.stack(stack_name)
-        if not stack:
+    def run_stack(self, stack_or_name):
+        """Accepts a name (tray menu) or a Stack (a test run from Settings, which
+        must use the values currently on screen rather than the saved ones)."""
+        stack = (self.cfg.stack(stack_or_name)
+                 if isinstance(stack_or_name, str) else stack_or_name)
+        if not stack or not stack.steps:
             return
         if self.runner.busy:
             QMessageBox.information(None, "Service Officer",
                                     "A stack run is already in progress.")
             return
+        self.hover.dismiss()
         self.tray.action_started()
         machine_for = {s.name: s.machine for s in self.cfg.services}
 
         def work():
             result = self.runner.run(
-                stack, action,
-                on_step=lambda i, total, svc, phase:
-                    self.stack_signals.step.emit(i, total, svc, phase),
+                stack,
+                on_step=lambda i, total, svc, act, phase:
+                    self.stack_signals.step.emit(i, total, svc, act, phase),
                 machine_for=lambda n: machine_for.get(n, ""))
             self.stack_signals.done.emit(result)
         threading.Thread(target=work, daemon=True).start()
 
-    def _on_stack_step(self, index, total, service, phase):
+    def _on_stack_step(self, index, total, service, action, phase):
         if phase == "begin":
-            self.flyout.mark_busy(service, "", f"step {index}/{total}…")
+            self.flyout.mark_busy(service, "", f"{action} {index}/{total}…")
 
     def _on_stack_done(self, result):
         self.tray.action_finished()

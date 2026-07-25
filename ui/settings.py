@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import copy
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
                                QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
@@ -23,35 +23,12 @@ from core import config as cfg_mod
 from core import control, history
 from core import state as st
 from . import icons, theme
-
-
-# ── small builders ─────────────────────────────────────────────────────────
-def _label(text, role=None, wrap=False):
-    lb = QLabel(text)
-    if role:
-        lb.setProperty("role", role)
-    lb.setWordWrap(wrap)
-    return lb
-
-
-def _button(text, kind=None, slot=None):
-    b = QPushButton(text)
-    if kind:
-        b.setProperty("kind", kind)
-    if slot:
-        b.clicked.connect(slot)
-    b.setCursor(Qt.PointingHandCursor)
-    return b
+from .widgets import Duration, SearchableList, Spin, button as _button, label as _label
 
 
 def _spin(value, lo, hi, width=64, step=1):
-    s = QSpinBox()
-    s.setRange(lo, hi)
-    s.setValue(int(value))
-    s.setFixedWidth(width)
+    s = Spin(value, lo, hi, width)
     s.setSingleStep(step)
-    s.setAlignment(Qt.AlignCenter)
-    s.setButtonSymbols(QSpinBox.NoButtons)
     return s
 
 
@@ -444,7 +421,7 @@ class StacksPage(QWidget):
     """Stack list → stack detail with the ordered steps."""
 
     changed = Signal()
-    test_run = Signal(str, str)      # stack name, action
+    test_run = Signal(object, str)   # the stack being edited, action
 
     def __init__(self, cfg_ref):
         super().__init__()
@@ -530,7 +507,7 @@ class StacksPage(QWidget):
 class StackDetail(_Page):
     back = Signal()
     changed = Signal()
-    test_run = Signal(str, str)
+    test_run = Signal(object, str)
 
     def __init__(self, cfg_ref):
         super().__init__("", "")
@@ -569,8 +546,10 @@ class StackDetail(_Page):
         bar.addWidget(_button("↓", "quiet", lambda: self._move(1)))
         bar.addWidget(_button("Remove step", "danger", self._remove_step))
         bar.addStretch(1)
+        # Hand over the stack being edited, not its name: a test run has to use
+        # what's on screen, otherwise it silently tests the last saved values.
         bar.addWidget(_button("Test run ▸", None,
-                              lambda: self.test_run.emit(self.stack.name, "start")))
+                              lambda: self.test_run.emit(self.stack, "start")))
         self.root.addSpacing(12)
         self.root.addLayout(bar)
 
@@ -592,8 +571,12 @@ class StackDetail(_Page):
 
         for i, step in enumerate(self.stack.steps, start=1):
             row = QWidget()
+            row.setObjectName("steprow")
             row.setAttribute(Qt.WA_StyledBackground, True)
-            row.setStyleSheet(f"QWidget:hover {{ background:{theme.BG_HOVER}; }}")
+            # Scope the selector to this widget: a bare "QWidget {...}" here is
+            # inherited by every child, which is what painted green borders
+            # around each inner control.
+            row.setStyleSheet(f"#steprow:hover {{ background:{theme.BG_HOVER}; }}")
             rl = QHBoxLayout(row)
             rl.setContentsMargins(2, 6, 2, 6)
             rl.setSpacing(11)
@@ -608,35 +591,37 @@ class StackDetail(_Page):
 
             col = QVBoxLayout()
             col.setSpacing(3)
-            col.addWidget(_label(labels.get(step.service, step.service), "strong"))
 
-            cond = QWidget()
-            cl = QHBoxLayout(cond)
-            cl.setContentsMargins(0, 0, 0, 0)
-            cl.setSpacing(6)
-            cl.addWidget(_label("wait", "hint"))
-            mode = QComboBox()
-            mode.addItems(["until running", "a fixed"])
-            mode.setCurrentIndex(0 if step.wait == "running" else 1)
-            secs = _spin(step.timeout_seconds if step.wait == "running"
-                         else step.delay_seconds, 0, 3600, 58)
-            unit = _label("seconds", "hint")
+            # name + what to do to it
+            first = QWidget()
+            fl = QHBoxLayout(first)
+            fl.setContentsMargins(0, 0, 0, 0)
+            fl.setSpacing(8)
+            fl.addWidget(_label(labels.get(step.service, step.service), "strong"))
+            act = QComboBox()
+            act.addItems(["start", "stop", "restart"])
+            act.setCurrentIndex(["start", "stop", "restart"].index(step.action))
+            act.setFixedWidth(96)
+            act.setToolTip("What this step does to the service. The stack runs "
+                           "these in order, so it reads as a script.")
 
-            def commit(_=None, s=step, m=mode, v=secs):
-                s.wait = "running" if m.currentIndex() == 0 else "delay"
-                if s.wait == "running":
-                    s.timeout_seconds = max(1, v.value())
-                else:
-                    s.delay_seconds = v.value()
+            def commit_action(_=None, s=step, a=act):
+                s.action = ["start", "stop", "restart"][a.currentIndex()]
+                self._rebuild()          # the wait's target state changed with it
                 self.changed.emit()
+            act.currentIndexChanged.connect(commit_action)
+            fl.addWidget(act)
+            fl.addStretch(1)
+            col.addWidget(first)
 
-            mode.currentIndexChanged.connect(commit)
-            secs.valueChanged.connect(commit)
-            cl.addWidget(mode)
-            cl.addWidget(secs)
-            cl.addWidget(unit)
-            cl.addStretch(1)
-            col.addWidget(cond)
+            # The wait describes the gap *to the next step*, so the last row has
+            # nothing to configure — with a single step there is no transition.
+            if i < len(self.stack.steps):
+                col.addWidget(self._gap_editor(step))
+            else:
+                col.addWidget(_label(
+                    f"last step — verified {step.target_state.lower()}, up to "
+                    f"{step.timeout_seconds}s", "hint"))
             rl.addLayout(col, 1)
 
             def select(_ev=None, idx=i - 1):
@@ -653,30 +638,99 @@ class StackDetail(_Page):
             self._rows.append(empty)
         self._highlight()
 
+    def _gap_editor(self, step) -> QWidget:
+        """Controls for the gap between this step and the next.
+
+        "until running" is two numbers, not one: how much longer to wait once it
+        reports Running (services often need a moment more), and how long to keep
+        waiting before abandoning the run. "a fixed" is one number and ignores
+        the status entirely.
+        """
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        lay.addWidget(_label("then wait", "hint"))
+        mode = QComboBox()
+        # One option covers both directions: "applied" means the state the step
+        # was trying to produce — Running for start/restart, Stopped for stop.
+        mode.addItems(["until applied", "a fixed"])
+        mode.setCurrentIndex(0 if step.wait == "applied" else 1)
+        mode.setFixedWidth(120)
+        mode.setToolTip(f"until applied — wait until this service is "
+                        f"{step.target_state.lower()}.\n"
+                        f"a fixed — wait a set time, whatever it reports.")
+        lay.addWidget(mode)
+
+        plus = _label("+", "hint")
+        grace = Duration(step.grace_seconds)
+        grace.setToolTip("Extra pause once it reports Running, before the next "
+                         "step starts. Many services need a moment more.")
+        fixed = Duration(step.delay_seconds)
+        fixed.setToolTip("Wait exactly this long, whatever the service reports.")
+        sep = _label("·  give up after", "hint")
+        timeout = Duration(step.timeout_seconds, minimum=1)
+        timeout.setToolTip("If it hasn't reached its target state by then, stop "
+                           "the run here — later steps are not attempted.")
+
+        for w in (plus, grace, fixed, sep, timeout):
+            lay.addWidget(w)
+        lay.addStretch(1)
+
+        def sync():
+            running = mode.currentIndex() == 0
+            plus.setVisible(running)
+            grace.setVisible(running)
+            fixed.setVisible(not running)
+            sep.setVisible(running)
+            timeout.setVisible(running)
+
+        def commit(*_):
+            running = mode.currentIndex() == 0
+            step.wait = "applied" if running else "delay"
+            if running:
+                step.grace_seconds = grace.seconds()
+                step.timeout_seconds = max(1, timeout.seconds())
+            else:
+                step.delay_seconds = fixed.seconds()
+            sync()
+            self.changed.emit()
+
+        mode.currentIndexChanged.connect(commit)
+        grace.changed.connect(commit)
+        fixed.changed.connect(commit)
+        timeout.changed.connect(commit)
+        sync()
+        return row
+
     def _highlight(self):
+        """Selection is a quiet marker on the left edge — nothing else. Tinting
+        the row and its controls green was noisy to look at."""
         for i, row in enumerate(self._rows):
             if isinstance(row, QLabel):
                 continue
             on = (i == self._selected)
             row.setStyleSheet(
-                (f"QWidget {{ background:{theme.BG_RAISE}; border-left:2px solid "
-                 f"{theme.RUN}; }}") if on else
-                f"QWidget:hover {{ background:{theme.BG_HOVER}; }}")
+                f"#steprow {{ border-left:2px solid "
+                f"{theme.RUN if on else 'transparent'}; }}"
+                f"#steprow:hover {{ background:{theme.BG_HOVER}; }}")
 
     def _add_step(self):
-        existing = {s.service for s in self.stack.steps}
-        options = [s for s in self.cfg().services if s.name not in existing]
+        # Duplicates are allowed on purpose: a stack may legitimately touch the
+        # same service twice (stop it early, start it again later).
+        options = self.cfg().services
         if not options:
             QMessageBox.information(self, "Service Officer",
                                     "Add the services on the Services page first.")
             return
-        from PySide6.QtWidgets import QInputDialog
-        names = [f"{s.display()} ({s.name})" for s in options]
-        choice, ok = QInputDialog.getItem(self, "Add step", "Service:", names, 0, False)
-        if not ok:
+        dlg = SearchableList("Add step", "Which service?",
+                            [(f"{s.display()}  ·  {s.name}", s.name) for s in options],
+                            self, multi=True)
+        if dlg.exec() != QDialog.Accepted:
             return
-        picked = options[names.index(choice)]
-        self.stack.steps.append(cfg_mod.Step(service=picked.name))
+        for name in dlg.picked:
+            self.stack.steps.append(cfg_mod.Step(service=name))
         self._rebuild()
         self.changed.emit()
 
@@ -699,6 +753,8 @@ class StackDetail(_Page):
 
 
 class HistoryPage(_Page):
+    changed = Signal()
+
     def __init__(self, cfg_ref):
         super().__init__("History",
                          "Every state change, with its cause — evidence for a "
@@ -709,13 +765,12 @@ class HistoryPage(_Page):
         row = QHBoxLayout()
         row.setSpacing(9)
         self.enabled = QCheckBox("Record state changes")
-        self.enabled.toggled.connect(lambda on: setattr(self.cfg().history, "enabled", on))
+        self.enabled.toggled.connect(self._set_enabled)
         row.addWidget(self.enabled)
         row.addStretch(1)
         row.addWidget(_label("keep", "hint"))
         self.retention = _spin(30, 1, 365)
-        self.retention.valueChanged.connect(
-            lambda v: setattr(self.cfg().history, "retention_days", v))
+        self.retention.valueChanged.connect(self._set_retention)
         row.addWidget(self.retention)
         row.addWidget(_label("days", "hint"))
         self.root.addLayout(row)
@@ -743,9 +798,21 @@ class HistoryPage(_Page):
         self.area.setWidget(self.host)
         self.root.addWidget(self.area, 1)
 
+    def _set_enabled(self, on):
+        self.cfg().history.enabled = on
+        self.changed.emit()
+
+    def _set_retention(self, days):
+        self.cfg().history.retention_days = days
+        self.changed.emit()
+
     def load_from(self, cfg):
+        self.enabled.blockSignals(True)
+        self.retention.blockSignals(True)
         self.enabled.setChecked(cfg.history.enabled)
         self.retention.setValue(cfg.history.retention_days)
+        self.enabled.blockSignals(False)
+        self.retention.blockSignals(False)
         self.reload()
 
     def reload(self):
@@ -810,6 +877,8 @@ class HistoryPage(_Page):
 
 
 class GeneralPage(_Page):
+    changed = Signal()
+
     def __init__(self, cfg_ref):
         super().__init__("General", "How the app itself behaves.")
         self.cfg = cfg_ref
@@ -817,7 +886,7 @@ class GeneralPage(_Page):
         self.root.addWidget(_label("STARTUP", "section"))
         self.root.addSpacing(9)
         self.auto = QCheckBox("Start automatically when Windows starts")
-        self.auto.toggled.connect(lambda on: setattr(self.cfg(), "auto_start", on))
+        self.auto.toggled.connect(self._set_auto)
         self.root.addWidget(self.auto)
         self.root.addSpacing(24)
 
@@ -829,7 +898,7 @@ class GeneralPage(_Page):
         for box, attr in ((self.on_crash, "on_crash"),
                           (self.on_recovery, "on_recovery"),
                           (self.on_give_up, "on_give_up")):
-            box.toggled.connect(lambda on, a=attr: setattr(self.cfg().notifications, a, on))
+            box.toggled.connect(lambda on, a=attr: self._set_note(a, on))
             self.root.addWidget(box)
             self.root.addSpacing(4)
 
@@ -842,17 +911,28 @@ class GeneralPage(_Page):
             "groundwork is done.", "hint", wrap=True))
         self.root.addStretch(1)
 
+    def _set_auto(self, on):
+        self.cfg().auto_start = on
+        self.changed.emit()
+
+    def _set_note(self, attr, on):
+        setattr(self.cfg().notifications, attr, on)
+        self.changed.emit()
+
     def load_from(self, cfg):
-        self.auto.setChecked(cfg.auto_start)
-        self.on_crash.setChecked(cfg.notifications.on_crash)
-        self.on_recovery.setChecked(cfg.notifications.on_recovery)
-        self.on_give_up.setChecked(cfg.notifications.on_give_up)
+        for box, value in ((self.auto, cfg.auto_start),
+                           (self.on_crash, cfg.notifications.on_crash),
+                           (self.on_recovery, cfg.notifications.on_recovery),
+                           (self.on_give_up, cfg.notifications.on_give_up)):
+            box.blockSignals(True)
+            box.setChecked(value)
+            box.blockSignals(False)
 
 
 # ── the window ─────────────────────────────────────────────────────────────
 class SettingsWindow(QDialog):
     saved = Signal(object)               # the new Config
-    test_run = Signal(str, str)
+    test_run = Signal(object, str)       # the stack being edited, action
 
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
@@ -860,6 +940,9 @@ class SettingsWindow(QDialog):
         self.setWindowIcon(icons.base_icon("green"))
         self.resize(860, 620)
         self._cfg = copy.deepcopy(cfg)    # edit a copy; Save commits it
+        # Saved state to compare against, so Save can be disabled when there is
+        # nothing to write.
+        self._baseline = cfg_mod.to_dict(self._cfg)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -886,25 +969,32 @@ class SettingsWindow(QDialog):
         self.general_page = GeneralPage(get)
         self.services_page.changed.connect(self.stacks_page.refresh)
         self.stacks_page.test_run.connect(self.test_run)
+        for page in (self.services_page, self.stacks_page,
+                     self.history_page, self.general_page):
+            page.changed.connect(self._refresh_save_state)
 
         self._nav_buttons = []
-        sections = [("Monitoring", None),
-                    ("▤   Services", self.services_page),
-                    ("⇅   Stacks", self.stacks_page),
-                    ("◷   History", self.history_page),
-                    ("Application", None),
-                    ("⚙   General", self.general_page)]
-        for text, page in sections:
+        sections = [("Monitoring", None, None),
+                    ("Services", "services", self.services_page),
+                    ("Stacks", "stacks", self.stacks_page),
+                    ("History", "history", self.history_page),
+                    ("Application", None, None),
+                    ("General", "general", self.general_page)]
+        for text, kind, page in sections:
             if page is None:
                 cap = _label(text.upper(), "section")
                 cap.setContentsMargins(16, 14, 16, 6)
                 nl.addWidget(cap)
                 continue
             self.pages.addWidget(page)
-            b = QPushButton(text)
+            b = QPushButton("  " + text)
             b.setProperty("kind", "nav")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
+            # Drawn icons, not text glyphs: a glyph inside the label can't be
+            # sized on its own and reads as a speck next to 13pt text.
+            b.setIcon(icons.nav_icon(kind, 19))
+            b.setIconSize(QSize(19, 19))
             b.clicked.connect(lambda _=False, p=page, btn=b: self._select(p, btn))
             nl.addWidget(b)
             self._nav_buttons.append(b)
@@ -918,14 +1008,18 @@ class SettingsWindow(QDialog):
         foot.setStyleSheet(f"background:#1b1b1b; border-top:1px solid {theme.LINE};")
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(16, 11, 16, 11)
+        self.status = _label("", "hint")
+        fl.addWidget(self.status)
         fl.addStretch(1)
-        fl.addWidget(_button("Cancel", None, self.reject))
-        fl.addWidget(_button("Save", "primary", self._save))
+        fl.addWidget(_button("Close", None, self.reject))
+        self.save_button = _button("Save", "primary", self._save)
+        fl.addWidget(self.save_button)
         outer.addWidget(foot)
 
         self.history_page.load_from(self._cfg)
         self.general_page.load_from(self._cfg)
         self._select(self.services_page, self._nav_buttons[0])
+        self._refresh_save_state()
 
     def _select(self, page, button):
         self.pages.setCurrentWidget(page)
@@ -935,6 +1029,30 @@ class SettingsWindow(QDialog):
     def config(self):
         return self._cfg
 
+    def is_dirty(self) -> bool:
+        return cfg_mod.to_dict(self._cfg) != self._baseline
+
+    def _refresh_save_state(self):
+        dirty = self.is_dirty()
+        self.save_button.setEnabled(dirty)
+        self.status.setText("Unsaved changes" if dirty else "")
+
     def _save(self):
+        """Save without closing: you usually want to keep adjusting, and a
+        window that vanishes on Save makes you reopen it to check."""
         self.saved.emit(self._cfg)
-        self.accept()
+        self._baseline = cfg_mod.to_dict(self._cfg)
+        self._refresh_save_state()
+        self.status.setText("Saved")
+
+    def reject(self):
+        if self.is_dirty():
+            answer = QMessageBox.question(
+                self, "Service Officer",
+                "You have unsaved changes. Save them before closing?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+            if answer == QMessageBox.Cancel:
+                return
+            if answer == QMessageBox.Save:
+                self._save()
+        super().reject()

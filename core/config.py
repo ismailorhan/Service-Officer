@@ -65,10 +65,27 @@ class Service:
 
 @dataclass
 class Step:
+    """One service in a stack.
+
+    The wait fields describe the *gap after this step*, before the next one
+    starts — which is why the last step in a stack has nothing to configure.
+
+    wait == "running": wait until this service reports Running, then pause
+        `grace_seconds` more; abandon the run if it hasn't started within
+        `timeout_seconds`.
+    wait == "delay": ignore the status and pause exactly `delay_seconds`.
+    """
     service: str
-    wait: str = "running"          # "running" | "delay"
-    timeout_seconds: int = 60      # used when wait == "running"
+    action: str = "start"          # "start" | "stop" | "restart"
+    wait: str = "applied"          # "applied" (reach the target state) | "delay"
+    timeout_seconds: int = 60      # give up waiting for the target state
+    grace_seconds: int = 0         # extra pause once it reached the target
     delay_seconds: int = 10        # used when wait == "delay"
+
+    @property
+    def target_state(self) -> str:
+        """The state this step is trying to produce."""
+        return "Stopped" if self.action == "stop" else "Running"
 
 
 @dataclass
@@ -79,6 +96,25 @@ class Stack:
     def summary(self, services=None) -> str:
         labels = {s.name: s.display() for s in (services or [])}
         return " → ".join(labels.get(st.service, st.service) for st in self.steps)
+
+    def describe(self, services=None) -> str:
+        """Per-step detail, spelling out what happens between the steps."""
+        labels = {s.name: s.display() for s in (services or [])}
+        out = []
+        last = len(self.steps)
+        for i, st in enumerate(self.steps, start=1):
+            name = labels.get(st.service, st.service)
+            head = f"{i}. {st.action} {name}"
+            if i == last:
+                out.append(f"{head} — verified {st.target_state.lower()} "
+                           f"(up to {st.timeout_seconds}s)")
+            elif st.wait == "applied":
+                extra = f" + {st.grace_seconds}s" if st.grace_seconds else ""
+                out.append(f"{head} — then wait until applied{extra}, "
+                           f"timeout {st.timeout_seconds}s")
+            else:
+                out.append(f"{head} — then wait {st.delay_seconds}s, always")
+        return "\n".join(out)
 
 
 @dataclass
@@ -169,13 +205,22 @@ def _step_from(raw) -> Step | None:
         return Step(service=raw)
     if not isinstance(raw, dict) or not raw.get("service"):
         return None
-    wait = raw.get("wait", "running")
-    if wait not in ("running", "delay"):
-        wait = "running"
+    # "running" was the old name for "applied", and "auto" used to mean "follow
+    # the stack-level action" before a step always carried its own.
+    wait = raw.get("wait", "applied")
+    if wait == "running":
+        wait = "applied"
+    if wait not in ("applied", "delay"):
+        wait = "applied"
+    action = raw.get("action", "start")
+    if action in ("auto", "") or action not in ("start", "stop", "restart"):
+        action = "start"
     return Step(
         service=str(raw["service"]),
+        action=action,
         wait=wait,
         timeout_seconds=max(1, _as_int(raw.get("timeout_seconds"), 60)),
+        grace_seconds=max(0, _as_int(raw.get("grace_seconds"), 0)),
         delay_seconds=max(0, _as_int(raw.get("delay_seconds"), 10)),
     )
 

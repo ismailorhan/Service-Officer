@@ -89,7 +89,6 @@ class Flyout(QWidget):
     action_requested = Signal(str, str, str)   # action, service, machine
     open_settings = Signal()
     open_services_mmc = Signal()
-    run_stack = Signal(str, str)               # stack name, action
 
     def __init__(self, config_getter, store: st.Store, parent=None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint |

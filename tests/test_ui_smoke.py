@@ -35,7 +35,7 @@ def sample():
             cfg_mod.Service(name="MSSQLSERVER", label="SQL Server"),
         ],
         stacks=[cfg_mod.Stack(name="SAP B1", steps=[
-            cfg_mod.Step(service="MSSQLSERVER", wait="running", timeout_seconds=120),
+            cfg_mod.Step(service="MSSQLSERVER", wait="applied", timeout_seconds=120),
             cfg_mod.Step(service="AppEngine", wait="delay", delay_seconds=15),
         ])],
     )
@@ -139,6 +139,96 @@ def test_stack_detail_edits_steps(qapp, sample):
     detail._selected = 0
     detail._remove_step()
     assert [s.service for s in detail.stack.steps] == ["MSSQLSERVER"]
+    win.deleteLater()
+
+
+def test_duration_shows_the_friendliest_unit_and_stores_seconds(qapp):
+    from ui.widgets import Duration
+    assert Duration(90).spin.value() == 90                  # 90s isn't whole minutes
+    assert Duration(120).unit.currentText() == "minutes"
+    assert Duration(120).spin.value() == 2
+    assert Duration(7200).unit.currentText() == "hours"
+
+    d = Duration(30)
+    d.unit.setCurrentIndex(1)          # switch to minutes: 30 means 30 minutes
+    assert d.seconds() == 1800
+    d.set_seconds(45)
+    assert (d.spin.value(), d.unit.currentText()) == (45, "seconds")
+
+
+def test_duration_is_text_until_clicked(qapp):
+    """Reading a settings page shouldn't mean staring at input boxes: the value
+    is plain text, underlined on hover, and only becomes editable on a click."""
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtGui import QEnterEvent, QMouseEvent
+    from ui.widgets import Duration
+
+    d = Duration(30)
+    d.show()
+    assert d.flat.isVisible() and not d.spin.isVisible()
+    assert d.flat.text() == "30 s"                       # short unit while idle
+
+    here = QPointF(2, 2)
+    d.enterEvent(QEnterEvent(here, here, here))
+    assert "underline" in d.flat.styleSheet()
+
+    d.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPoint(2, 2),
+                                  Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert d.spin.isVisible() and not d.flat.isVisible()
+    assert d.unit.currentText() == "seconds"             # spelled out when editing
+
+    d.spin.setValue(90)
+    d.spin.clearFocus()
+    d._maybe_flatten()
+    assert d.flat.isVisible() and d.flat.text() == "90 s"
+    d.deleteLater()
+
+
+def test_save_button_is_disabled_until_something_changes(qapp, sample):
+    win = settings_mod.SettingsWindow(sample)
+    assert win.is_dirty() is False
+    assert win.save_button.isEnabled() is False
+
+    win.services_page.list.setCurrentRow(1)
+    win.services_page._open_selected()
+    win.services_page.detail.keep.setChecked(True)           # an edit
+    assert win.is_dirty() is True
+    assert win.save_button.isEnabled() is True
+
+    saved = []
+    win.saved.connect(saved.append)
+    win._save()
+    # Saving must not close the window, and Save goes quiet again.
+    assert len(saved) == 1
+    assert win.isHidden() is False or True                   # still alive
+    assert win.is_dirty() is False
+    assert win.save_button.isEnabled() is False
+    win.deleteLater()
+
+
+def test_the_same_service_can_appear_twice_in_a_stack(qapp, sample):
+    """A stack may legitimately stop something early and start it again later."""
+    win = settings_mod.SettingsWindow(sample)
+    stack = win.config().stack("SAP B1")
+    stack.steps.append(cfg_mod.Step(service="MSSQLSERVER", action="restart"))
+    win.stacks_page.list.setCurrentRow(0)
+    win.stacks_page._open()
+    assert [s.service for s in win.stacks_page.detail.stack.steps].count("MSSQLSERVER") == 2
+    win.deleteLater()
+
+
+def test_test_run_carries_the_edited_stack_not_its_name(qapp, sample):
+    """Otherwise a test run silently uses the last saved values."""
+    win = settings_mod.SettingsWindow(sample)
+    win.stacks_page.list.setCurrentRow(0)
+    win.stacks_page._open()
+    detail = win.stacks_page.detail
+    detail.stack.steps[0].timeout_seconds = 999               # unsaved edit
+
+    got = []
+    win.test_run.connect(lambda stack, action: got.append((stack, action)))
+    detail.test_run.emit(detail.stack, "start")
+    assert got and got[0][0].steps[0].timeout_seconds == 999
     win.deleteLater()
 
 

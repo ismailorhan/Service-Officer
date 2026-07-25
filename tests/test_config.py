@@ -32,7 +32,7 @@ def test_round_trip_preserves_everything(tmp_path):
                                                     delay_seconds=7, backoff=1.5,
                                                     restart_on_clean_stop=True))],
         stacks=[cfg.Stack(name="SAP B1", steps=[
-            cfg.Step(service="MSSQLSERVER", wait="running", timeout_seconds=120),
+            cfg.Step(service="MSSQLSERVER", wait="applied", timeout_seconds=120),
             cfg.Step(service="AppEngine", wait="delay", delay_seconds=15),
         ])],
         history=cfg.History(enabled=False, retention_days=7),

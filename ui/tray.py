@@ -29,7 +29,8 @@ class Tray(QObject):
     settings_requested = Signal()
     services_requested = Signal()
     refresh_requested = Signal()
-    stack_requested = Signal(str, str)     # stack name, action
+    stack_requested = Signal(str)          # stack name — a stack is one script
+    menu_opened = Signal()
 
     def __init__(self, config_getter, store: st.Store, parent=None):
         super().__init__(parent)
@@ -73,12 +74,12 @@ class Tray(QObject):
         self._menu.clear()
         stacks = self._config().stacks
         if stacks:
+            # One entry per stack, no submenu: each step already says what it
+            # does, so there is nothing left to choose.
             for stack in stacks:
-                sub = self._menu.addMenu(stack.name)
-                for label, action in (("Start", "start"), ("Stop", "stop"),
-                                      ("Restart", "restart")):
-                    sub.addAction(label, lambda s=stack.name, a=action:
-                                  self.stack_requested.emit(s, a))
+                action = self._menu.addAction(
+                    stack.name, lambda s=stack.name: self.stack_requested.emit(s))
+                action.setToolTip(stack.describe(self._config().services))
             self._menu.addSeparator()
         self._menu.addAction("Open Services", self.services_requested.emit)
         self._menu.addAction("Refresh", self.refresh_requested.emit)
@@ -124,9 +125,15 @@ class Tray(QObject):
     def _activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.left_clicked.emit()
+        elif reason == QSystemTrayIcon.Context:
+            # The menu is about to cover the same corner as the hover card.
+            self.menu_opened.emit()
 
     def _check_hover(self):
         from PySide6.QtGui import QCursor
+        if self._menu.isVisible():          # don't fight the context menu
+            self._hovering = False
+            return
         rect = self.icon.geometry()
         inside = bool(rect) and not rect.isNull() and rect.contains(QCursor.pos())
         if inside:

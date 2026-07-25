@@ -100,18 +100,18 @@ def test_a_stack_stop_is_not_fought_by_recovery(tmp_path):
                                   recovery=cfg_mod.Recovery(enabled=True)),
                   cfg_mod.Service(name="WMSServer",
                                   recovery=cfg_mod.Recovery(enabled=True))],
-        stacks=[cfg_mod.Stack(name="SAP B1", steps=[
-            cfg_mod.Step(service="AppEngine", timeout_seconds=5),
-            cfg_mod.Step(service="WMSServer", timeout_seconds=5)])])
+        stacks=[cfg_mod.Stack(name="Shut down", steps=[
+            cfg_mod.Step(service="WMSServer", action="stop", timeout_seconds=5),
+            cfg_mod.Step(service="AppEngine", action="stop", timeout_seconds=5)])])
     store, control, wd, hist = wire(tmp_path, cfg)
     control.status = {"AppEngine": st.RUNNING, "WMSServer": st.RUNNING}
     store.update("AppEngine", st.RUNNING)
     store.update("WMSServer", st.RUNNING)
 
     runner = stacks.Runner(control, store, poll=0.01)
-    result = runner.run(cfg.stack("SAP B1"), stacks.STOP)
+    result = runner.run(cfg.stack("Shut down"))
     assert result.ok
-    assert control.stopped == ["WMSServer", "AppEngine"]        # reverse order
+    assert control.stopped == ["WMSServer", "AppEngine"]        # as written
 
     # The SCM would now report both as stopped; neither may be restarted.
     store.update("WMSServer", st.STOPPED, exit_code=0)

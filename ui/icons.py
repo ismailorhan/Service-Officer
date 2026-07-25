@@ -133,3 +133,52 @@ def dot(colour: str, size: int = 9) -> QPixmap:
 
 def status_dot(category: str, size: int = 9) -> QPixmap:
     return dot(theme.dot_colour(category), size)
+
+
+def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:
+    """Sidebar icons, drawn rather than typed.
+
+    A text glyph inside a button label can't be sized independently of the
+    label, and at label size these read as specks.
+    """
+    key = ("nav", kind, size, colour)
+    if key in _cache:
+        return _cache[key]
+
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(colour or theme.FG2), 1.7)
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    s = size
+
+    if kind == "services":                      # a list
+        for i in range(3):
+            y = s * (0.28 + i * 0.22)
+            p.drawEllipse(QRectF(s * 0.12, y - s * 0.045, s * 0.09, s * 0.09))
+            p.drawLine(QPointF(s * 0.34, y), QPointF(s * 0.86, y))
+    elif kind == "stacks":                       # ordered, both directions
+        p.drawLine(QPointF(s * 0.32, s * 0.18), QPointF(s * 0.32, s * 0.82))
+        p.drawLine(QPointF(s * 0.32, s * 0.18), QPointF(s * 0.2, s * 0.34))
+        p.drawLine(QPointF(s * 0.32, s * 0.18), QPointF(s * 0.44, s * 0.34))
+        p.drawLine(QPointF(s * 0.68, s * 0.82), QPointF(s * 0.68, s * 0.18))
+        p.drawLine(QPointF(s * 0.68, s * 0.82), QPointF(s * 0.56, s * 0.66))
+        p.drawLine(QPointF(s * 0.68, s * 0.82), QPointF(s * 0.8, s * 0.66))
+    elif kind == "history":                      # a clock
+        p.drawEllipse(QRectF(s * 0.14, s * 0.14, s * 0.72, s * 0.72))
+        p.drawLine(QPointF(s * 0.5, s * 0.5), QPointF(s * 0.5, s * 0.28))
+        p.drawLine(QPointF(s * 0.5, s * 0.5), QPointF(s * 0.68, s * 0.58))
+    else:                                        # gear
+        c = s / 2.0
+        p.drawEllipse(QRectF(c - s * 0.17, c - s * 0.17, s * 0.34, s * 0.34))
+        for k in range(8):
+            a = math.radians(k * 45)
+            p.drawLine(QPointF(c + math.cos(a) * s * 0.26,
+                               c + math.sin(a) * s * 0.26),
+                       QPointF(c + math.cos(a) * s * 0.40,
+                               c + math.sin(a) * s * 0.40))
+    p.end()
+    _cache[key] = QIcon(pm)
+    return _cache[key]

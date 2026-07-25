@@ -1,13 +1,17 @@
-"""Ordered stack runs.
+"""Stack runs.
 
-A stack is a sequence: SQL Server → Licence Manager → AppEngine → WMS. Starting
-walks it forwards; stopping walks it backwards. Each step waits before the next
-begins — either until the service reports Running, or for a fixed number of
-seconds, because several services report Running well before they can actually
-serve anything and a fixed pause is the honest way to say so.
+A stack is a script: an ordered list of steps, each naming a service and what to
+do to it (start, stop or restart), with a wait before the next step begins. There
+is no stack-level start/stop/restart — a step carries its own action, so one
+click runs the sequence exactly as written.
 
-The runner has no UI dependency and takes its own control object, so it can be
-driven headlessly in tests with fake services.
+Each wait is either "until applied" — poll until the service reaches the state
+the step was trying to produce, then optionally pause a little longer — or a
+fixed pause, because several services report Running well before they can
+actually serve and a fixed wait is the honest way to say so.
+
+No UI dependency: the runner takes its own control object, so it can be driven
+headlessly with fake services.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ RESTART = "restart"
 class StepResult:
     index: int          # 1-based position in the run
     service: str
+    action: str
     ok: bool
     detail: str = ""
     seconds: float = 0.0
@@ -35,7 +40,6 @@ class StepResult:
 @dataclass
 class RunResult:
     stack: str
-    action: str
     steps: list          # list[StepResult]
     ok: bool
     cancelled: bool = False
@@ -47,14 +51,14 @@ class RunResult:
     def summary(self) -> str:
         """One line suitable for a notification or a ticket."""
         if self.cancelled:
-            return f"{self.stack}: {self.action} cancelled after {len(self.steps)} steps"
+            return f"{self.stack}: cancelled after {len(self.steps)} steps"
         if self.ok:
             total = sum(s.seconds for s in self.steps)
-            return (f"{self.stack}: {self.action} completed, "
-                    f"{len(self.steps)} steps in {total:.0f}s")
+            return (f"{self.stack}: {len(self.steps)} steps completed "
+                    f"in {total:.0f}s")
         bad = self.failed_step
-        return (f"{self.stack}: {self.action} failed at step {bad.index} "
-                f"({bad.service}) — {bad.detail}")
+        return (f"{self.stack}: failed at step {bad.index} "
+                f"({bad.action} {bad.service}) — {bad.detail}")
 
 
 class Runner:
@@ -99,8 +103,7 @@ class Runner:
             if status == st.NOT_FOUND:
                 return False, "service not found"
             try:
-                fresh = self._control.query_status(name, machine=machine)
-                if fresh == target:
+                if self._control.query_status(name, machine=machine) == target:
                     return True, ""
             except Exception:
                 pass
@@ -116,79 +119,75 @@ class Runner:
             time.sleep(min(0.2, max(0.0, end - time.monotonic())))
         return not self._cancel.is_set()
 
+    def _apply(self, step, machine: str) -> str:
+        """Issue the step's action. Returns a detail note; raises on failure."""
+        current = self._status(step.service, machine)
+        if step.action == START:
+            if current == st.RUNNING:
+                return "already running"
+            self._control.start_service(step.service, machine=machine)
+        elif step.action == STOP:
+            if current == st.STOPPED:
+                return "already stopped"
+            self._store.expect_stop(step.service, machine)
+            self._control.stop_service(step.service, machine=machine)
+        else:                                   # restart
+            self._store.expect_stop(step.service, machine)
+            self._control.restart_service(step.service, machine=machine)
+        return ""
+
     # -- the run -----------------------------------------------------------
-    def run(self, stack, action: str, on_step=None, machine_for=None) -> RunResult:
-        """on_step(index, total, service, phase) — phase is 'begin'|'ok'|'fail'.
-        machine_for(service_name) -> machine, so a stack can span machines."""
+    def run(self, stack, on_step=None, machine_for=None) -> RunResult:
+        """on_step(index, total, service, action, phase) — phase is
+        'begin' | 'ok' | 'fail'. machine_for(name) -> machine, so a stack can
+        span machines."""
         on_step = on_step or (lambda *a: None)
         machine_for = machine_for or (lambda _n: "")
 
         with self._busy:
             self._cancel.clear()
-            if action == RESTART:
-                down = self._execute(stack, STOP, on_step, machine_for, phase_offset=0)
-                if not down.ok or down.cancelled:
-                    return down
-                up = self._execute(stack, START, on_step, machine_for,
-                                   phase_offset=len(down.steps))
-                return RunResult(stack=stack.name, action=RESTART,
-                                 steps=down.steps + up.steps,
-                                 ok=up.ok, cancelled=up.cancelled)
-            return self._execute(stack, action, on_step, machine_for)
+            steps = list(stack.steps)
+            total = len(steps)
+            results = []
 
-    def _execute(self, stack, action: str, on_step, machine_for,
-                 phase_offset: int = 0) -> RunResult:
-        steps = list(stack.steps)
-        if action == STOP:
-            steps.reverse()          # unwind dependencies in reverse
-        total = len(steps)
-        results = []
+            for i, step in enumerate(steps, start=1):
+                if self._cancel.is_set():
+                    return RunResult(stack.name, results, ok=False, cancelled=True)
 
-        for i, step in enumerate(steps, start=1):
-            if self._cancel.is_set():
-                return RunResult(stack.name, action, results, ok=False, cancelled=True)
+                machine = machine_for(step.service)
+                began = time.monotonic()
+                on_step(i, total, step.service, step.action, "begin")
+                self._on_log(f"{stack.name}: step {i}/{total} "
+                             f"{step.action} {step.service}")
 
-            machine = machine_for(step.service)
-            began = time.monotonic()
-            on_step(i + phase_offset, total, step.service, "begin")
-            self._on_log(f"{stack.name}: {action} step {i}/{total} {step.service}")
+                try:
+                    detail = self._apply(step, machine)
+                except Exception as exc:
+                    msg = getattr(exc, "strerror", None) or str(exc)
+                    results.append(StepResult(i, step.service, step.action, False,
+                                              msg, time.monotonic() - began))
+                    on_step(i, total, step.service, step.action, "fail")
+                    return RunResult(stack.name, results, ok=False)
 
-            try:
-                if action == START:
-                    if self._status(step.service, machine) == st.RUNNING:
-                        detail = "already running"
-                    else:
-                        self._control.start_service(step.service, machine=machine)
-                        detail = ""
+                # The wait belongs to the gap after this step. The last step has
+                # no gap but is still verified, or a stack whose final service
+                # never came up would report success.
+                is_last = (i == total)
+                if is_last or step.wait == "applied":
+                    ok, why = self._wait_for(step.service, step.target_state,
+                                             step.timeout_seconds, machine)
+                    if ok and not is_last and step.grace_seconds:
+                        if not self._sleep(step.grace_seconds):
+                            ok, why = False, "cancelled"
                 else:
-                    if self._status(step.service, machine) == st.STOPPED:
-                        detail = "already stopped"
-                    else:
-                        self._store.expect_stop(step.service, machine)
-                        self._control.stop_service(step.service, machine=machine)
-                        detail = ""
-            except Exception as exc:
-                msg = getattr(exc, "strerror", None) or str(exc)
-                results.append(StepResult(i, step.service, False, msg,
-                                          time.monotonic() - began))
-                on_step(i + phase_offset, total, step.service, "fail")
-                return RunResult(stack.name, action, results, ok=False)
+                    ok = self._sleep(step.delay_seconds)
+                    why = "" if ok else "cancelled"
 
-            # Wait before the next step begins.
-            target = st.RUNNING if action == START else st.STOPPED
-            if step.wait == "delay" and action == START:
-                ok = self._sleep(step.delay_seconds)
-                why = "" if ok else "cancelled"
-            else:
-                ok, why = self._wait_for(step.service, target,
-                                         step.timeout_seconds, machine)
+                results.append(StepResult(i, step.service, step.action, ok,
+                                          why or detail, time.monotonic() - began))
+                on_step(i, total, step.service, step.action, "ok" if ok else "fail")
+                if not ok:
+                    return RunResult(stack.name, results, ok=False,
+                                     cancelled=(why == "cancelled"))
 
-            results.append(StepResult(i, step.service, ok, why or detail,
-                                      time.monotonic() - began))
-            on_step(i + phase_offset, total, step.service, "ok" if ok else "fail")
-            if not ok:
-                cancelled = why == "cancelled"
-                return RunResult(stack.name, action, results, ok=False,
-                                 cancelled=cancelled)
-
-        return RunResult(stack.name, action, results, ok=True)
+            return RunResult(stack.name, results, ok=True)
