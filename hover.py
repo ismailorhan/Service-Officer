@@ -77,6 +77,13 @@ def request(items_provider, icon_rect):
     t.start()
 
 
+def update(items):
+    """Refresh the contents in place. Ignored unless it's currently on screen,
+    so a status change is reflected live instead of freezing at show time."""
+    if _visible.is_set():
+        _q.put(("update", items))
+
+
 def hide():
     """Hide it now (a click happened, or the app is shutting down)."""
     if _thread is not None:
@@ -106,16 +113,57 @@ def _cursor_in(rect, pad=0):
     return (l - pad) <= x <= (r + pad) and (t - pad) <= y <= (b + pad)
 
 
+SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+
+# Declare these: without argtypes ctypes passes HWNDs as 32-bit ints, so
+# HWND_TOPMOST (-1) reaches a 64-bit pointer parameter mangled and SetWindowPos
+# fails silently — the window then stays wherever it was mapped (0,0).
+_u = ctypes.windll.user32
+_u.GetAncestor.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
+_u.GetAncestor.restype = ctypes.wintypes.HWND
+_u.ShowWindow.argtypes = [ctypes.wintypes.HWND, ctypes.c_int]
+_u.ShowWindow.restype = ctypes.wintypes.BOOL
+_u.SetWindowPos.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.HWND,
+                            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                            ctypes.c_int, ctypes.wintypes.UINT]
+_u.SetWindowPos.restype = ctypes.wintypes.BOOL
+HWND_TOPMOST = ctypes.wintypes.HWND(-1)
+
+
+def _root_hwnd(win):
+    return _u.GetAncestor(win.winfo_id(), 2)  # GA_ROOT
+
+
 def _no_activate(win):
-    """Mark the window as a non-activating tool window so it never steals focus."""
+    """Mark the window as a non-activating tool window so a click can't focus it."""
     try:
-        hwnd = ctypes.windll.user32.GetAncestor(win.winfo_id(), 2)  # GA_ROOT
+        hwnd = _root_hwnd(win)
         GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = -20, 0x08000000, 0x00000080
         style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         ctypes.windll.user32.SetWindowLongW(
             hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
     except Exception:
         pass
+
+
+def _show_no_activate(win, x, y, w, h):
+    """Show at (x, y) without taking the foreground.
+
+    WS_EX_NOACTIVATE alone isn't enough: Tk's deiconify()/lift() activate the
+    window explicitly (measured — our process became foreground even with the
+    style set). And because Tk still considers the window withdrawn, its
+    geometry() is ignored and the window lands at 0,0 — so position it here with
+    SetWindowPos, which both places and shows it without activation.
+    """
+    hwnd = _root_hwnd(win)
+    _u.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+    _u.SetWindowPos(hwnd, HWND_TOPMOST, int(x), int(y), int(w), int(h),
+                    SWP_NOACTIVATE)
+
+
+def _hide_window(win):
+    _u.ShowWindow(_root_hwnd(win), SW_HIDE)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +178,12 @@ def _loop():
     win.overrideredirect(True)
     win.configure(bg="#3a3a3a")   # 1px frame so it reads as a window on any wall
     win.attributes("-topmost", True)
-    win.withdraw()
+
+    # Realise it, mark it non-activating, then hide it through Win32 rather than
+    # Tk: from here on visibility is ShowWindow only, so nothing ever activates.
+    win.update_idletasks()
+    _no_activate(win)
+    _hide_window(win)
 
     body = tk.Frame(win, bg=BG, padx=12, pady=8)
     body.pack(fill="both", expand=True, padx=1, pady=1)
@@ -188,20 +241,22 @@ def _loop():
             y = max(4, y)
         else:
             x, y = right - w - MARGIN, bottom - h - MARGIN
-        win.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+        x, y = max(x, 0), max(y, 0)
+        # Tell Tk too: when it maps the window it re-asserts its own remembered
+        # geometry, which would otherwise drag it back to 0,0 after our
+        # SetWindowPos. Both then agree on the same spot.
+        win.geometry(f"{w}x{h}+{x}+{y}")
+        return x, y, w, h
 
     def _show(items, icon_rect):
         state["rect"] = icon_rect
         _render(items)
-        _place(icon_rect)
-        win.deiconify()
-        win.lift()
-        _no_activate(win)
+        _show_no_activate(win, *_place(icon_rect))
         _shown_at[0] = time.monotonic()
         _visible.set()
 
     def _hide():
-        win.withdraw()
+        _hide_window(win)
         _visible.clear()
 
     def _watch():
@@ -234,6 +289,11 @@ def _loop():
             try:
                 if cmd == "show":
                     _show(*payload)
+                elif cmd == "update":
+                    if _visible.is_set():
+                        _render(payload)
+                        # re-place: the row count may have changed the height
+                        _show_no_activate(win, *_place(state["rect"]))
                 elif cmd == "hide":
                     _hide()
             except Exception:

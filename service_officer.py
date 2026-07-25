@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 import config
 import hover
 import panel
+import scm_notify
 import service_control
 import settings_dialog
 import _icon_data
@@ -239,11 +240,35 @@ def _force_refresh(icon: pystray.Icon) -> None:
         icon.icon = create_icon_image(_icon_color_key())
 
 
+def _on_scm_change(icon: pystray.Icon, name: str, status: str) -> None:
+    """A service changed state — from anywhere, including services.msc."""
+    with _cache_lock:
+        if _status_cache.get(name) == status:
+            return
+        _status_cache[name] = status
+
+    _sync_spinner(icon)
+    if not _spinning():
+        icon.icon = create_icon_image(_icon_color_key())
+    hover.update(_hover_items())   # no-op unless the flyout is on screen
+
+
+def _start_scm_watcher(icon: pystray.Icon) -> None:
+    watcher = scm_notify.Watcher(
+        get_names=lambda: [s["name"] for s in config.load_services()],
+        on_change=lambda name, status: _on_scm_change(icon, name, status),
+        safety_query=service_control.query_status,
+    )
+    watcher.start()
+    return watcher
+
+
 def _poll_loop(icon: pystray.Icon) -> None:
-    """Background thread: refresh every 10s, or every 1.5s while a service is
-    mid-transition so the spinner tracks it and stops promptly once settled."""
+    """Slow safety net. State changes arrive by SCM notification (see
+    scm_notify), so this only guards against a lost registration and keeps the
+    right-click menu in step with config edits."""
     while True:
-        time.sleep(1.5 if _should_spin() else 5)
+        time.sleep(20)
         _force_refresh(icon)
 
 
@@ -344,6 +369,7 @@ def main() -> None:
     icon.menu        = icon._right_menu
     panel.ACTION_HOOK[0] = _make_action_hook(icon)
 
+    _start_scm_watcher(icon)   # push notifications: sub-second state changes
     threading.Thread(target=_poll_loop, args=(icon,), daemon=True).start()
 
     def setup(icon):
