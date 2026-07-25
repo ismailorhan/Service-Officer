@@ -618,12 +618,30 @@ class ServiceDetail(_Page):
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(10)
         self.h_interval = Duration(60, minimum=5)
+        self.h_interval.setToolTip("How often to run the checks below, while the "
+                                   "service is running.")
         self.h_grace = Duration(60)
+        self.h_grace.setToolTip("Time to allow after the service reaches Running "
+                                "before its answers count. Zero judges it "
+                                "immediately.")
         self.h_failures = FlatSpin(3, 1, 20)
+        self.h_failures.setToolTip("Consecutive failures before it is called "
+                                   "unhealthy. One bad answer is usually load, "
+                                   "not death.")
         for w in (self.h_interval, self.h_grace, self.h_failures):
             w.changed.connect(self._save_health)
-        hl.addWidget(_sentence("Ask every", self.h_interval, ", starting",
-                               self.h_grace, "after it comes up."))
+        # No trailing full stop: _sentence joins with spaces, so one would sit a
+        # space away from the number and look like a typo.
+        hl.addWidget(_sentence("Ask every", self.h_interval))
+        # "Ask every 1 min, starting 1 min after it comes up" was asked about, and
+        # fairly: two durations in one sentence, and "starting" reads as starting
+        # the service. Its own line, with the reason underneath.
+        hl.addWidget(_sentence("Ignore the first", self.h_grace,
+                               "after it starts."))
+        hl.addWidget(_label(
+            "A service that has just come up hasn't opened its port yet, so "
+            "asking straight away would report every restart as a failure.",
+            "hint", wrap=True))
         hl.addWidget(_sentence("Call it unhealthy after", self.h_failures,
                                "failures in a row."))
         self.h_action = QComboBox()
