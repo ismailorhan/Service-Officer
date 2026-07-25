@@ -489,12 +489,16 @@ class Flyout(QWidget):
         expanded — and that holds the top-left corner, which pushed the footer
         down under the taskbar. Re-anchoring here catches every case, whoever
         caused it. Moving does not raise another resize, so this can't loop.
+
+        The height comes from the event, not from self.height(): for a top-level
+        window the widget still reports the old height while this runs, so using
+        it re-anchored to the size we were leaving and nothing appeared to move.
         """
         super().resizeEvent(ev)
         if self._bottom is None or not self.isVisible():
             return
         screen = self.screen().availableGeometry()
-        y = max(screen.top() + 4, self._bottom - self.height())
+        y = max(screen.top() + 4, self._bottom - ev.size().height())
         if y != self.y():
             self.move(self.x(), int(y))
 
