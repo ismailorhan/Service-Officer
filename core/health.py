@@ -96,7 +96,12 @@ def _tcp(check, machine: str) -> Result:
         return Result(False, str(exc))
 
     deadline = time.monotonic() + check.timeout_seconds
-    last = ""
+    #: the first failure, not the last: candidates are best-ranked first, so the
+    #: IPv4 address is the one a person would go and check. Reporting the last one
+    #: named a link-local fe80:: address, which reads as an IPv6 problem when the
+    #: truth is that nothing was listening anywhere.
+    first_failure = ""
+    tried = 0
     for index, (family, socktype, proto, _c, sockaddr) in enumerate(candidates):
         left = deadline - time.monotonic()
         if left <= 0:
@@ -104,6 +109,7 @@ def _tcp(check, machine: str) -> Result:
         # Share what's left, so one dead address can't consume the whole budget.
         share = max(0.5, left / (len(candidates) - index))
         sock = socket.socket(family, socktype, proto)
+        tried += 1
         try:
             sock.settimeout(min(share, left))
             sock.connect(sockaddr)
@@ -111,14 +117,18 @@ def _tcp(check, machine: str) -> Result:
                                 + (f" ({sockaddr[0]})" if sockaddr[0] != host
                                    else ""))
         except socket.timeout:
-            last = f"{sockaddr[0]} did not answer"
+            first_failure = first_failure or f"{sockaddr[0]} did not answer"
         except OSError as exc:
             # Connection refused is the interesting one: something is listening
             # nowhere, which for a Running service means it never opened up.
-            last = f"{sockaddr[0]} — {getattr(exc, 'strerror', None) or exc}"
+            first_failure = first_failure or (
+                f"{sockaddr[0]} — {getattr(exc, 'strerror', None) or exc}")
         finally:
             sock.close()
-    return Result(False, f"{host}:{check.port} — {last or 'no answer'}")
+    more = f" (and {tried - 1} other address{'es' if tried > 2 else ''})" \
+        if tried > 1 else ""
+    return Result(False, f"{host}:{check.port} — "
+                         f"{first_failure or 'no answer'}{more}")
 
 
 def _http(check, machine: str) -> Result:

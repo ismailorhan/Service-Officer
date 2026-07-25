@@ -261,6 +261,15 @@ class Application(QObject):
         self.do_action("restart", name, machine, announce_errors=False)
 
     def _refresh_lists(self):
+        """Everything that shows a service's state, in one place.
+
+        The tray icon belongs here. It was only repainted from the SCM event
+        handler, so a health verdict — which is not an SCM event — updated the
+        store and left the icon green until something unrelated happened. The
+        icon is the only thing most people look at.
+        """
+        self.tray.apply_state()
+        self.hover.refresh()
         if self.flyout.isVisible():
             self.flyout.apply_states()
         if self.panel is not None and self.panel.isVisible():
@@ -268,9 +277,7 @@ class Application(QObject):
 
     def _on_state_event(self, event):
         """GUI thread: refresh whatever is on screen."""
-        self.tray.apply_state()
         self._refresh_lists()
-        self.hover.refresh()
         # Health is judged from when a service reached Running, and a stopped
         # service is not unhealthy — it is stopped.
         machine = event.state.machine
