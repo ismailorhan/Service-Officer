@@ -1,0 +1,420 @@
+<title>Service Officer — Settings v2</title>
+<style>
+  :root{
+    --bg:#1e1e1e; --bg2:#2a2a2a; --bg3:#242424; --bg4:#1a1a1a;
+    --fg:#ffffff; --fg2:#aaaaaa; --fg3:#7a7a7a; --fg4:#5a5a5a;
+    --line:#333333; --btn:#2d2d2d; --btn-hv:#3d3d3d; --sel:#3a3a3a;
+    --run:#40c463; --stop:#e5534b; --pend:#e3b341; --none:#8b8b8b;
+    --accent:#4aa3ff;
+    --font:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:var(--font); color:var(--fg2); padding:36px 20px 80px;
+    background:radial-gradient(1100px 640px at 80% 4%, #1f3348 0%, rgba(31,51,72,0) 55%), #0f1319;
+  }
+  .wrap{max-width:1120px;margin:0 auto}
+  .kicker{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg4);margin:0 0 8px}
+  h1{color:#eef2f6;font-weight:600;font-size:25px;margin:0 0 8px;letter-spacing:-.01em}
+  .sub{color:#93a3b3;font-size:14px;line-height:1.55;max-width:76ch;margin:0 0 26px}
+  .sub b{color:#cdd9e5;font-weight:600}
+
+  /* ── window chrome ─────────────────────────────────────────── */
+  .win{
+    width:100%; max-width:880px; margin:0 auto;
+    border:1px solid #3a3a3a; border-radius:8px; overflow:hidden;
+    box-shadow:0 30px 70px -25px rgba(0,0,0,.85);
+    background:var(--bg);
+  }
+  .titlebar{
+    display:flex;align-items:center;gap:8px;
+    background:#191919;padding:8px 12px;border-bottom:1px solid var(--line);
+    font-size:12px;color:var(--fg2);
+  }
+  .titlebar .dots{display:flex;gap:6px;margin-left:auto}
+  .titlebar .dots span{width:11px;height:11px;border-radius:2px;background:#3a3a3a}
+  .titlebar .dots span:last-child{background:#5a3030}
+
+  .body{display:grid;grid-template-columns:170px 1fr;min-height:520px}
+  @media (max-width:720px){ .body{grid-template-columns:1fr} }
+
+  /* ── sidebar ───────────────────────────────────────────────── */
+  .side{background:var(--bg4);border-right:1px solid var(--line);padding:12px 0}
+  .side button{
+    all:unset; display:flex; align-items:center; gap:9px; width:100%;
+    padding:9px 14px; font:500 13px var(--font); color:var(--fg2); cursor:pointer;
+    border-left:2px solid transparent;
+  }
+  .side button:hover{background:#212121;color:var(--fg)}
+  .side button[aria-selected="true"]{background:var(--bg2);color:var(--fg);border-left-color:var(--run)}
+  .side .ico{width:15px;text-align:center;opacity:.85;font-size:13px}
+  .side .grp{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg4);padding:14px 14px 6px}
+
+  /* ── panes ─────────────────────────────────────────────────── */
+  .pane{display:none;padding:18px 20px}
+  .pane[data-active="true"]{display:block}
+  .pane h2{margin:0 0 3px;font-size:15px;font-weight:600;color:var(--fg)}
+  .pane .hint{margin:0 0 16px;font-size:12px;color:var(--fg3);line-height:1.5}
+
+  .split{display:grid;grid-template-columns:250px 1fr;gap:16px}
+  @media (max-width:720px){ .split{grid-template-columns:1fr} }
+
+  /* lists */
+  .list{background:var(--bg2);border:1px solid #323232;border-radius:5px;overflow:hidden}
+  .list .row{
+    display:flex;align-items:center;gap:9px;padding:8px 10px;font-size:12.5px;
+    color:var(--fg);cursor:pointer;border-bottom:1px solid #262626;
+  }
+  .list .row:last-child{border-bottom:0}
+  .list .row:hover{background:#303030}
+  .list .row[aria-selected="true"]{background:var(--sel)}
+  .list .row .svc{min-width:0}
+  .list .row .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .list .row .id{font:11px ui-monospace,Consolas,monospace;color:var(--fg3)}
+  .list .row .tag{margin-left:auto;font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap}
+  .tag.on{color:#8ff0ad;background:#193a26;border:1px solid #2c5238}
+  .tag.off{color:var(--fg3);background:#262626;border:1px solid #333}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dot.run{background:var(--run)} .dot.stop{background:var(--stop)}
+  .dot.pend{background:var(--pend)} .dot.none{background:var(--none)}
+
+  .listbar{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+  .btn{
+    all:unset;font:12px var(--font);color:var(--fg2);background:var(--btn);
+    border:1px solid #3a3a3a;border-radius:4px;padding:5px 10px;cursor:pointer;
+  }
+  .btn:hover{background:var(--btn-hv);color:var(--fg)}
+  .btn.pri{color:#bfeccd;border-color:#2c5238;background:#1b3527}
+  .btn.pri:hover{background:#22412f;color:#dcffe6}
+  .btn.danger:hover{color:#ff9b95;border-color:#542a2a}
+  .btn.icon{padding:5px 8px}
+
+  /* detail / groups */
+  .detail{min-width:0}
+  .who{display:flex;align-items:baseline;gap:9px;margin-bottom:14px}
+  .who .nm{font-size:15px;color:var(--fg);font-weight:600}
+  .who .id{font:11.5px ui-monospace,Consolas,monospace;color:var(--fg3)}
+
+  fieldset{border:1px solid var(--line);border-radius:5px;padding:12px 14px 14px;margin:0 0 14px}
+  legend{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg2);padding:0 6px}
+  .field{display:flex;align-items:center;gap:10px;margin:9px 0;font-size:12.5px}
+  .field label{color:var(--fg2);flex:1;min-width:0}
+  .field .unit{color:var(--fg3);font-size:11.5px}
+  .field.stack{display:block}
+  .field .note{color:var(--fg3);font-size:11.5px;line-height:1.45;margin-top:3px}
+
+  input[type=number],input[type=text],select{
+    font:12.5px var(--font);color:var(--fg);background:var(--bg2);
+    border:1px solid #3a3a3a;border-radius:4px;padding:4px 7px;
+  }
+  input[type=number]{width:66px;font-variant-numeric:tabular-nums}
+  input[type=text]{width:100%}
+  select{padding:4px 6px}
+  input:focus-visible,select:focus-visible,.btn:focus-visible,.side button:focus-visible{
+    outline:2px solid var(--accent);outline-offset:1px
+  }
+  .chk{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--fg);cursor:pointer}
+  .chk input{accent-color:var(--run);width:14px;height:14px}
+  fieldset[data-disabled="true"]{opacity:.42;pointer-events:none}
+
+  /* stack steps */
+  .steps{background:var(--bg2);border:1px solid #323232;border-radius:5px;overflow:hidden}
+  .steps .hd,.steps .st{
+    display:grid;grid-template-columns:26px 1fr 128px 96px 28px;gap:8px;align-items:center;
+    padding:7px 10px;font-size:12px;
+  }
+  .steps .hd{background:#232323;color:var(--fg3);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+  .steps .st{border-top:1px solid #262626;color:var(--fg)}
+  .steps .st:hover{background:#303030}
+  .steps .n{color:var(--fg3);font-variant-numeric:tabular-nums;text-align:center}
+  .steps .st .id{font:11px ui-monospace,Consolas,monospace;color:var(--fg3)}
+  .steps select{width:100%}
+  .steps .tmo{display:flex;align-items:center;gap:5px}
+  .steps .tmo input{width:52px}
+  .grab{color:var(--fg4);text-align:center;cursor:grab}
+
+  .runbar{
+    display:flex;align-items:center;gap:9px;margin-top:12px;padding:10px 12px;
+    background:var(--bg3);border:1px solid var(--line);border-radius:5px;font-size:12px;
+  }
+  .runbar .lbl{color:var(--fg2)}
+  .prog{flex:1;height:5px;background:#2b2b2b;border-radius:3px;overflow:hidden;min-width:60px}
+  .prog i{display:block;height:100%;width:62%;background:var(--run)}
+
+  /* history table */
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  thead th{
+    text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg3);
+    background:#232323;padding:6px 9px;position:sticky;top:0;
+  }
+  tbody td{padding:6px 9px;border-top:1px solid #262626;color:var(--fg)}
+  tbody tr:hover{background:#262626}
+  td.ts{font-variant-numeric:tabular-nums;color:var(--fg2);white-space:nowrap}
+  td.src span{font-size:10px;padding:1px 6px;border-radius:3px;background:#262626;border:1px solid #333;color:var(--fg2)}
+  td.src span.wd{color:#f2d489;border-color:#52471f;background:#3a3320}
+  .tblwrap{max-height:290px;overflow:auto;border:1px solid #323232;border-radius:5px;background:var(--bg2)}
+  .transition{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .arrow{color:var(--fg4)}
+
+  /* footer */
+  .foot{display:flex;gap:8px;justify-content:flex-end;padding:11px 16px;background:var(--bg3);border-top:1px solid var(--line)}
+
+  /* annotations */
+  .notes{max-width:880px;margin:26px auto 0;display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:720px){ .notes{grid-template-columns:1fr} }
+  .note{display:flex;gap:11px;font-size:13px;line-height:1.5}
+  .note .n{
+    flex:none;width:21px;height:21px;border-radius:5px;display:grid;place-items:center;
+    background:#1c2937;color:#7fc0ff;font-size:11px;font-weight:700;border:1px solid #294056;
+  }
+  .note b{color:#cdd9e5;font-weight:600}
+  .note span{color:#8797a6}
+</style>
+
+<div class="wrap">
+  <p class="kicker">Mockup · Settings v2</p>
+  <h1>Service Officer — ayarlar, üç yeni yetenek için</h1>
+  <p class="sub">Tek düz pencere yerine <b>bölümlü</b> bir yapı: solda bölümler, sağda master–detay. Servis seçince sağda o servisin <b>kurtarma kuralları</b> (kaç deneme, ne kadar bekleme) açılıyor. <b>Yığınlar</b> sekmesinde sıralı adımlar, her adım için “önceki çalışana kadar bekle” ya da “sabit süre bekle”. <b>Geçmiş</b> sekmesi neyin ne zaman düştüğünü kanıtlıyor. Soldaki bölümlere tıklayarak gez.</p>
+
+  <div class="win">
+    <div class="titlebar">
+      <span>⚙</span><span>Service Officer — Settings</span>
+      <span class="dots"><span></span><span></span><span></span></span>
+    </div>
+
+    <div class="body">
+      <!-- ── sidebar ── -->
+      <nav class="side" role="tablist" aria-label="Ayar bölümleri">
+        <div class="grp">Monitoring</div>
+        <button role="tab" aria-selected="true" data-tab="services"><span class="ico">▤</span>Services</button>
+        <button role="tab" aria-selected="false" data-tab="stacks"><span class="ico">⇅</span>Stacks</button>
+        <button role="tab" aria-selected="false" data-tab="history"><span class="ico">◷</span>History</button>
+        <div class="grp">Application</div>
+        <button role="tab" aria-selected="false" data-tab="general"><span class="ico">⚙</span>General</button>
+      </nav>
+
+      <!-- ── Services ── -->
+      <section class="pane" data-tab="services" data-active="true">
+        <h2>Monitored services</h2>
+        <p class="hint">Bunlar tepsi panelinde canlı durumla görünür. Bir servis seçip sağdan kurtarma kurallarını ayarla.</p>
+
+        <div class="split">
+          <div>
+            <div class="list" role="listbox" aria-label="Servisler">
+              <div class="row" role="option" aria-selected="false"><span class="dot run"></span>
+                <span class="svc"><span class="nm">CompuTec AppEngine</span></span><span class="tag on">Keep running</span></div>
+              <div class="row" role="option" aria-selected="true"><span class="dot stop"></span>
+                <span class="svc"><span class="nm">CompuTec WMS Server</span></span><span class="tag on">Keep running</span></div>
+              <div class="row" role="option" aria-selected="false"><span class="dot run"></span>
+                <span class="svc"><span class="nm">CompuTec License Server</span></span><span class="tag on">Keep running</span></div>
+              <div class="row" role="option" aria-selected="false"><span class="dot run"></span>
+                <span class="svc"><span class="nm">CompuTec Label Service</span></span><span class="tag off">Manual</span></div>
+              <div class="row" role="option" aria-selected="false"><span class="dot run"></span>
+                <span class="svc"><span class="nm">SQL Server (MSSQLSERVER)</span></span><span class="tag off">Manual</span></div>
+            </div>
+            <div class="listbar">
+              <button class="btn pri">+ Add service</button>
+              <button class="btn">Rename</button>
+              <button class="btn danger">Remove</button>
+              <button class="btn icon" title="Yukarı taşı">↑</button>
+              <button class="btn icon" title="Aşağı taşı">↓</button>
+            </div>
+          </div>
+
+          <div class="detail">
+            <div class="who">
+              <span class="nm">CompuTec WMS Server</span><span class="id">WMSServer</span>
+            </div>
+
+            <fieldset>
+              <legend>Display</legend>
+              <div class="field"><label for="lbl">Label</label>
+                <input id="lbl" type="text" value="CompuTec WMS Server" style="max-width:260px"></div>
+            </fieldset>
+
+            <fieldset id="recovery">
+              <legend>Recovery</legend>
+              <label class="chk" style="margin-bottom:10px">
+                <input type="checkbox" checked id="keepon"> Keep this service running
+              </label>
+              <div class="field">
+                <label for="att">Restart attempts</label>
+                <input id="att" type="number" value="3" min="0" max="99">
+                <span class="unit">0 = sınırsız</span>
+              </div>
+              <div class="field">
+                <label for="dly">Wait before first attempt</label>
+                <input id="dly" type="number" value="10" min="0" max="3600"><span class="unit">saniye</span>
+              </div>
+              <div class="field">
+                <label for="bo">Back off each attempt</label>
+                <input id="bo" type="number" value="2" min="1" max="10" step="0.5"><span class="unit">× (10s → 20s → 40s)</span>
+              </div>
+              <div class="field stack">
+                <label class="chk"><input type="checkbox"> Temiz duruşlarda da yeniden başlat</label>
+                <p class="note">Kapalıyken yalnızca <b>çökmeler</b> (sıfır olmayan çıkış kodu) kurtarılır — services.msc'den bilerek durdurduğun servisle kavga etmez.</p>
+              </div>
+              <div class="field">
+                <label for="flap">Sürekli düşüyorsa vazgeç</label>
+                <input id="flap" type="number" value="5" min="2" max="50"><span class="unit">duruş /</span>
+                <input type="number" value="30" min="1" max="1440"><span class="unit">dakika</span>
+              </div>
+            </fieldset>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Stacks ── -->
+      <section class="pane" data-tab="stacks">
+        <h2>Stacks</h2>
+        <p class="hint">Sıralı başlatma grupları. Durdurma ters sırada yürür. Adım ya önceki servis <b>Running</b> olana kadar bekler ya da <b>sabit süre</b> bekler — bazı servisler hazır olmadan Running bildirir.</p>
+
+        <div class="split">
+          <div>
+            <div class="list" role="listbox" aria-label="Yığınlar">
+              <div class="row" role="option" aria-selected="true"><span class="svc"><span class="nm">SAP B1 stack</span><span class="id">4 adım</span></span></div>
+              <div class="row" role="option" aria-selected="false"><span class="svc"><span class="nm">WMS only</span><span class="id">2 adım</span></span></div>
+            </div>
+            <div class="listbar">
+              <button class="btn pri">+ New stack</button>
+              <button class="btn danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="detail">
+            <div class="who"><span class="nm">SAP B1 stack</span><span class="id">4 adım</span></div>
+            <div class="steps">
+              <div class="hd"><span>#</span><span>Service</span><span>Wait for</span><span>Timeout</span><span></span></div>
+              <div class="st"><span class="n">1</span>
+                <span>SQL Server <span class="id">MSSQLSERVER</span></span>
+                <select><option selected>Until running</option><option>Fixed delay</option></select>
+                <span class="tmo"><input type="number" value="120"><span class="unit">s</span></span>
+                <span class="grab">⋮⋮</span></div>
+              <div class="st"><span class="n">2</span>
+                <span>CompuTec License Server <span class="id">CTLicenseServer</span></span>
+                <select><option selected>Until running</option><option>Fixed delay</option></select>
+                <span class="tmo"><input type="number" value="60"><span class="unit">s</span></span>
+                <span class="grab">⋮⋮</span></div>
+              <div class="st"><span class="n">3</span>
+                <span>CompuTec AppEngine <span class="id">AppEngine</span></span>
+                <select><option>Until running</option><option selected>Fixed delay</option></select>
+                <span class="tmo"><input type="number" value="15"><span class="unit">s</span></span>
+                <span class="grab">⋮⋮</span></div>
+              <div class="st"><span class="n">4</span>
+                <span>CompuTec WMS Server <span class="id">WMSServer</span></span>
+                <select><option selected>Until running</option><option>Fixed delay</option></select>
+                <span class="tmo"><input type="number" value="60"><span class="unit">s</span></span>
+                <span class="grab">⋮⋮</span></div>
+            </div>
+            <div class="listbar">
+              <button class="btn pri">+ Add step</button>
+              <button class="btn icon" title="Yukarı">↑</button>
+              <button class="btn icon" title="Aşağı">↓</button>
+              <button class="btn danger">Remove step</button>
+            </div>
+
+            <div class="runbar">
+              <span class="lbl">Test run — adım 3/4: <b style="color:#fff">AppEngine</b></span>
+              <span class="prog"><i></i></span>
+              <button class="btn">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── History ── -->
+      <section class="pane" data-tab="history">
+        <h2>History</h2>
+        <p class="hint">Her durum değişikliği zaman damgasıyla saklanır — müşteri ticket'ına yapıştırılacak kanıt, ve aralıklı düşmeyi (flapping) görünür kılar.</p>
+
+        <fieldset>
+          <legend>Recording</legend>
+          <label class="chk" style="margin-bottom:10px"><input type="checkbox" checked> Durum değişikliklerini kaydet</label>
+          <div class="field"><label for="ret">Sakla</label>
+            <input id="ret" type="number" value="30" min="1" max="365"><span class="unit">gün</span>
+            <button class="btn" style="margin-left:auto">Export…</button></div>
+        </fieldset>
+
+        <div class="tblwrap">
+          <table>
+            <thead><tr><th>Zaman</th><th>Servis</th><th>Değişim</th><th>Kaynak</th></tr></thead>
+            <tbody>
+              <tr><td class="ts">03:12:41</td><td>CompuTec AppEngine</td>
+                <td><span class="transition"><span class="dot run"></span>Running<span class="arrow">→</span><span class="dot stop"></span>Stopped</span> <span class="unit">exit 1067</span></td>
+                <td class="src"><span>scm</span></td></tr>
+              <tr><td class="ts">03:12:51</td><td>CompuTec AppEngine</td>
+                <td><span class="transition"><span class="dot stop"></span>Stopped<span class="arrow">→</span><span class="dot pend"></span>Starting</span></td>
+                <td class="src"><span class="wd">watchdog · 1/3</span></td></tr>
+              <tr><td class="ts">03:13:09</td><td>CompuTec AppEngine</td>
+                <td><span class="transition"><span class="dot pend"></span>Starting<span class="arrow">→</span><span class="dot run"></span>Running</span> <span class="unit">18 s</span></td>
+                <td class="src"><span>scm</span></td></tr>
+              <tr><td class="ts">09:41:02</td><td>CompuTec WMS Server</td>
+                <td><span class="transition"><span class="dot run"></span>Running<span class="arrow">→</span><span class="dot stop"></span>Stopped</span></td>
+                <td class="src"><span>panel</span></td></tr>
+              <tr><td class="ts">09:41:18</td><td>CompuTec WMS Server</td>
+                <td><span class="transition"><span class="dot stop"></span>Stopped<span class="arrow">→</span><span class="dot run"></span>Running</span></td>
+                <td class="src"><span>stack</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ── General ── -->
+      <section class="pane" data-tab="general">
+        <h2>General</h2>
+        <p class="hint">Uygulama davranışı.</p>
+        <fieldset>
+          <legend>Startup</legend>
+          <label class="chk"><input type="checkbox" checked> Windows başladığında otomatik başlat</label>
+        </fieldset>
+        <fieldset>
+          <legend>Notifications</legend>
+          <label class="chk" style="margin:7px 0"><input type="checkbox" checked> Bir servis beklenmedik şekilde durduğunda</label>
+          <label class="chk" style="margin:7px 0"><input type="checkbox" checked> Kurtarma başarılı olduğunda</label>
+          <label class="chk" style="margin:7px 0"><input type="checkbox" checked> Denemeler tükendiğinde</label>
+        </fieldset>
+        <fieldset>
+          <legend>Remote machines <span style="color:var(--fg4);text-transform:none;letter-spacing:0"> · sonraki aşama</span></legend>
+          <p class="note" style="margin:0">Diğer sunuculardaki servisleri de aynı panelden yönetmek için ayrılmış alan. Kullandığımız her çağrı zaten uzak makine parametresi alıyor.</p>
+        </fieldset>
+      </section>
+    </div>
+
+    <div class="foot">
+      <button class="btn pri">Save</button>
+      <button class="btn">Cancel</button>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note"><span class="n">1</span><p><b>Kaç deneme, ne kadar bekleme.</b> <span>Denemeler, ilk bekleme ve katlanan gecikme (10s → 20s → 40s) ayrı ayrı ayarlanır; “sürekli düşüyorsa vazgeç” eşiği sonsuz döngüyü keser.</span></p></div>
+    <div class="note"><span class="n">2</span><p><b>Çökme mi, bilerek durdurma mı?</b> <span>Servisin çıkış kodunu zaten okuyoruz: sıfır değilse çökme sayılır. Böylece services.msc'den bilerek durdurduğun servisi geri açmaya çalışmaz.</span></p></div>
+    <div class="note"><span class="n">3</span><p><b>Adım başına bekleme türü.</b> <span>“Until running” gerçek hazırlığı bekler; “Fixed delay” ise Running deyip hazır olmayan servisler için. Test run ile hangisinin gerektiğini görürsün.</span></p></div>
+    <div class="note"><span class="n">4</span><p><b>Geçmiş kaynağı etiketli.</b> <span>scm / panel / watchdog / stack — böylece zaman çizelgesi “çöktü → watchdog denedi → ayağa kalktı” diye okunur.</span></p></div>
+  </div>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('.side button');
+  const panes = document.querySelectorAll('.pane');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(x => x.setAttribute('aria-selected', String(x === t)));
+    panes.forEach(p => p.setAttribute('data-active', String(p.dataset.tab === t.dataset.tab)));
+  }));
+
+  // service rows select
+  document.querySelectorAll('.pane[data-tab="services"] .list .row').forEach(r =>
+    r.addEventListener('click', () => {
+      r.parentElement.querySelectorAll('.row').forEach(x => x.setAttribute('aria-selected', String(x === r)));
+      const nm = r.querySelector('.nm').textContent;
+      document.querySelector('.detail .who .nm').textContent = nm;
+      document.getElementById('lbl').value = nm;
+    }));
+
+  // recovery group greys out with the checkbox
+  const keep = document.getElementById('keepon');
+  const rec = document.getElementById('recovery');
+  const sync = () => rec.querySelectorAll('.field').forEach(f =>
+    f.style.opacity = keep.checked ? '1' : '.42');
+  keep.addEventListener('change', sync); sync();
+</script>
