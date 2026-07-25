@@ -9,7 +9,7 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "1.1.0"
+#define MyAppVersion     "2.0.0"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyAppId          "{{A4F1F8C2-3D7B-4A8D-9E5F-1B2C3D4E5F60}}"
@@ -49,7 +49,10 @@ Name: "autostart"; Description: "{cm:AutoStartTask}"; GroupDescription: "{cm:Add
 Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\ServiceOfficer.exe"; DestDir: "{app}"; Flags: ignoreversion
+; One-dir build: a Qt app re-extracted from a one-file exe on every launch is
+; slow to start, so PyInstaller emits a folder and we package all of it.
+Source: "dist\ServiceOfficer\ServiceOfficer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\ServiceOfficer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "icon.ico";          DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";         DestDir: "{app}"; Flags: ignoreversion isreadme
 
