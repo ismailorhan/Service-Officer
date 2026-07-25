@@ -2,6 +2,7 @@ import base64
 import ctypes
 import ctypes.wintypes
 import io
+import math
 import os
 import subprocess
 import sys
@@ -75,22 +76,55 @@ _spin_thread = None
 _spin_lock = threading.Lock()
 
 
+_GEAR_FILL    = (244, 246, 248, 255)
+_GEAR_OUTLINE = (22, 38, 63, 255)
+_GEAR_TEETH   = 8
+
+
+def _draw_gear(size: int) -> Image.Image:
+    """A badge-less gear, drawn supersampled so rotating it stays smooth.
+
+    The shipped icons have the state badge composited over the gear, so it can't
+    be masked off without biting a hole in the teeth — hence drawing our own.
+    """
+    S = 8
+    n = size * S
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    c = n / 2
+    r_out, r_root, r_hole = n * 0.46, n * 0.36, n * 0.145
+    lw = max(1, int(n * 0.045))
+
+    pts = []
+    steps = _GEAR_TEETH * 24
+    for i in range(steps):
+        frac = i / steps
+        a = 2 * math.pi * frac
+        r = r_out if (frac * _GEAR_TEETH) % 1.0 < 0.45 else r_root
+        pts.append((c + r * math.cos(a), c + r * math.sin(a)))
+    d.polygon(pts, fill=_GEAR_FILL)
+    d.line(pts + [pts[0]], fill=_GEAR_OUTLINE, width=lw, joint="curve")
+    d.ellipse([c - r_hole, c - r_hole, c + r_hole, c + r_hole],
+              fill=(0, 0, 0, 0), outline=_GEAR_OUTLINE, width=lw)
+    return img
+
+
 def _spin_frames() -> list:
-    """Pre-render the rotating-arc frames (lazily, once)."""
+    """Frames of the gear turning clockwise (lazily rendered, once).
+
+    With 8 teeth the shape repeats every 45°, so a 45° sweep loops seamlessly.
+    PIL rotates counter-clockwise for positive angles, hence the negative step.
+    """
     if _SPIN_FRAMES:
         return _SPIN_FRAMES
-    base = create_icon_image("yellow")
-    w, h = base.size
-    inset = max(1, w // 32)
-    box = (inset, inset, w - inset - 1, h - inset - 1)
-    width = max(2, w // 12)
-    for angle in range(0, 360, 30):
-        frame = base.copy()
-        draw = ImageDraw.Draw(frame)
-        # A 100-degree arc; sweeping its start angle reads as a spinner.
-        draw.arc(box, start=angle, end=angle + 100, fill=(227, 179, 65, 255),
-                 width=width)
-        _SPIN_FRAMES.append(frame)
+    size = create_icon_image("green").size[0]
+    base = _draw_gear(size)
+    steps = 12
+    for i in range(steps):
+        angle = -(360 / _GEAR_TEETH) * (i / steps)      # clockwise
+        _SPIN_FRAMES.append(
+            base.rotate(angle, resample=Image.BICUBIC)
+                .resize((size, size), Image.LANCZOS))
     return _SPIN_FRAMES
 
 

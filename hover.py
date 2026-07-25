@@ -169,21 +169,31 @@ def _loop():
             tk.Label(rows_holder, text=f"+{len(items) - len(shown)} more", bg=BG,
                      fg=FG3, font=("Segoe UI", 8), anchor="w").pack(fill="x")
 
-    def _place():
+    def _place(icon_rect):
         win.update_idletasks()
         w, h = win.winfo_reqwidth(), win.winfo_reqheight()
         work = ctypes.wintypes.RECT()
-        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0):
-            x, y = work.right - w - MARGIN, work.bottom - h - MARGIN
+        have_work = bool(ctypes.windll.user32.SystemParametersInfoW(
+            0x0030, 0, ctypes.byref(work), 0))
+        left = work.left if have_work else 0
+        right = work.right if have_work else win.winfo_screenwidth()
+        bottom = work.bottom if have_work else win.winfo_screenheight()
+
+        if icon_rect:
+            # Sit just above the tray icon, centred on it — like a tooltip does.
+            il, it, ir, _ib = icon_rect
+            x = (il + ir) // 2 - w // 2
+            y = it - h - 6
+            x = max(left + 4, min(x, right - w - 4))   # keep it on screen
+            y = max(4, y)
         else:
-            x = win.winfo_screenwidth() - w - MARGIN
-            y = win.winfo_screenheight() - h - MARGIN
+            x, y = right - w - MARGIN, bottom - h - MARGIN
         win.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
 
     def _show(items, icon_rect):
         state["rect"] = icon_rect
         _render(items)
-        _place()
+        _place(icon_rect)
         win.deiconify()
         win.lift()
         _no_activate(win)
