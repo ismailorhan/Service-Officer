@@ -136,8 +136,12 @@ class HoverCard(QWidget):
             name.setStyleSheet(f"color:{theme.FG}; font-size:9pt;")
             rl.addWidget(name)
             rl.addStretch(1)
-            state = QLabel(status)
-            state.setStyleSheet(f"color:{theme.FG2}; font-size:8.5pt;")
+            # Running and not answering says "Running" here too unless we say
+            # otherwise, and this card is what people glance at.
+            sick = self._store.health_of(svc.name, svc.machine) == "unhealthy"
+            state = QLabel("not responding" if sick else status)
+            state.setStyleSheet(
+                f"color:{theme.STOP_FG if sick else theme.FG2}; font-size:8.5pt;")
             rl.addWidget(state)
             self._rows.addWidget(row)
 

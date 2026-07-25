@@ -154,6 +154,8 @@ def test_the_newest_of_several_old_homes_wins(tmp_path):
 
 
 def test_the_build_identifies_itself():
+    """Three parts for a release, a fourth for the internal builds in between —
+    2.0.0 is what a customer has, 2.0.0.7 is the seventh commit after it."""
     from core import version
     assert version.VERSION.count(".") == 2
     # An unstamped source checkout: the release number, and it says as much.
@@ -161,9 +163,15 @@ def test_the_build_identifies_itself():
     assert "running from source" in version.full()
 
     # Stamped, the way build.bat leaves it.
-    version.COMMIT, version.BUILT = "a1b2c3d", "2026-07-25 21:00"
+    version.COMMIT, version.BUILT, version.BUILD = "a1b2c3d", "2026-07-25 21:00", 7
     try:
-        assert version.short() == f"{version.VERSION}+a1b2c3d"
+        assert version.short() == f"{version.VERSION}.7"
+        # The commit is in the about line, not in the version: it answers which
+        # code, not which build.
         assert "a1b2c3d" in version.full() and "2026-07-25" in version.full()
+        assert "a1b2c3d" not in version.short()
+
+        version.BUILD = 0                    # the release itself
+        assert version.short() == version.VERSION
     finally:
-        version.COMMIT, version.BUILT = "dev", ""
+        version.COMMIT, version.BUILT, version.BUILD = "dev", "", 0

@@ -112,7 +112,20 @@ class Tray(QObject):
         if self._spin.isActive():
             self._spin.stop()
         running, total = self._store.counts()
-        self.icon.setIcon(icons.base_icon(icons.colour_for(running, total)))
+        colour = icons.colour_for(running, total)
+        # A service that is running and not answering left the icon green, which
+        # is the one case the icon most needs to warn about — all-running and
+        # all-fine are not the same thing.
+        if colour == "green" and self._anything_unhealthy():
+            colour = "yellow"
+        self.icon.setIcon(icons.base_icon(colour))
+
+    def _anything_unhealthy(self) -> bool:
+        try:
+            return any(self._store.health_of(s.name, s.machine) == "unhealthy"
+                       for s in self._config().services)
+        except Exception:
+            return False
 
     def _should_spin(self) -> bool:
         """Spin while something is genuinely in flight.

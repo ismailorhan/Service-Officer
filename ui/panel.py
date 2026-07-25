@@ -485,6 +485,8 @@ class ServiceDetail(_Page):
     def __init__(self):
         super().__init__("", "")
         self.svc = None
+        self._open_checks = set()
+        self._summaries = {}
 
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
@@ -730,6 +732,8 @@ class ServiceDetail(_Page):
         self.h_action.blockSignals(False)
 
         self.svc = svc
+        #: which check rows are open for editing; closed is the reading view
+        self._open_checks = set()
         self._rebuild_checks()
         self._sync_enabled()
 
@@ -767,6 +771,7 @@ class ServiceDetail(_Page):
     }
 
     def _rebuild_checks(self):
+        self._summaries = {}
         while self.checks_lay.count():
             item = self.checks_lay.takeAt(0)
             widget = item.widget() if item is not None else None
@@ -792,12 +797,22 @@ class ServiceDetail(_Page):
         self.check_now_button.setEnabled(bool(checks))
         self.health_note.setText("")
 
+    #: what to call each kind in the one-line summary
+    KIND_NAMES = {"tcp": "PORT", "http": "URL", "process": "PROCESS",
+                  "file": "FILE", "command": "COMMAND"}
+
     def _check_row(self, index: int, check) -> QWidget:
+        """One line per check, opening to reveal its fields.
+
+        A list of five checks each showing four labelled boxes is a wall. The
+        line says what the check *is* — kind, what it looks at, how long it
+        waits — and the boxes only appear when you are editing that one.
+        """
         row = QWidget()
         row.setObjectName("steprow")
         row.setAttribute(Qt.WA_StyledBackground, True)
         outer = QVBoxLayout(row)
-        outer.setContentsMargins(8, 6, 6, 6)
+        outer.setContentsMargins(8, 4, 6, 4)
         outer.setSpacing(4)
 
         head = QHBoxLayout()
@@ -808,13 +823,31 @@ class ServiceDetail(_Page):
         on.toggled.connect(lambda state, c=check: self._set_check(c, "enabled",
                                                                   state))
         head.addWidget(on)
-        head.addWidget(_label(check.describe(), "strong"), 1)
+
+        kind = _label(self.KIND_NAMES.get(check.kind, check.kind.upper()),
+                      "section")
+        kind.setFixedWidth(78)
+        head.addWidget(kind)
+        summary = _label(check.describe(), "strong")
+        self._summaries[summary] = check
+        head.addWidget(summary, 1)
+        head.addWidget(_label(f"gives up after {check.timeout_seconds}s", "hint"))
+
+        expanded = index in self._open_checks
+        toggle = _button("Close" if expanded else "Edit", "quiet")
+        toggle.setFixedWidth(56)
+        toggle.clicked.connect(lambda _=False, i=index: self._toggle_check(i))
+        head.addWidget(toggle)
         remove = _button("Remove", "quiet")
         remove.clicked.connect(lambda _=False, i=index: self._remove_check(i))
         head.addWidget(remove)
         outer.addLayout(head)
 
+        if not expanded:
+            return row
+
         fields = QHBoxLayout()
+        fields.setContentsMargins(86, 4, 0, 6)      # line up under the summary
         fields.setSpacing(8)
         for attr, caption in self.CHECK_FIELDS.get(check.kind, []):
             box = QVBoxLayout()
@@ -856,13 +889,29 @@ class ServiceDetail(_Page):
         outer.addLayout(fields)
         return row
 
+    def _toggle_check(self, index: int):
+        if index in self._open_checks:
+            self._open_checks.discard(index)
+        else:
+            self._open_checks.add(index)
+        self._rebuild_checks()
+
     def _set_check(self, check, attr, value):
         setattr(check, attr, value)
+        # The summary line quotes these values, so it has to keep up — but only
+        # the closed rows are redrawn, or the box being typed into would lose
+        # focus on every keystroke.
+        for widget, shown in list(self._summaries.items()):
+            if shown is check:
+                widget.setText(check.describe())
         self.changed.emit()
 
     def _add_check(self, kind: str = "tcp"):
         if self.svc is None:
             return
+        # A new check opens straight away — it has nothing in it yet, so there is
+        # nothing to read and everything to fill in.
+        self._open_checks = {len(self.svc.health.checks)}
         check = cfg_mod.HealthCheck(kind=kind)
         # Sensible starting points, so the row isn't a set of empty boxes.
         if kind == "file":
@@ -879,6 +928,8 @@ class ServiceDetail(_Page):
         if self.svc is None or not (0 <= index < len(self.svc.health.checks)):
             return
         del self.svc.health.checks[index]
+        # Indexes shifted, so a remembered "open" one would open the wrong row.
+        self._open_checks = set()
         self._rebuild_checks()
         self.changed.emit()
 
@@ -2316,10 +2367,10 @@ class MainPanel(QDialog):
         # falls back to what it was handed, and to the global store.
         self._store = store if store is not None else st.store
         self._live = live_config or (lambda: self._cfg)
-        # The version in the title bar, so a screenshot in a ticket says which
-        # build it came from without anyone having to go and look.
-        self.setWindowTitle("Service Officer — Service Management Panel  "
-                            f"({version.short()})")
+        # No version here: the title bar is read every time the window opens, and
+        # a build number is something you go and look up once. It lives in
+        # General → About, with the commit and a copy button.
+        self.setWindowTitle("Service Officer — Service Management Panel")
         self.setWindowIcon(icons.base_icon("green"))
         # A dialog by class, a window by behaviour: this is where the work
         # happens now, so it gets minimise and maximise like any other window.

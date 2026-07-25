@@ -920,6 +920,8 @@ def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
     assert [c.kind for c in svc.health.checks] == ["tcp"]
     assert detail.health_rules.isHidden() is False
     assert detail.check_now_button.isEnabled() is True
+    # A new check opens for editing: there is nothing to read in it yet.
+    assert detail._open_checks == {0}
 
     detail._set_check(svc.health.checks[0], "port", 1433)
     assert "1433" in svc.health.checks[0].describe()
@@ -938,6 +940,67 @@ def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
     detail.h_action.setCurrentIndex(detail.h_action.findData("restart"))
     assert svc.health.failures_before_acting == 5
     assert svc.health.action == "restart"
+    win.deleteLater()
+
+
+def test_health_checks_read_as_one_line_each_and_open_to_edit(qapp, sample):
+    """Five checks each showing four labelled boxes is a wall. The line says what
+    the check is; the boxes appear only for the one being edited."""
+    from PySide6.QtWidgets import QLineEdit
+    sample.service("AppEngine").health = cfg_mod.Health(checks=[
+        cfg_mod.HealthCheck(kind="tcp", host="CTL052", port=54001),
+        cfg_mod.HealthCheck(kind="http", url="https://CTL052:54001",
+                            timeout_seconds=15)])
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
+
+    assert detail._open_checks == set()            # everything reads, nothing edits
+    rows = [detail.checks_lay.itemAt(i).widget()
+            for i in range(detail.checks_lay.count())]
+    editors = [e for r in rows for e in r.findChildren(QLineEdit)]
+    assert editors == [], "closed rows must not show their fields"
+    # Each row still says which kind it is and what it looks at.
+    texts = " ".join(lb.text() for r in rows for lb in r.findChildren(QLabel))
+    assert "PORT" in texts and "URL" in texts
+    assert "CTL052:54001" in texts and "gives up after 15s" in texts
+
+    detail._toggle_check(1)
+    assert detail._open_checks == {1}
+    rows = [detail.checks_lay.itemAt(i).widget()
+            for i in range(detail.checks_lay.count())]
+    editors = [e for r in rows for e in r.findChildren(QLineEdit)]
+    assert editors, "the open row shows its fields"
+
+    # The summary follows what is typed, without the row being rebuilt under it.
+    # win.config(), not sample: the panel edits a copy until Save.
+    check = win.config().service("AppEngine").health.checks[0]
+    detail._set_check(check, "port", 1433)
+    shown = " ".join(lb.text() for r in rows for lb in r.findChildren(QLabel))
+    assert "CTL052:1433" in shown
+
+    detail._toggle_check(1)
+    assert detail._open_checks == set()
+    win.deleteLater()
+
+
+def test_removing_a_check_forgets_which_row_was_open(qapp, sample):
+    """Indexes shift, so a remembered one would open a different check."""
+    sample.service("AppEngine").health = cfg_mod.Health(checks=[
+        cfg_mod.HealthCheck(kind="tcp", port=1),
+        cfg_mod.HealthCheck(kind="tcp", port=2)])
+    win = panel_mod.MainPanel(sample)
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    detail = page.detail
+    detail._toggle_check(1)
+    assert detail._open_checks == {1}
+    detail._remove_check(0)
+    assert detail._open_checks == set()
+    assert [c.port for c in win.config().service("AppEngine").health.checks] == [2]
     win.deleteLater()
 
 
@@ -999,6 +1062,41 @@ def test_a_running_but_unresponsive_service_says_so(qapp, sample):
     assert well.chip.text() == st.RUNNING
     assert "accepted a connection" in well.toolTip()
     fly.deleteLater()
+
+
+def test_the_tray_icon_warns_when_something_is_running_but_dead(qapp, sample):
+    """All-running and all-fine are not the same thing, and the icon is the only
+    thing most people look at."""
+    from ui.tray import Tray
+    store = st.Store()
+    for name in ("AppEngine", "WMSServer", "MSSQLSERVER"):
+        store.update(name, st.RUNNING)
+    tray = Tray(lambda: sample, store)
+
+    assert icons.colour_for(*store.counts()) == "green"
+    tray.apply_state()                              # all running, all answering
+
+    store.set_health("AppEngine", "unhealthy", "port refused")
+    assert tray._anything_unhealthy() is True
+    # The count still says green; the icon must not.
+    assert icons.colour_for(*store.counts()) == "green"
+    tray.apply_state()
+    assert not tray.icon.icon().isNull()
+
+    store.set_health("AppEngine", "healthy", "ok")
+    assert tray._anything_unhealthy() is False
+
+
+def test_the_hover_card_says_not_responding(qapp, sample):
+    store = st.Store()
+    store.update("AppEngine", st.RUNNING)
+    store.set_health("AppEngine", "unhealthy", "port refused")
+    card = hover_mod.HoverCard(lambda: sample, store)
+    card._render()
+    texts = [lb.text() for lb in card.findChildren(QLabel)]
+    assert "not responding" in texts
+    assert texts.count(st.RUNNING) == 0     # it must not also claim Running
+    card.deleteLater()
 
 
 def test_the_dashboard_counts_what_is_not_responding(qapp, sample):

@@ -179,6 +179,9 @@ def _glyph(kind: str, colour: str) -> str:
         if kind == "tick":
             p.drawLine(7, 15, 12, 20)
             p.drawLine(12, 20, 21, 8)
+        elif kind == "chevron":
+            p.drawLine(7, 11, 14, 18)
+            p.drawLine(14, 18, 21, 11)
         else:
             p.drawLine(7, 14, 21, 14)
         p.end()
@@ -189,6 +192,7 @@ def _glyph(kind: str, colour: str) -> str:
 def sheet() -> str:
     TICK_URL = _glyph("tick", "#ffffff")
     DASH_URL = _glyph("dash", RUN)
+    CHEVRON_URL = _glyph("chevron", FG2)
     return f"""
     QWidget {{
         background: {BG};
@@ -278,7 +282,19 @@ def sheet() -> str:
         border-color: {ACCENT};
     }}
     QSpinBox, QDoubleSpinBox {{ font-family: "{MONO}"; }}
-    QComboBox::drop-down {{ border: none; width: 16px; }}
+    /* A combo box has to look like one. Styling the frame above gave it the same
+       box as a text field, so the only thing left to say "there is a list behind
+       this" was the arrow — and Qt draws no arrow once ::drop-down is styled.
+       There is also a divider, because on a wide combo the arrow alone sits so
+       far from the text that it reads as a separate control. */
+    QComboBox::drop-down {{
+        subcontrol-origin: padding; subcontrol-position: center right;
+        width: 24px; border: none; border-left: 1px solid {LINE2};
+    }}
+    QComboBox::down-arrow {{ image: url("{CHEVRON_URL}"); width: 9px; height: 9px; }}
+    QComboBox::down-arrow:on {{ top: 1px; }}
+    QComboBox:hover {{ border-color: {LINE2}; background: {BG_HOVER}; }}
+    QComboBox:disabled::drop-down {{ border-left-color: {LINE}; }}
     QComboBox QAbstractItemView {{
         background: {BG_RAISE}; border: 1px solid {LINE2};
         selection-background-color: {RUN_DIM}; selection-color: {FG}; color: {FG};

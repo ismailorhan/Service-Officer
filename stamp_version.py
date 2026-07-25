@@ -35,7 +35,16 @@ def stamp() -> tuple:
     if git("status", "--porcelain"):
         commit += "-dirty"
     built = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    return commit, built
+
+    # Commits since the last release tag: 0 means this is the release, anything
+    # else is an internal build and becomes the fourth part of the version.
+    # Counted rather than kept in a file, so it can't drift and needs no state.
+    build = 0
+    tag = git("describe", "--tags", "--abbrev=0")
+    if tag:
+        counted = git("rev-list", "--count", f"{tag}..HEAD")
+        build = int(counted) if counted.isdigit() else 0
+    return commit, built, build
 
 
 def declared_versions() -> dict:
@@ -76,18 +85,21 @@ def main() -> int:
             print(f"          {where}: {value}")
         return 1
 
-    commit, built = stamp()
+    commit, built, build = stamp()
     text = TARGET.read_text(encoding="utf-8")
     shutil.copy2(str(TARGET), str(BACKUP))
     text = re.sub(r'^COMMIT = ".*"$', f'COMMIT = "{commit}"', text,
                   count=1, flags=re.M)
     text = re.sub(r'^BUILT = ".*"$', f'BUILT = "{built}"', text,
                   count=1, flags=re.M)
+    text = re.sub(r'^BUILD = \d+$', f'BUILD = {build}', text, count=1, flags=re.M)
     TARGET.write_text(text, encoding="utf-8")
 
     version = re.search(r'^VERSION = "(.*)"$', text, flags=re.M)
-    print(f"stamped {version.group(1) if version else '?'} "
-          f"commit={commit} built={built}")
+    shown = version.group(1) if version else "?"
+    if build:
+        shown += f".{build}"
+    print(f"stamped {shown} commit={commit} built={built}")
     return 0
 
 
