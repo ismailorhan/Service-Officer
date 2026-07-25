@@ -1,0 +1,380 @@
+<title>Service Officer — Settings</title>
+<style>
+  :root{
+    --bg:#1e1e1e; --bg-side:#191919; --bg-raise:#252525; --bg-input:#2b2b2b;
+    --fg:#f2f4f6; --fg2:#a8adb3; --fg3:#767b81; --fg4:#5a5f65;
+    --line:#2f2f2f; --line2:#3a3a3a;
+    --accent:#40c463; --accent-dim:#1c3a27; --accent-fg:#9ae6b4;
+    --stop:#e5534b; --pend:#e3b341;
+    --f:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;font-family:var(--f);color:var(--fg2);padding:38px 20px 90px;
+    background:radial-gradient(1000px 600px at 78% 0%, #1c2f42 0%, rgba(28,47,66,0) 58%), #0e1216;
+  }
+  .page{max-width:960px;margin:0 auto}
+  .kick{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg4);margin:0 0 9px}
+  h1.t{color:#eaf0f6;font-weight:600;font-size:24px;margin:0 0 9px;letter-spacing:-.015em}
+  p.lede{color:#8fa0b0;font-size:14px;line-height:1.6;max-width:74ch;margin:0 0 28px}
+  p.lede b{color:#c6d3de;font-weight:600}
+
+  /* ── window ── */
+  .win{
+    width:100%;max-width:860px;margin:0 auto;background:var(--bg);
+    border:1px solid #383838;border-radius:9px;overflow:hidden;
+    box-shadow:0 34px 80px -28px rgba(0,0,0,.9);
+  }
+  .bar{
+    display:flex;align-items:center;gap:9px;padding:9px 13px;
+    background:#151515;border-bottom:1px solid var(--line);font-size:12px;color:var(--fg3);
+  }
+  .bar .g{width:13px;height:13px;border-radius:3px;background:linear-gradient(160deg,#2f5d3f,#1d4034);flex:none}
+  .bar .x{margin-left:auto;color:var(--fg4);font-size:13px}
+
+  .body{display:grid;grid-template-columns:186px 1fr;min-height:534px}
+  @media (max-width:760px){.body{grid-template-columns:1fr}}
+
+  /* ── sidebar ── */
+  nav{background:var(--bg-side);border-right:1px solid var(--line);padding:16px 0}
+  nav button{
+    all:unset;display:flex;align-items:center;gap:10px;width:100%;
+    padding:10px 18px;font:500 13.5px var(--f);color:var(--fg2);cursor:pointer;
+    border-left:2px solid transparent;
+  }
+  nav button:hover{color:var(--fg);background:#1f1f1f}
+  nav button.on{color:var(--fg);background:#232323;border-left-color:var(--accent)}
+  nav .i{width:14px;text-align:center;font-size:12px;opacity:.8}
+  nav .cap{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg4);padding:18px 18px 7px}
+
+  /* ── content ── */
+  main{padding:26px 30px 30px;min-width:0}
+  .pg{display:none} .pg.on{display:block}
+  .crumb{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--fg3);margin:0 0 14px}
+  .crumb button{all:unset;cursor:pointer;color:var(--fg3)}
+  .crumb button:hover{color:var(--accent-fg)}
+  h2{margin:0 0 5px;font-size:19px;font-weight:600;color:var(--fg);letter-spacing:-.01em}
+  .desc{margin:0 0 24px;font-size:13px;color:var(--fg3);line-height:1.6;max-width:62ch}
+
+  /* rows / list */
+  .rows{border-top:1px solid var(--line)}
+  .row{
+    display:flex;align-items:center;gap:13px;padding:13px 4px;
+    border-bottom:1px solid var(--line);cursor:pointer;
+  }
+  .row:hover{background:#222}
+  .row .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .dot.run{background:var(--accent)} .dot.stop{background:var(--stop)}
+  .dot.pend{background:var(--pend)} .dot.off{background:var(--fg4)}
+  .row .who{min-width:0;flex:1}
+  .row .nm{font-size:13.5px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .sub{font-size:11.5px;color:var(--fg3);margin-top:2px}
+  .row .go{color:var(--fg4);font-size:13px}
+  .row:hover .go{color:var(--fg2)}
+
+  .toolbar{display:flex;gap:7px;margin-top:18px;flex-wrap:wrap}
+  button.b{
+    all:unset;font:13px var(--f);color:var(--fg2);background:transparent;
+    border:1px solid var(--line2);border-radius:5px;padding:7px 13px;cursor:pointer;
+  }
+  button.b:hover{background:#2b2b2b;color:var(--fg)}
+  button.b.pri{color:var(--accent-fg);border-color:#2c5238;background:var(--accent-dim)}
+  button.b.pri:hover{background:#204631}
+  button.b.quiet{border-color:transparent;color:var(--fg3)}
+  button.b.quiet:hover{color:var(--fg);background:#262626}
+  button.b:focus-visible,input:focus-visible,select:focus-visible,nav button:focus-visible{
+    outline:2px solid #4aa3ff;outline-offset:2px}
+
+  /* settings-as-prose */
+  .sw{display:flex;align-items:flex-start;gap:11px;margin:0 0 4px}
+  .sw input{margin-top:2px;width:15px;height:15px;accent-color:var(--accent)}
+  .sw .lb{font-size:14px;color:var(--fg)}
+  .sw .lb .hint{display:block;font-size:12px;color:var(--fg3);margin-top:3px;line-height:1.55}
+
+  .prose{
+    font-size:13.5px;line-height:2.35;color:var(--fg2);max-width:60ch;
+    padding-left:26px;margin:12px 0 0;
+  }
+  .prose.dim{opacity:.4;pointer-events:none}
+  .prose p{margin:0 0 6px}
+  input.n{
+    font:600 13px var(--mono);color:var(--fg);background:var(--bg-input);
+    border:1px solid var(--line2);border-radius:4px;padding:3px 6px;width:52px;
+    text-align:center;font-variant-numeric:tabular-nums;
+  }
+  input.n:hover{border-color:#4a4a4a}
+  input.txt{
+    font:13.5px var(--f);color:var(--fg);background:var(--bg-input);
+    border:1px solid var(--line2);border-radius:5px;padding:8px 11px;width:100%;max-width:340px;
+  }
+  select.s{
+    font:13px var(--f);color:var(--fg);background:var(--bg-input);
+    border:1px solid var(--line2);border-radius:4px;padding:3px 6px;
+  }
+  .sect{margin-top:30px}
+  .sect > h3{
+    font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg3);
+    margin:0 0 14px;font-weight:600;
+  }
+  .meta{font-size:12px;color:var(--fg3);margin-top:14px;padding-left:26px;line-height:1.6;max-width:58ch}
+
+  /* stack flow */
+  .flow{margin:4px 0 0;padding:0;list-style:none}
+  .flow li{display:grid;grid-template-columns:26px 1fr;gap:14px;position:relative}
+  .flow li:not(:last-child)::before{
+    content:"";position:absolute;left:12px;top:26px;bottom:-2px;width:1px;background:var(--line2);
+  }
+  .flow .num{
+    width:25px;height:25px;border-radius:50%;display:grid;place-items:center;
+    background:#232323;border:1px solid var(--line2);color:var(--fg3);
+    font:600 11.5px var(--mono);z-index:1;
+  }
+  .flow li.edit .num{background:var(--accent-dim);border-color:#2c5238;color:var(--accent-fg)}
+  .flow .card{padding:1px 0 20px}
+  .flow .nm{font-size:13.5px;color:var(--fg)}
+  .flow .cond{font-size:12px;color:var(--fg3);margin-top:3px}
+  .flow .cond .k{color:var(--fg2)}
+  .flow .ed{display:flex;align-items:center;gap:7px;margin-top:7px;font-size:12.5px;color:var(--fg3)}
+
+  .run{
+    display:flex;align-items:center;gap:12px;margin-top:22px;padding:13px 15px;
+    background:var(--bg-raise);border:1px solid var(--line);border-radius:7px;font-size:12.5px;
+  }
+  .run .st{color:var(--fg2)} .run .st b{color:var(--fg);font-weight:600}
+  .track{flex:1;height:4px;background:#333;border-radius:2px;overflow:hidden;min-width:70px}
+  .track i{display:block;height:100%;width:64%;background:var(--accent)}
+
+  /* history */
+  .filter{display:flex;gap:9px;align-items:center;margin-bottom:16px}
+  .filter input{
+    font:13px var(--f);color:var(--fg);background:var(--bg-input);border:1px solid var(--line2);
+    border-radius:5px;padding:7px 11px;flex:1;max-width:250px;
+  }
+  .day{
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg4);
+    padding:16px 0 7px;border-bottom:1px solid var(--line);
+  }
+  .ev{display:grid;grid-template-columns:66px 1fr auto;gap:14px;align-items:baseline;
+      padding:10px 2px;border-bottom:1px solid var(--line);font-size:13px}
+  .ev:hover{background:#222}
+  .ev .tm{font:12px var(--mono);color:var(--fg3);font-variant-numeric:tabular-nums}
+  .ev .what{color:var(--fg2);min-width:0}
+  .ev .what b{color:var(--fg);font-weight:500}
+  .ev .to{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .ev .src{font-size:11.5px;color:var(--fg4);white-space:nowrap}
+  .ev .src.wd{color:var(--pend)}
+  .scroll{max-height:322px;overflow:auto;margin:0 -4px;padding:0 4px}
+
+  .foot{display:flex;gap:9px;justify-content:flex-end;padding:13px 18px;background:#1b1b1b;border-top:1px solid var(--line)}
+
+  /* annotations */
+  .why{max-width:860px;margin:28px auto 0;display:grid;grid-template-columns:1fr 1fr;gap:16px 22px}
+  @media (max-width:760px){.why{grid-template-columns:1fr}}
+  .why div{font-size:13px;line-height:1.6}
+  .why h4{margin:0 0 4px;font-size:13px;color:#c6d3de;font-weight:600}
+  .why p{margin:0;color:#8593a1}
+</style>
+
+<div class="page">
+  <p class="kick">Redesign · Settings</p>
+  <h1 class="t">Daha sakin bir ayarlar ekranı</h1>
+  <p class="lede">Önceki tasarımın sorunu iç içe iki bölme, her ayar için ayrı etiket+kutu satırı ve yarışan renkli etiketlerdi. Bu sürümde: <b>liste → detay sayfa geçişi</b> (yan yana bölme yok), sayıların <b>cümle içine</b> gömülmesi, tek vurgu rengi ve çok daha fazla boşluk. Soldan bölüm seç, listeden bir servise veya yığına tıklayıp detayına gir.</p>
+
+  <div class="win">
+    <div class="bar"><span class="g"></span><span>Service Officer — Settings</span><span class="x">✕</span></div>
+    <div class="body">
+      <nav>
+        <div class="cap">Monitoring</div>
+        <button class="on" data-go="services"><span class="i">▤</span>Services</button>
+        <button data-go="stacks"><span class="i">⇅</span>Stacks</button>
+        <button data-go="history"><span class="i">◷</span>History</button>
+        <div class="cap">Application</div>
+        <button data-go="general"><span class="i">⚙</span>General</button>
+      </nav>
+
+      <main>
+        <!-- ── services list ── -->
+        <section class="pg on" id="services">
+          <h2>Services</h2>
+          <p class="desc">These appear in the tray flyout with live status. Open one to set how it should recover when it stops on its own.</p>
+          <div class="rows">
+            <div class="row" data-open="svc"><span class="dot run"></span>
+              <span class="who"><div class="nm">CompuTec AppEngine</div>
+                <div class="sub">AppEngine · recovers automatically, up to 3 attempts</div></span>
+              <span class="go">›</span></div>
+            <div class="row" data-open="svc"><span class="dot stop"></span>
+              <span class="who"><div class="nm">CompuTec WMS Server</div>
+                <div class="sub">WMSServer · recovers automatically, up to 3 attempts</div></span>
+              <span class="go">›</span></div>
+            <div class="row" data-open="svc"><span class="dot run"></span>
+              <span class="who"><div class="nm">CompuTec License Server</div>
+                <div class="sub">CTLicenseServer · recovers automatically, unlimited attempts</div></span>
+              <span class="go">›</span></div>
+            <div class="row" data-open="svc"><span class="dot run"></span>
+              <span class="who"><div class="nm">CompuTec Label Service</div>
+                <div class="sub">CTLabelService · no automatic recovery</div></span>
+              <span class="go">›</span></div>
+            <div class="row" data-open="svc"><span class="dot run"></span>
+              <span class="who"><div class="nm">SQL Server (MSSQLSERVER)</div>
+                <div class="sub">MSSQLSERVER · no automatic recovery</div></span>
+              <span class="go">›</span></div>
+          </div>
+          <div class="toolbar">
+            <button class="b pri">Add service…</button>
+            <button class="b">Remove</button>
+            <button class="b quiet">Reorder ↑↓</button>
+          </div>
+        </section>
+
+        <!-- ── service detail ── -->
+        <section class="pg" id="svc">
+          <div class="crumb"><button data-go="services">Services</button><span>›</span><span>CompuTec WMS Server</span></div>
+          <h2>CompuTec WMS Server</h2>
+          <p class="desc">WMSServer</p>
+
+          <div class="sect">
+            <h3>Display</h3>
+            <input class="txt" type="text" value="CompuTec WMS Server" aria-label="Display label">
+          </div>
+
+          <div class="sect">
+            <h3>Recovery</h3>
+            <label class="sw"><input type="checkbox" id="keep" checked>
+              <span class="lb">Keep this service running
+                <span class="hint">If it stops on its own, start it again.</span></span></label>
+
+            <div class="prose" id="rules">
+              <p>Try up to <input class="n" type="number" value="3" min="0" max="99"> times,
+                 waiting <input class="n" type="number" value="10" min="0" max="3600"> seconds first
+                 and multiplying that wait by <input class="n" type="number" value="2" min="1" max="10" step="0.5"> each time.</p>
+              <p>Give up if it stops <input class="n" type="number" value="5" min="2" max="50"> times
+                 within <input class="n" type="number" value="30" min="1" max="1440"> minutes.</p>
+            </div>
+
+            <label class="sw" style="margin-top:18px"><input type="checkbox">
+              <span class="lb">Also restart after a clean stop
+                <span class="hint">Off by default, only crashes are recovered — a non-zero exit code. A service you stopped yourself in services.msc is left alone.</span></span></label>
+          </div>
+        </section>
+
+        <!-- ── stacks list ── -->
+        <section class="pg" id="stacks">
+          <h2>Stacks</h2>
+          <p class="desc">An ordered group you can start, stop or restart in one go. Stopping walks the order backwards.</p>
+          <div class="rows">
+            <div class="row" data-open="stack"><span class="dot run"></span>
+              <span class="who"><div class="nm">SAP B1 stack</div>
+                <div class="sub">SQL Server → License Server → AppEngine → WMS Server</div></span>
+              <span class="go">›</span></div>
+            <div class="row" data-open="stack"><span class="dot off"></span>
+              <span class="who"><div class="nm">WMS only</div>
+                <div class="sub">License Server → WMS Server</div></span>
+              <span class="go">›</span></div>
+          </div>
+          <div class="toolbar"><button class="b pri">New stack…</button><button class="b">Delete</button></div>
+        </section>
+
+        <!-- ── stack detail ── -->
+        <section class="pg" id="stack">
+          <div class="crumb"><button data-go="stacks">Stacks</button><span>›</span><span>SAP B1 stack</span></div>
+          <h2>SAP B1 stack</h2>
+          <p class="desc">Each step starts, then waits before the next one begins. Some services report Running before they can actually serve, so a fixed wait is sometimes the honest answer.</p>
+
+          <ol class="flow">
+            <li><span class="num">1</span>
+              <div class="card"><div class="nm">SQL Server</div>
+                <div class="cond">wait <span class="k">until running</span> · give up after <span class="k">120 s</span></div></div></li>
+            <li><span class="num">2</span>
+              <div class="card"><div class="nm">CompuTec License Server</div>
+                <div class="cond">wait <span class="k">until running</span> · give up after <span class="k">60 s</span></div></div></li>
+            <li class="edit"><span class="num">3</span>
+              <div class="card"><div class="nm">CompuTec AppEngine</div>
+                <div class="ed">wait
+                  <select class="s"><option>until running</option><option selected>a fixed</option></select>
+                  <input class="n" type="number" value="15"> seconds
+                  <button class="b quiet" style="padding:3px 8px">Done</button></div></div></li>
+            <li><span class="num">4</span>
+              <div class="card"><div class="nm">CompuTec WMS Server</div>
+                <div class="cond">wait <span class="k">until running</span> · give up after <span class="k">60 s</span></div></div></li>
+          </ol>
+
+          <div class="toolbar"><button class="b pri">Add step…</button><button class="b quiet">Reorder ↑↓</button><button class="b">Remove step</button></div>
+
+          <div class="run">
+            <span class="st">Test run · step 3 of 4 — <b>AppEngine</b></span>
+            <span class="track"><i></i></span>
+            <button class="b quiet">Cancel</button>
+          </div>
+        </section>
+
+        <!-- ── history ── -->
+        <section class="pg" id="history">
+          <h2>History</h2>
+          <p class="desc">Every state change, with its cause — evidence for a ticket, and the only way to see a service that keeps dying quietly.</p>
+          <div class="filter">
+            <input type="text" placeholder="Filter by service…">
+            <button class="b quiet">Export…</button>
+            <span style="margin-left:auto;font-size:12px;color:var(--fg4)">kept 30 days</span>
+          </div>
+          <div class="scroll">
+            <div class="day">Today</div>
+            <div class="ev"><span class="tm">03:12:41</span>
+              <span class="what"><b>CompuTec AppEngine</b> stopped
+                <span class="to">· exit code 1067</span></span><span class="src">crash</span></div>
+            <div class="ev"><span class="tm">03:12:51</span>
+              <span class="what"><b>CompuTec AppEngine</b> starting</span><span class="src wd">watchdog · attempt 1 of 3</span></div>
+            <div class="ev"><span class="tm">03:13:09</span>
+              <span class="what"><b>CompuTec AppEngine</b> running <span class="to">· after 18 s</span></span><span class="src">recovered</span></div>
+            <div class="ev"><span class="tm">09:41:02</span>
+              <span class="what"><b>CompuTec WMS Server</b> stopped</span><span class="src">you, from the panel</span></div>
+            <div class="ev"><span class="tm">09:41:18</span>
+              <span class="what"><b>CompuTec WMS Server</b> running</span><span class="src">SAP B1 stack</span></div>
+            <div class="day">Yesterday</div>
+            <div class="ev"><span class="tm">22:03:55</span>
+              <span class="what"><b>SQL Server</b> stopped</span><span class="src">Windows shutdown</span></div>
+          </div>
+        </section>
+
+        <!-- ── general ── -->
+        <section class="pg" id="general">
+          <h2>General</h2>
+          <p class="desc">How the app itself behaves.</p>
+          <div class="sect"><h3>Startup</h3>
+            <label class="sw"><input type="checkbox" checked><span class="lb">Start automatically when Windows starts</span></label>
+          </div>
+          <div class="sect"><h3>Notifications</h3>
+            <label class="sw" style="margin-bottom:12px"><input type="checkbox" checked><span class="lb">A service stopped unexpectedly</span></label>
+            <label class="sw" style="margin-bottom:12px"><input type="checkbox" checked><span class="lb">Recovery succeeded</span></label>
+            <label class="sw"><input type="checkbox" checked><span class="lb">Recovery gave up</span></label>
+          </div>
+          <div class="sect"><h3>Other machines</h3>
+            <p class="meta" style="padding-left:0">Reserved for managing services on your other servers from this same window. Every call we make already accepts a machine name, so the groundwork is done.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div class="foot"><button class="b pri">Save</button><button class="b">Cancel</button></div>
+  </div>
+
+  <div class="why">
+    <div><h4>Yan yana bölme yok</h4><p>Servis ve yığın detayları artık kendi sayfasında açılıyor (üstte kırıntı yolu ile). Küçük bir pencerede iki seviyeli bölme kalabalık görünüyordu.</p></div>
+    <div><h4>Sayılar cümlenin içinde</h4><p>“Try up to <b>3</b> times, waiting <b>10</b> seconds first…” — altı etiketli satır yerine iki cümle. Ne yaptığı okununca anlaşılıyor.</p></div>
+    <div><h4>Tek vurgu rengi</h4><p>Yeşil yalnızca durum ve birincil eylem için. Listede rozet yok; ikincil satır zaten “3 denemeye kadar kurtarır” diyor.</p></div>
+    <div><h4>Geçmiş insan diliyle</h4><p>“stopped · exit code 1067 / crash”, “watchdog · attempt 1 of 3”. Tablo değil olay akışı; günlere göre gruplu.</p></div>
+  </div>
+</div>
+
+<script>
+  const go = id => {
+    document.querySelectorAll('.pg').forEach(p => p.classList.toggle('on', p.id === id));
+    const top = {services:'services', svc:'services', stacks:'stacks', stack:'stacks',
+                 history:'history', general:'general'}[id];
+    document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.go === top));
+  };
+  document.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => go(b.dataset.go)));
+  document.querySelectorAll('[data-open]').forEach(r => r.addEventListener('click', () => go(r.dataset.open)));
+  const keep = document.getElementById('keep'), rules = document.getElementById('rules');
+  const sync = () => rules.classList.toggle('dim', !keep.checked);
+  keep.addEventListener('change', sync); sync();
+</script>
