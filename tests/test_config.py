@@ -88,14 +88,20 @@ def test_backoff_schedule_and_cap():
     assert r.delay_for(20, cap_seconds=300) == 300.0
 
 
-def test_the_data_directory_is_machine_wide_and_named_as_the_product():
-    """It describes the machine's services, so it cannot live in one profile."""
-    assert "ProgramData" in cfg.APP_DIR
-    assert cfg.APP_DIR.endswith("Service Officer")
+def test_the_data_directory_is_machine_wide_and_named_as_the_product(real_paths):
+    """It describes the machine's services, so it cannot live in one profile.
+
+    real_paths, not cfg.APP_DIR: conftest redirects those constants so the suite
+    can't write into the installed app's directory, which is also what stops this
+    test from reading them.
+    """
+    app_dir = real_paths["app_dir"]
+    assert "ProgramData" in app_dir
+    assert app_dir.endswith("Service Officer")
     # Both earlier homes are still read, newest first.
-    assert any("ProgramData" in d and d.endswith("ServiceOfficer")
-               for d in cfg.LEGACY_DIRS)
-    assert any("AppData" in d for d in cfg.LEGACY_DIRS)
+    legacy = real_paths["legacy_dirs"]
+    assert any("ProgramData" in d and d.endswith("ServiceOfficer") for d in legacy)
+    assert any("AppData" in d for d in legacy)
 
 
 def test_a_per_user_install_is_carried_over_once(tmp_path):
