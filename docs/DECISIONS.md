@@ -295,3 +295,55 @@ error path now, and a test scribbles over a database header to prove it.
 Retention also now runs **daily** rather than only 3 seconds after start. A server
 runs for weeks without this app restarting, and retention that only ran at startup
 was retention that never ran.
+
+---
+
+## Choosing a health check: measured, not guessed — 2026-07-26
+
+Two real services on one SUSE box, restarted while a probe watched them every half
+second. Both are the "running but dead" case the health feature exists for, and
+both show that the obvious check is the wrong one.
+
+**SAP Business One Web Client** (`webclient.service`, `Type=oneshot` with
+`RemainAfterExit`):
+
+| moment | after the restart |
+|---|---:|
+| systemd, and so the panel, said Running | ~1 s |
+| the port accepted again | ~9 s |
+| `/webx/index.html` answered 200 | ~9 s |
+| its own API stopped returning 500 | later still |
+
+The static page is served long before the application works — the browser showed
+"Internal Server Error" while the root URL answered 200. A check on the root URL
+goes green while the thing is unusable.
+
+**SAP Business One Server Tools** (`sapb1servertools.service`, SLD on port 40000):
+
+| moment | after the restart |
+|---|---:|
+| stopped answering | 45.2 s into the probe |
+| **the port never closed at all** | — |
+| `/ControlCenter` answered 200 again | 24.1 s later |
+
+A TCP check on 40000 would have reported healthy through the entire outage: Tomcat
+holds the listener while the deployed application is gone. Twenty-four seconds of
+downtime, invisible.
+
+**So the rule for picking a check: probe the chain, not the port.** The right URL is
+the one the application itself depends on — found by watching which request fails
+during a restart and succeeds when it is ready. For the web client that is
+`/tcli/dbtype/get.svc`, and the readiness signal is a **401**: 500 while starting,
+401 once up and correctly refusing an anonymous caller. Expecting an error status is
+legitimate and needs no credentials. For Server Tools it is `/ControlCenter`, 200,
+with "System Landscape Directory" as the marker.
+
+Two consequences already built:
+
+- `grace_seconds` must exceed the *application's* readiness time, not the port's.
+  Measured: ~25 s for Server Tools, and around 30 s for the web client's login
+  screen. A short grace plus automatic restart would restart a service that is
+  still coming up, and it would never finish.
+- The grace window asks the question and ignores only the *answer*, so a service
+  ready in nine seconds shows as ready in nine seconds instead of sitting at
+  "Starting…" until the window expires.
