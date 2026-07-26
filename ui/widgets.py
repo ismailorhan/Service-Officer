@@ -171,7 +171,7 @@ class Grip(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.OpenHandCursor)
         self.setToolTip("Drag to reorder")
-        self.setStyleSheet(f"color:{theme.FG3}; font-size:13pt;")
+        self.setProperty("role", "grip")
         self._press = None
         self._live = False
 
@@ -255,8 +255,12 @@ class FlatEdit(QWidget):
 
     changed = Signal()
 
-    _IDLE = "color:{fg}; padding:4px 2px;"
-    _HOVER = "color:{fg}; padding:4px 2px; text-decoration:underline;"
+    # No colour here: QLabel[role="flatValue"] in the sheet owns that, so a theme
+    # change repaints it without anyone re-applying anything. Only the underline
+    # stays inline — QSS cannot hover-underline a QLabel in a way I can verify
+    # without a real pointer, and guessing would change behaviour blind.
+    _IDLE = "padding:4px 2px;"
+    _HOVER = "padding:4px 2px; text-decoration:underline;"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -265,6 +269,7 @@ class FlatEdit(QWidget):
         self._lay.setContentsMargins(0, 0, 0, 0)
         self._lay.setSpacing(5)
         self.flat = QLabel()
+        self.flat.setProperty("role", "flatValue")
         self._lay.addWidget(self.flat)
         self._editing = True                 # so the first collapse takes effect
 
@@ -293,12 +298,7 @@ class FlatEdit(QWidget):
             w.setVisible(editing)
         if not editing:
             self.flat.setText(self._flat_text())
-            self.flat.setStyleSheet(self._IDLE.format(fg=theme.FG))
-
-    def restyle(self) -> None:
-        """Re-read the palette after a theme change."""
-        if not self._editing:
-            self.flat.setStyleSheet(self._IDLE.format(fg=theme.FG))
+            self.flat.setStyleSheet(self._IDLE)
 
     def _busy(self) -> bool:
         for w in self._editors():
@@ -311,12 +311,12 @@ class FlatEdit(QWidget):
 
     def enterEvent(self, ev):
         if not self._editing:
-            self.flat.setStyleSheet(self._HOVER.format(fg=theme.FG))
+            self.flat.setStyleSheet(self._HOVER)
         super().enterEvent(ev)
 
     def leaveEvent(self, ev):
         if not self._editing:
-            self.flat.setStyleSheet(self._IDLE.format(fg=theme.FG))
+            self.flat.setStyleSheet(self._IDLE)
         super().leaveEvent(ev)
 
     def mousePressEvent(self, ev):

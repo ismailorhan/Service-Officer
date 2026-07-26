@@ -76,7 +76,7 @@ def _sentence(*parts) -> QWidget:
 def _hline():
     f = QFrame()
     f.setFixedHeight(1)
-    f.setStyleSheet(f"background:{theme.LINE}; border:none;")
+    f.setObjectName("hline")
     return f
 
 
@@ -1420,7 +1420,6 @@ class StackDetail(_Page):
             # Scope the selector to this widget: a bare "QWidget {...}" here is
             # inherited by every child, which is what painted green borders
             # around each inner control.
-            row.setStyleSheet(f"#steprow:hover {{ background:{theme.BG_HOVER}; }}")
             rl = QHBoxLayout(row)
             rl.setContentsMargins(2, 6, 2, 6)
             rl.setSpacing(11)
@@ -1436,10 +1435,8 @@ class StackDetail(_Page):
             num.setAlignment(Qt.AlignCenter)
             # theme.BG_RAISE, not a fixed dark grey: the step number's disc was
             # near-black on a white page in light mode.
-            num.setStyleSheet(f"background:{theme.BG_RAISE};"
-                              f"border:1px solid {theme.LINE2};"
-                              f"border-radius:12px; color:{theme.FG3};"
-                              f"font-family:'{theme.MONO}'; font-size:8.5pt;")
+            num.setObjectName("stepNum")
+            num.setAttribute(Qt.WA_StyledBackground, True)
             rl.addWidget(num)
 
             col = QVBoxLayout()
@@ -1571,13 +1568,13 @@ class StackDetail(_Page):
                 continue
             on = (i == self._selected)
             drop = (i == self._drop_at)
-            row.setStyleSheet(
-                f"#steprow {{ border-left:2px solid "
-                f"{theme.RUN if on else 'transparent'};"
-                f"border-top:1px solid {theme.ACCENT if drop else 'transparent'};"
-                f"border-bottom:1px solid "
-                f"{theme.ACCENT if drop else 'transparent'}; }}"
-                f"#steprow:hover {{ background:{theme.BG_HOVER}; }}")
+            # Properties, not a stylesheet per row: the colours live in the sheet
+            # so a theme change is still a single pass.
+            for name, value in (("sel", on), ("drop", drop)):
+                if row.property(name) != ("true" if value else "false"):
+                    row.setProperty(name, "true" if value else "false")
+                    row.style().unpolish(row)
+                    row.style().polish(row)
 
     def _show_drop(self, index):
         """Outline where a dragged step would land. -1 clears it."""
@@ -2276,6 +2273,13 @@ class HistoryPage(_Page):
         self.reload()
 
     # -- the file on disk ---------------------------------------------------
+    def _set_path_state(self, state: str) -> None:
+        """"error" turns the line red, via the sheet rather than an inline colour."""
+        if self.path_label.property("state") != state:
+            self.path_label.setProperty("state", state)
+            self.path_label.style().unpolish(self.path_label)
+            self.path_label.style().polish(self.path_label)
+
     def _show_path(self):
         path = history.path()
         try:
@@ -2290,9 +2294,9 @@ class HistoryPage(_Page):
             self.path_label.setText(
                 f"Cannot write the history — {broken}. Is Service Officer "
                 f"running as administrator?")
-            self.path_label.setStyleSheet(f"color:{theme.STOP_FG};")
+            self._set_path_state("error")
             return
-        self.path_label.setStyleSheet("")
+        self._set_path_state("")
         self.path_label.setText(f"Written to  {path}{note}")
 
     def _open_folder(self):
@@ -2669,12 +2673,14 @@ class MainPanel(QDialog):
         return self._cfg
 
     def restyle(self) -> None:
-        """Repaint what the global stylesheet can't reach after a mode change:
-        the nav icons and the few values drawn with inline colours."""
+        """Repaint what the global stylesheet can't reach after a mode change.
+
+        That is now only the drawn icons — every colour is in the sheet, so the
+        per-widget FlatEdit.restyle() hook is gone. The list rebuilds stay because
+        their rows carry drawn status dots.
+        """
         for kind, btn in self._buttons_by_name.items():
             btn.setIcon(icons.nav_icon(kind, 19))
-        for widget in self.findChildren(FlatEdit):
-            widget.restyle()
         self.services_page.refresh()
         self.categories_page.refresh()
         self.stacks_page.refresh()

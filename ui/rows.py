@@ -35,7 +35,6 @@ class ServiceRow(QWidget):
         self.disabled = False
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("row")
-        self.setStyleSheet(f"#row:hover {{ background: {theme.BG_HOVER}; }}")
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(*theme.ROW_PAD)
@@ -200,6 +199,7 @@ class SectionBar(QWidget):
         lay.setSpacing(8)
 
         self.chevron = QLabel()
+        self.chevron.setProperty("role", "chevron")
         self.chevron.setFixedWidth(12)
         lay.addWidget(self.chevron)
         head = Elide(title.upper(), "section")
@@ -215,7 +215,6 @@ class SectionBar(QWidget):
         # one costs ~600 ms of colour-emoji font loading in this process.
         folded = is_collapsed(self.category)
         self.chevron.setText(theme.GLYPH_FOLDED if folded else theme.GLYPH_FOLD)
-        self.chevron.setStyleSheet(f"color:{theme.FG3};")
         self.setToolTip("Click to show these services" if folded
                         else "Click to fold this group away")
 

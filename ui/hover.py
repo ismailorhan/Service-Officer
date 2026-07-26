@@ -28,10 +28,9 @@ class HoverCard(QWidget):
         self._store = store
         self._rect = None
 
-        # theme.BORDER, not a hard-coded grey: the same dark border on a white
-        # card in light mode was the one colour in the app that ignored the theme.
-        self.setStyleSheet(f"QWidget#card {{ background:{theme.BG}; "
-                           f"border:1px solid {theme.BORDER}; }}")
+        # No stylesheet here: theme.sheet() already styles #card, and scoping the
+        # card's tight type under #hoverCard keeps it out of the panel.
+        self.setObjectName("hoverCard")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         card = QWidget()
@@ -42,11 +41,11 @@ class HoverCard(QWidget):
         self._lay.setContentsMargins(13, 10, 13, 11)
         self._lay.setSpacing(4)
         self.title = QLabel("Service Officer")
-        self.title.setStyleSheet(f"color:{theme.FG}; font-weight:600; font-size:9.5pt;")
+        self.title.setProperty("role", "cardTitle")
         self._lay.addWidget(self.title)
         line = QFrame()
+        line.setObjectName("cardLine")
         line.setFixedHeight(1)
-        line.setStyleSheet(f"background:{theme.LINE}; border:none;")
         self._lay.addWidget(line)
         self._rows = QVBoxLayout()
         self._rows.setSpacing(3)
@@ -135,15 +134,15 @@ class HoverCard(QWidget):
             dot.setPixmap(icons.status_dot(st.category(status), 8))
             rl.addWidget(dot)
             name = QLabel(svc.display())
-            name.setStyleSheet(f"color:{theme.FG}; font-size:9pt;")
+            name.setProperty("role", "cardName")
             rl.addWidget(name)
             rl.addStretch(1)
             # Running and not answering says "Running" here too unless we say
             # otherwise, and this card is what people glance at.
             sick = self._store.health_of(svc.name, svc.machine) == "unhealthy"
             state = QLabel("not responding" if sick else status)
-            state.setStyleSheet(
-                f"color:{theme.STOP_FG if sick else theme.FG2}; font-size:8.5pt;")
+            state.setProperty("role", "cardState")
+            state.setProperty("bad", "true" if sick else "false")
             rl.addWidget(state)
             self._rows.addWidget(row)
 

@@ -35,6 +35,7 @@ PANEL_PAD = (28, 24, 28, 20)                # a page inside the main panel
 #: so there is one ladder rather than eight literals scattered through the QSS.
 T_TITLE, T_H2, T_BODY = 13, 11.5, 10
 T_MONO, T_HINT, T_SECTION = 8.5, 9, 8
+T_CARD = 9.5                                # the hover card, which is tighter
 
 #: Fixed sizes that two or more places have to agree on
 ACTION_BTN = (26, 24)                       # the per-row action buttons
@@ -269,6 +270,9 @@ def sheet() -> str:
     QLabel[role="hint"]     {{ color: {FG3}; font-size: {T_HINT}pt; }}
     QLabel[role="mono"]     {{ color: {FG3}; font-family: "{MONO}"; font-size: {T_MONO}pt; }}
     QLabel[role="strong"]   {{ color: {FG}; }}
+    /* Colour only: the fold chevron keeps the body font size so it stays the
+       same height as the heading beside it, unlike a hint. */
+    QLabel[role="chevron"]  {{ color: {FG3}; }}
 
     QPushButton {{
         background: transparent; border: 1px solid {LINE2}; border-radius: 5px;
@@ -423,6 +427,42 @@ def sheet() -> str:
     QMessageBox {{ background: {BG}; }}
 
     {CHIP_RULES}
+
+    /* The tray hover card. Scoped to #hoverCard so these tight sizes cannot
+       leak into the panel, where the normal roles apply. */
+    #cardLine {{ background: {LINE}; border: none; }}
+    #hoverCard QLabel[role="cardTitle"] {{
+        color: {FG}; font-weight: 600; font-size: {T_CARD}pt;
+    }}
+    #hoverCard QLabel[role="cardName"] {{ color: {FG}; font-size: {T_HINT}pt; }}
+    #hoverCard QLabel[role="cardState"] {{
+        color: {FG2}; font-size: {T_MONO}pt;
+    }}
+    #hoverCard QLabel[role="cardState"][bad="true"] {{ color: {STOP_FG}; }}
+
+    /* A value that reads as text and only becomes a box when clicked. The colour
+       is here so a theme change repaints it; the widget's own inline rule carries
+       nothing but padding and the hover underline, which QSS cannot do from a
+       :hover on a QLabel without a real pointer to prove it. */
+    QLabel[role="flatValue"] {{ color: {FG}; }}
+
+    /* A stack step: selection is a marker on the left edge, and the drop target
+       while dragging is a hairline top and bottom. Properties rather than an
+       inline sheet per row, so a theme change is still one pass. */
+    #steprow {{ border-left: 2px solid transparent;
+                border-top: 1px solid transparent;
+                border-bottom: 1px solid transparent; }}
+    #steprow[sel="true"] {{ border-left-color: {RUN}; }}
+    #steprow[drop="true"] {{ border-top-color: {ACCENT};
+                             border-bottom-color: {ACCENT}; }}
+    #steprow:hover {{ background: {BG_HOVER}; }}
+    #stepNum {{
+        background: {BG_RAISE}; border: 1px solid {LINE2}; border-radius: 12px;
+        color: {FG3}; font-family: "{MONO}"; font-size: {T_MONO}pt;
+    }}
+    QLabel[role="grip"] {{ color: {FG3}; font-size: {T_TITLE}pt; }}
+    /* Said out loud when something cannot be written; see HistoryPage. */
+    QLabel[state="error"] {{ color: {STOP_FG}; }}
 
     /* named surfaces, so a mode change is one setStyleSheet call */
     #shell, #card {{ background: {BG}; border: 1px solid {BORDER}; }}
