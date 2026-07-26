@@ -130,8 +130,14 @@ class HoverCard(QWidget):
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
             rl.setSpacing(8)
+            health = self._store.health_of(svc.name, svc.machine)
+            label, shown = st.effective(status, health)
             dot = QLabel()
-            dot.setPixmap(icons.status_dot(st.category(status), 8))
+            # The same category as the words beside it. This was painted from the
+            # raw status while the label came from st.effective, so a warming
+            # service got a green dot next to the word "starting".
+            dot.setPixmap(icons.status_dot(shown, 8))
+            dot.setProperty("dotCategory", shown)
             rl.addWidget(dot)
             name = QLabel(svc.display())
             name.setProperty("role", "cardName")
@@ -140,8 +146,6 @@ class HoverCard(QWidget):
             # This card is what people glance at, so it has to say what the list
             # says. It used to read "Running" beside a row reading "Starting...",
             # because it decided for itself and knew only one verdict.
-            health = self._store.health_of(svc.name, svc.machine)
-            label, shown = st.effective(status, health)
             sick = shown == "stopped" and st.category(status) == "running"
             state = QLabel(label if label == status else label.lower())
             state.setProperty("role", "cardState")

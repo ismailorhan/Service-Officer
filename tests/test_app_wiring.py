@@ -291,3 +291,43 @@ def test_a_service_that_is_not_answering_is_red_everywhere(application):
             if w.property("role") == "cardState"]
     assert said == [("not responding", "true")], said
     assert application.tray._anything_unsettled() is True
+
+
+def test_the_dot_agrees_with_the_word_beside_it(application):
+    """The card's dot was painted from the raw status while its label came from
+    st.effective — two lines apart, disagreeing. A green dot next to the word
+    "starting" is exactly the kind of thing a user has to point out, so this
+    asserts the drawn colour, not just the text."""
+    from PySide6.QtWidgets import QLabel
+
+    from ui import theme
+
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+
+    def dot_and_word():
+        application.hover._render()
+        labels = application.hover.findChildren(QLabel)
+        dot = next(w for w in labels if w.property("dotCategory"))
+        word = next(w for w in labels if w.property("role") == "cardState")
+        pixel = dot.pixmap().toImage().pixelColor(4, 4).name()
+        return dot.property("dotCategory"), word.text(), pixel
+
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+    category, word, pixel = dot_and_word()
+    assert (category, word) == ("pending", "starting\u2026")
+    assert pixel.lower() == theme.chip("pending")[0].lower(), pixel
+
+    application.store.set_health("webclient.service", health.HEALTHY, "ok",
+                                 machine="hanadev")
+    category, word, pixel = dot_and_word()
+    assert (category, word) == ("running", st.RUNNING)
+    assert pixel.lower() == theme.chip("running")[0].lower(), pixel
+
+    application.store.set_health("webclient.service", health.UNHEALTHY, "HTTP 500",
+                                 machine="hanadev")
+    category, word, pixel = dot_and_word()
+    assert (category, word) == ("stopped", "not responding")
+    assert pixel.lower() == theme.chip("stopped")[0].lower(), pixel
