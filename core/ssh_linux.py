@@ -26,8 +26,8 @@ from . import state as st
 #: is "Fri 2026-07-24 20:12:34 CEST", and parsing a timezone *abbreviation* is
 #: exactly how a daylight-saving bug gets in. Unix time is UTC by definition.
 SHOW_PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "UnitFileState",
-                   "Type", "MainPID", "ExecMainStatus", "Result",
-                   "ActiveEnterTimestamp")
+                   "Type", "RemainAfterExit", "MainPID", "ExecMainStatus",
+                   "Result", "ActiveEnterTimestamp")
 
 #: systemd's ActiveState, in our vocabulary.
 _ACTIVE_STATE = {
@@ -135,6 +135,16 @@ def status_from(props: dict) -> connectors.Status:
     detail = ""
     if failed and (props.get("Result") or "") not in ("", "success"):
         detail = f"result: {props['Result']}"
+    # A oneshot unit that does *not* stay active is a job, and "inactive" is how a
+    # finished job looks — not a service that stopped. One that does stay active
+    # (RemainAfterExit) is a service whose start script exits, which is a real and
+    # common shape: SAP's web client unit is exactly that. So the distinction is
+    # RemainAfterExit, not Type, and getting it the other way round would have the
+    # watchdog re-running completed jobs.
+    if ((props.get("Type") or "").lower() == "oneshot"
+            and (props.get("RemainAfterExit") or "no").lower() != "yes"):
+        detail = ("a one-off job, not a lasting service"
+                  + (f" · {detail}" if detail else ""))
     return connectors.Status(
         state=state,
         sub_state=(props.get("SubState") or ""),
@@ -449,12 +459,27 @@ class LinuxConnector:
         return text.splitlines()
 
     # -- acting -------------------------------------------------------------
+    #: How long `systemctl start` may take. Generous on purpose: a Type=oneshot
+    #: unit blocks until its ExecStart script *finishes*, and a real one — SAP's
+    #: web client, say — is a shell script that brings up a Java application
+    #: server. Ninety seconds looked plenty until you meet one of those.
+    CONTROL_TIMEOUT = 300
+
     def _control(self, verb: str, name: str) -> None:
         can = self.abilities()
         if not can.control:
             raise RuntimeError(can.why or "this target cannot be controlled")
-        code, text = self._run(
-            f"sudo -n systemctl {verb} {shlex.quote(name)}", timeout=90)
+        try:
+            code, text = self._run(f"sudo -n systemctl {verb} {shlex.quote(name)}",
+                                   timeout=self.CONTROL_TIMEOUT)
+        except ConnectionError as exc:
+            # A command that outlived its timeout is not the same as a machine
+            # that went away, and saying "connection failed" about a service that
+            # is still coming up sends someone to look at the network.
+            raise RuntimeError(
+                f"{verb} is still running after {self.CONTROL_TIMEOUT}s — the "
+                f"unit may yet come up. Check it on the machine: "
+                f"systemctl status {name}. ({exc})") from exc
         if code != 0:
             raise RuntimeError(text or f"systemctl {verb} exited {code}")
 

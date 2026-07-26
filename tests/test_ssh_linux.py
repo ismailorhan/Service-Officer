@@ -334,3 +334,69 @@ def test_fetching_a_fingerprint_needs_no_credentials(monkeypatch):
         hashlib.sha256(b"the host key bytes").digest()).decode().rstrip("=")
     assert got == expected
     assert got.startswith("SHA256:") and "=" not in got   # ssh's own formatting
+
+
+SHOW_WEBCLIENT = """Id=webclient.service
+LoadState=loaded
+ActiveState=active
+SubState=exited
+UnitFileState=enabled
+Type=oneshot
+RemainAfterExit=yes
+MainPID=0
+ExecMainStatus=0
+Result=success
+ActiveEnterTimestamp=@1784916754
+"""
+
+
+def test_a_oneshot_that_stays_active_is_a_running_service():
+    """SAP's web client unit: Type=oneshot with RemainAfterExit, because its start
+    script launches an application server and exits. systemd calls that
+    active (exited), and it means the service is up."""
+    status = ssh_linux.status_from(ssh_linux.parse_show(SHOW_WEBCLIENT)[0])
+
+    assert status.state == st.RUNNING
+    assert status.sub_state == "exited"
+    assert status.pid == 0, "a oneshot has no main process to track"
+    assert "one-off job" not in status.detail
+
+
+def test_a_oneshot_that_does_not_stay_active_is_a_job():
+    """And "inactive" is how a finished job looks, not a service that stopped —
+    getting this the other way round would have the watchdog re-running jobs."""
+    status = ssh_linux.status_from({
+        "LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead",
+        "Type": "oneshot", "RemainAfterExit": "no"})
+
+    assert status.state == st.STOPPED
+    assert "one-off job" in status.detail
+
+
+def test_a_slow_start_is_not_reported_as_a_lost_connection():
+    """A Type=oneshot start blocks until its script finishes, and a script that
+    brings up a Java server can outlive any timeout. "Connection failed" would
+    send someone to look at the network."""
+    def run(command, timeout=15.0):
+        if "sudo -n true" in command or "journalctl -n 0" in command:
+            return 0, ""
+        raise ConnectionError("timed out")
+
+    conn = ssh_linux.LinuxConnector(Machine(), runner=run)
+
+    with pytest.raises(RuntimeError, match="still running after"):
+        conn.start("webclient.service")
+
+
+def test_control_waits_long_enough_for_a_real_start():
+    seen = {}
+
+    def run(command, timeout=15.0):
+        seen[command] = timeout
+        return 0, ""
+
+    conn = ssh_linux.LinuxConnector(Machine(), runner=run)
+    conn.start("webclient.service")
+
+    started = next(c for c in seen if "systemctl start" in c)
+    assert seen[started] >= 300, "a Java application server needs longer than 90s"
