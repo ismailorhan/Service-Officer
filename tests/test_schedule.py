@@ -6,8 +6,25 @@ from core import config as cfg_mod
 from core.schedule import Scheduler
 
 
-def at(day, hour, minute):
-    return datetime(2026, 7, day, hour, minute)
+def at(day, hour, minute, second=0):
+    return datetime(2026, 7, day, hour, minute, second)
+
+
+def stamp(moment) -> str:
+    """A local wall-clock moment, spelled the way history writes it.
+
+    History records an offset-aware timestamp and the scheduler converts it back to
+    local before comparing it with a trigger's time of day — so a test that
+    hard-codes an offset only means what it says in that one timezone. These two
+    tests were written with "+03:00" on a machine in UTC+3, passed here for a week,
+    and failed on the build agent, which runs in UTC: 22:00+03:00 read there as
+    19:00 local, so the seeded run no longer matched the 22:00 occurrence.
+
+    `astimezone()` on a naive datetime attaches whatever this machine's offset is,
+    which makes the *instant* differ between machines and the *local reading*
+    identical — and the local reading is what the scheduler compares.
+    """
+    return moment.astimezone().isoformat(timespec="seconds")
 
 
 def build(triggers, now=None):
@@ -133,7 +150,7 @@ def test_a_restart_does_not_repeat_what_already_ran(tmp_path):
     assert sched.due_now() == [t]                   # a fresh process, no memory
 
     sched.seed_from([{"run": "trigger", "name": "app",
-                      "ts": "2026-07-20T16:12:04+03:00", "outcome": "success"}])
+                      "ts": stamp(at(20, 16, 12, 4)), "outcome": "success"}])
     assert sched.due_now() == []                    # it is on disk, so not again
     assert sched.due_now(at(21, 16, 12)) == [t]     # tomorrow still fires
 
@@ -144,18 +161,18 @@ def test_seeding_ignores_runs_that_do_not_match_the_schedule():
 
     # A "Run now" at nine in the morning is not the 22:00 occurrence.
     assert sched.seed_from([{"run": "trigger", "name": "app",
-                             "ts": "2026-07-20T09:00:00+03:00"}]) == 0
+                             "ts": stamp(at(20, 9, 0))}]) == 0
     assert sched.due_now() == [t]
 
     # Neither is a run recorded against a name we no longer have, nor a
     # timestamp we can't read.
     assert sched.seed_from([{"run": "trigger", "name": "gone",
-                             "ts": "2026-07-20T22:00:00+03:00"}]) == 0
+                             "ts": stamp(at(20, 22, 0))}]) == 0
     assert sched.seed_from([{"run": "trigger", "name": "app", "ts": "nonsense"}]) == 0
 
     # An edit since that run leaves the trigger free to fire.
     sched.seed_from([{"run": "trigger", "name": "app",
-                      "ts": "2026-07-20T22:00:03+03:00"}])
+                      "ts": stamp(at(20, 22, 0, 3))}])
     assert sched.due_now() == []
     t.time_of_day = "22:04"
     assert sched.due_now() == [t]
