@@ -107,27 +107,69 @@ class Connector(Protocol):
 #: machine name -> the connector that reaches it. Cached because a transport may
 #: hold a connection; cleared when a machine's settings change.
 _cache: dict = {}
+#: How to find out what a machine *is*. Set once at startup. Without it every
+#: target is Windows, which is what the tests that predate this rely on and what
+#: an install with no remote machines wants anyway.
+_config_getter = None
 
 
-def for_machine(machine: str = "", config=None) -> Connector:
-    """The connector for a target.
+def use_config(getter) -> None:
+    """Tell the registry where the machine records live.
 
-    Today every target is Windows, so this always answers the same way. It exists
-    now, before there is a choice to make, because the alternative is call sites
-    that assume the SCM — and those are what make a second platform expensive.
+    A getter rather than a Config, because the panel edits a copy and saves it:
+    the transport for a machine has to come from what is saved now, not from
+    whatever was loaded at startup.
+    """
+    global _config_getter
+    _config_getter = getter
+    forget()
+
+
+def machine_record(name: str = ""):
+    """The Machine for this name, or None if we have no config to ask."""
+    if _config_getter is None:
+        return None
+    try:
+        return _config_getter().machine(name or "")
+    except Exception:
+        return None
+
+
+def for_machine(machine: str = "", record=None) -> Connector:
+    """The connector for a target, by transport.
+
+    This is the only place that decides how a machine is reached. Everything else
+    — the watchdog, the health monitor, the stack runner, four pages — asks
+    `control.py` and never learns the answer.
     """
     key = machine or ""
     found = _cache.get(key)
-    if found is None:
+    if found is not None:
+        return found
+
+    record = record or machine_record(key)
+    if record is not None and getattr(record, "kind", "windows") == "linux" and key:
+        from . import ssh_linux
+        found = ssh_linux.LinuxConnector(record)
+    else:
         from . import scm_windows
         found = scm_windows.WindowsConnector(key)
-        _cache[key] = found
+    _cache[key] = found
     return found
 
 
 def forget(machine: str = None) -> None:
-    """Drop cached connectors, so edited machine settings take effect."""
-    if machine is None:
-        _cache.clear()
-    else:
-        _cache.pop(machine or "", None)
+    """Drop cached connectors, so edited machine settings take effect.
+
+    Closes anything holding a connection first — an SSH session left open to a
+    machine the user just repointed would keep answering for the old one.
+    """
+    names = [machine or ""] if machine is not None else list(_cache)
+    for name in names:
+        conn = _cache.pop(name, None)
+        closer = getattr(getattr(conn, "_run", None), "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass

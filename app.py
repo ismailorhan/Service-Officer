@@ -17,8 +17,8 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import autostart
-from core import (applog, config as cfg_mod, control, db, health, history, scm,
-                  schedule, stacks)
+from core import (applog, config as cfg_mod, connectors, control, db, health,
+                  history, poller as poller_mod, scm, schedule, stacks)
 from core import state as st
 from core.watchdog import Watchdog
 from ui import flyout as flyout_mod, hover as hover_mod, icons, panel as panel_mod
@@ -37,6 +37,17 @@ class StackSignals(QObject):
 class TriggerSignals(QObject):
     """A trigger fires on the scheduler's thread; the work belongs on the UI one."""
     fire = Signal(object)
+
+
+class PollSignals(QObject):
+    """A polled status arrives on the poller's thread; the store belongs to Qt's.
+
+    `status` carries None when the machine could not be reached at all, which is
+    a different thing from a service being stopped and has to stay different all
+    the way to the screen.
+    """
+    status = Signal(str, str, object)        # service, machine, Status or None
+    unreachable = Signal(str, str)           # machine, why
 
 
 class HealthSignals(QObject):
@@ -69,6 +80,9 @@ class Application(QObject):
         self.qt.setWindowIcon(icons.base_icon("green"))
 
         self.cfg = cfg_mod.load()
+        # How a machine is reached is a property of the machine, so the transport
+        # registry reads it from the config rather than being told per call.
+        connectors.use_config(lambda: self.cfg)
         self.store = st.store
         #: set while a trigger's action is in flight, so its outcome is recorded
         self._pending_trigger = None
@@ -119,6 +133,18 @@ class Application(QObject):
             on_action=lambda svc, _action, detail:
                 self.health_signals.act.emit(svc.name, svc.machine, detail),
         )
+
+        # Remote machines cannot push, so they are asked. Local ones are not:
+        # the SCM already tells us within ~32 ms.
+        self.poll_signals = PollSignals()
+        self.poll_signals.status.connect(self._on_polled)
+        self.poll_signals.unreachable.connect(self._on_unreachable)
+        self.poller = poller_mod.Poller(
+            config_getter=lambda: self.cfg,
+            on_status=lambda name, machine, status:
+                self.poll_signals.status.emit(name, machine, status),
+            on_unreachable=lambda machine, why:
+                self.poll_signals.unreachable.emit(machine, why))
 
         self.scheduler = schedule.Scheduler(
             config_getter=lambda: self.cfg,
@@ -216,6 +242,7 @@ class Application(QObject):
         self.tray.show()
         self.tray.apply_state()
         self.watcher.start()
+        self.poller.start()
         # What already ran today is on disk, so a restart doesn't repeat it.
         try:
             seeded = self.scheduler.seed_from(history.runs(kind="trigger", limit=200))
@@ -251,6 +278,27 @@ class Application(QObject):
     # -- core events -------------------------------------------------------
     def _on_scm(self, name, status, exit_code=0, pid=0):
         self.store.update(name, status, exit_code=exit_code, pid=pid)
+
+    def _on_polled(self, name, machine, status):
+        """GUI thread: an answer from a machine we had to ask."""
+        if status is None:
+            # Unreachable. Not "stopped" — we do not know, and saying Stopped
+            # about a server that is merely unreachable would send someone to fix
+            # the wrong thing.
+            self.store.update(name, st.UNKNOWN, machine=machine)
+            return
+        self.store.update(name, status.state, exit_code=status.exit_code,
+                          pid=status.pid, machine=machine)
+        if status.start_type:
+            self.store.set_start_type(name, status.start_type, machine=machine)
+
+    def _on_unreachable(self, machine, why):
+        """Said once per outage, not once per interval: a machine that is down for
+        an hour must not write 720 identical lines into the log."""
+        if getattr(self, "_down_note", None) == (machine, why):
+            return
+        self._down_note = (machine, why)
+        log.warning("%s is not answering — %s", machine or "this computer", why)
 
     # -- health ------------------------------------------------------------
     def _on_health_verdict(self, name, machine, verdict, detail):
@@ -690,6 +738,10 @@ class Application(QObject):
     def _settings_saved(self, new_cfg):
         old_auto = self.cfg.auto_start
         self.cfg = new_cfg
+        # A machine may have been repointed, given a different account, or had its
+        # transport changed. Drop the cached connectors — and with them any SSH
+        # session still open to where that machine used to be.
+        connectors.forget()
         try:
             cfg_mod.save(self.cfg)
         except Exception as exc:
@@ -720,6 +772,7 @@ class Application(QObject):
     def quit(self):
         log.info("quitting")
         self.watcher.stop()
+        self.poller.stop()
         self.scheduler.stop()
         self.watchdog.stop()
         self.health.stop()

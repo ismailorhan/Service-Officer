@@ -69,18 +69,53 @@ class Recovery:
 LOCAL_MACHINE = ""                 # empty name means this computer
 
 
+#: How we reach a machine. Windows means the service control manager; linux means
+#: systemd over SSH. The word describes the *transport*, which is why it lives on
+#: the machine and not on each service.
+KINDS = ("windows", "linux")
+#: How we prove who we are. `current_user` is Windows only — it is the token the
+#: app already runs with, which is why it needs nothing stored.
+AUTHS = ("current_user", "key", "password")
+
+
 @dataclass
 class Machine:
     """A computer whose services we manage. The local one always exists."""
     name: str = LOCAL_MACHINE      # "" = this computer, else a host name
     label: str = "This computer"
+    kind: str = "windows"
+    #: Where to reach it, when the name is not resolvable or not the whole story.
+    address: str = ""
+    port: int = 0                  # 0 = the transport's default (22 for SSH)
+    auth: str = "current_user"
+    username: str = ""
+    #: A private key file. Preferred over a password: nothing to store anywhere.
+    key_path: str = ""
+    #: Which entry in the secret store holds the password, never the password.
+    secret_ref: str = ""
+    #: The host key we agreed to trust, e.g. "SHA256:H+WZyx…". Empty means the
+    #: machine has not been confirmed yet, and connecting refuses rather than
+    #: trusting whatever answers.
+    host_fingerprint: str = ""
+    #: How often to ask, for a machine that cannot tell us on its own. The local
+    #: SCM pushes changes; SSH does not, unless the journal is readable.
+    poll_seconds: int = 5
 
     @property
     def is_local(self) -> bool:
         return not self.name
 
+    @property
+    def is_linux(self) -> bool:
+        return self.kind == "linux"
+
     def display(self) -> str:
         return self.label or self.name or "This computer"
+
+    def where(self) -> str:
+        """Host and port as one string, for a log line or a tooltip."""
+        host = self.address or self.name or "this computer"
+        return f"{host}:{self.port}" if self.port else host
 
 
 NO_CATEGORY = ""                   # a service that hasn't been filed anywhere
@@ -582,7 +617,32 @@ def _machine_from(raw) -> Machine | None:
     if not isinstance(raw, dict):
         return None
     name = str(raw.get("name") or "")
-    return Machine(name=name, label=str(raw.get("label") or name or "This computer"))
+    kind = str(raw.get("kind") or "windows").lower()
+    if kind not in KINDS:
+        kind = "windows"
+    auth = str(raw.get("auth") or "").lower()
+    if auth not in AUTHS:
+        # A Linux target cannot use the Windows token, so the sensible default
+        # differs by transport rather than being one value for both.
+        auth = "key" if kind == "linux" else "current_user"
+    # This computer is reached through the SCM whatever the file says: there is no
+    # SSH transport to ourselves, and a hand-edited file must not make the local
+    # machine unreachable.
+    if not name:
+        kind, auth = "windows", "current_user"
+    return Machine(
+        name=name,
+        label=str(raw.get("label") or name or "This computer"),
+        kind=kind,
+        address=str(raw.get("address") or ""),
+        port=max(0, min(65535, _as_int(raw.get("port"), 0))),
+        auth=auth,
+        username=str(raw.get("username") or ""),
+        key_path=str(raw.get("key_path") or ""),
+        secret_ref=str(raw.get("secret_ref") or ""),
+        host_fingerprint=str(raw.get("host_fingerprint") or "").strip(),
+        poll_seconds=max(2, min(300, _as_int(raw.get("poll_seconds"), 5))),
+    )
 
 
 def _category_from(raw) -> Category | None:
