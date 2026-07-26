@@ -610,7 +610,7 @@ def test_a_check_with_nothing_to_check_is_dropped(tmp_path):
 
 def test_a_health_change_is_recorded_with_its_reason(tmp_path):
     from core import history
-    path = str(tmp_path / "h.jsonl")
+    path = str(tmp_path / "h.db")
     history.record_health("AppEngine", "unhealthy",
                           "failed: something answers on 127.0.0.1:1433 — refused",
                           path=path)
@@ -631,7 +631,7 @@ def test_a_history_write_that_fails_is_reported_not_swallowed(tmp_path):
     problem reads as "nothing happened" for as long as nobody checks."""
     from core import history
     history._last_error, history._reported = "", False
-    # A directory where the file should be: opening it for append always fails.
+    # A directory where the file should be: it cannot be opened as a store.
     blocked = tmp_path / "wedged"
     blocked.mkdir()
     history.record_health("A", "unhealthy", "x", path=str(blocked))
@@ -639,7 +639,7 @@ def test_a_history_write_that_fails_is_reported_not_swallowed(tmp_path):
     assert str(blocked) in history.last_error()
 
     # A good write clears it again.
-    history.record_health("A", "healthy", "x", path=str(tmp_path / "ok.jsonl"))
+    history.record_health("A", "healthy", "x", path=str(tmp_path / "ok.db"))
     assert history.last_error() == ""
     history._last_error, history._reported = "", False
 

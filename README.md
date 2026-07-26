@@ -116,17 +116,27 @@ to be logged in.
 
 ```
 C:\ProgramData\Service Officer\
-  services.json          config
-  service-officer.log    application log, rotating
-  history.jsonl          what happened, one JSON object per line
+  services.json          config, rewritten whole and atomically
+  history.db             what happened — SQLite, one immutable row per event
+  service-officer.log    application log, rotating 1 MB × 3
 ```
 
-`.jsonl` rather than `.log` for history because it is queried, filtered and
-exported by the app itself; a rotating `.log` is for humans reading a tail.
+Three files, three formats, on purpose. `services.json` is a document read and
+rewritten as a whole, and hand-editable in an emergency. `history.db` is queried,
+filtered, aggregated and exported by the app itself — and it has to survive being
+written by one process while another reads it, which a file that gets rewritten to
+apply retention cannot. The `.log` is prose for a human reading a tail when the
+*app itself* misbehaves.
 
-Data from earlier versions (`%ProgramData%\ServiceOfficer`,
-`%APPDATA%\ServiceOfficer`) is copied across on first run, newest first, and the
-originals are left alone.
+Times are stored in UTC and shown in local time — see `core/clock.py` for why
+(the short answer is daylight saving, and that a hub will interleave several
+machines' events).
+
+Data from earlier versions is carried forward on first run and nothing is
+deleted: files from `%ProgramData%\ServiceOfficer` or `%APPDATA%\ServiceOfficer`
+are copied across, newest first, leaving the originals alone; and a
+`history.jsonl` from before the SQLite move is imported into `history.db` and then
+renamed `.migrated`.
 
 ## Layout
 

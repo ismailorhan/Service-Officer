@@ -889,7 +889,7 @@ def test_history_hides_halfway_states_until_full_detail(qapp, sample, tmp_path):
     one thing."""
     import json
     from core import history
-    path = tmp_path / "h.jsonl"
+    path = tmp_path / "h.db"
     rows = [
         {"ts": "2026-07-25T18:03:48+03:00", "service": "AppEngine",
          "action": "restart", "source": "panel"},
@@ -900,7 +900,7 @@ def test_history_hides_halfway_states_until_full_detail(qapp, sample, tmp_path):
         {"ts": "2026-07-25T18:03:54+03:00", "service": "AppEngine",
          "to": "Running", "from": "Starting", "source": "scm"},
     ]
-    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    history.import_records(rows, path=str(path))
 
     basic = history.query(service_names=["AppEngine"], path=str(path))
     assert [r["event"] for r in basic] == ["Running", "restart requested"]
@@ -909,9 +909,10 @@ def test_history_hides_halfway_states_until_full_detail(qapp, sample, tmp_path):
     assert len(full) == 4                          # nothing was lost from the file
 
     # A crash mid-transition still shows, since the exit code is the point.
-    rows.append({"ts": "2026-07-25T18:04:00+03:00", "service": "AppEngine",
-                 "to": "Stopping", "exit_code": 1067, "source": "scm"})
-    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    history.import_records([{"ts": "2026-07-25T18:04:00+03:00",
+                             "service": "AppEngine", "to": "Stopping",
+                             "exit_code": 1067, "source": "scm"}],
+                           path=str(path))
     kept = history.query(service_names=["AppEngine"], path=str(path))
     assert any(r["level"] == "Error" for r in kept)
 

@@ -10,9 +10,12 @@ from core import state as st
 
 
 def write(path, rows):
-    with open(path, "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r) + "\n")
+    """Seed a history with rows that carry their own timestamps.
+
+    The same call the JSONL migration uses, so the suite exercises that path
+    rather than reaching past the store into a file format.
+    """
+    history.import_records(rows, path=path)
 
 
 def iso(minutes_ago=0):
@@ -21,7 +24,7 @@ def iso(minutes_ago=0):
 
 
 def test_actions_and_states_appear_as_one_story(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     store = st.Store()
     history.attach(store, lambda: True, path=p)
 
@@ -43,7 +46,7 @@ def test_actions_and_states_appear_as_one_story(tmp_path):
 
 
 def test_source_codes_are_spelled_out(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     write(p, [
         {"ts": iso(1), "service": "A", "to": "Running", "source": st.SRC_SCM},
         {"ts": iso(2), "service": "A", "to": "Stopped", "source": st.SRC_WATCHDOG},
@@ -54,7 +57,7 @@ def test_source_codes_are_spelled_out(tmp_path):
 
 
 def test_filters_by_service_and_time_range(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     write(p, [
         {"ts": iso(5), "service": "A", "to": "Running", "source": st.SRC_SCM},
         {"ts": iso(5), "service": "B", "to": "Running", "source": st.SRC_SCM},
@@ -68,7 +71,7 @@ def test_filters_by_service_and_time_range(tmp_path):
 
 
 def test_newest_first(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     write(p, [
         {"ts": iso(30), "service": "A", "to": "Stopped", "source": st.SRC_SCM},
         {"ts": iso(1), "service": "A", "to": "Running", "source": st.SRC_SCM},
@@ -78,7 +81,7 @@ def test_newest_first(tmp_path):
 
 
 def test_export_matches_what_is_on_screen(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     write(p, [
         {"ts": iso(1), "service": "A", "to": "Running", "source": st.SRC_SCM},
         {"ts": iso(2), "service": "B", "to": "Running", "source": st.SRC_SCM},
@@ -99,7 +102,7 @@ def test_export_matches_what_is_on_screen(tmp_path):
 
 
 def test_plain_export_stays_parseable_by_other_tools(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     write(p, [{"ts": iso(1), "service": "A", "to": "Running", "source": st.SRC_SCM}])
     rows = history.query(service_names=["A"], path=p)
     dest = str(tmp_path / "plain.csv")
@@ -113,7 +116,7 @@ def test_windows_events_are_merged_when_asked_for(tmp_path, monkeypatch):
     """The reason a service died usually lives in the Windows log, so it has to
     land in the same timeline rather than a separate screen."""
     from core import eventlog
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     write(p, [{"ts": iso(2), "service": "AppEngine", "to": "Stopped",
                "exit_code": 1067, "source": st.SRC_SCM}])
 

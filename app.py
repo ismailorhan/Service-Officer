@@ -17,8 +17,8 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import autostart
-from core import (applog, config as cfg_mod, control, health, history, scm, schedule,
-                  stacks)
+from core import (applog, config as cfg_mod, control, db, health, history, scm,
+                  schedule, stacks)
 from core import state as st
 from core.watchdog import Watchdog
 from ui import flyout as flyout_mod, hover as hover_mod, icons, panel as panel_mod
@@ -85,7 +85,14 @@ class Application(QObject):
 
         # --- core ---------------------------------------------------------
         history.attach(self.store, lambda: self.cfg.history.enabled)
-        QTimer.singleShot(3000, lambda: history.trim(self.cfg.history.retention_days))
+        # Once shortly after start, then daily. A server runs for weeks without
+        # this app being restarted, and retention that only ran at startup was
+        # retention that never ran.
+        QTimer.singleShot(3000, self._trim_history)
+        self._trim_timer = QTimer(self)
+        self._trim_timer.setInterval(24 * 60 * 60 * 1000)
+        self._trim_timer.timeout.connect(self._trim_history)
+        self._trim_timer.start()
 
         self.watchdog = Watchdog(
             config_getter=lambda: self.cfg,
@@ -173,6 +180,18 @@ class Application(QObject):
         self.flyout.run_stack.connect(self.run_stack)
         self.flyout.open_settings.connect(lambda: self.open_panel())
         self.flyout.open_services_mmc.connect(self._open_services_mmc)
+
+    def _trim_history(self):
+        """Apply the retention window. Says so in the log when it drops anything,
+        because "where did last month go" deserves an answer."""
+        try:
+            dropped = history.trim(self.cfg.history.retention_days)
+        except Exception:
+            log.exception("could not trim history")
+            return
+        if dropped:
+            log.info("history: dropped %d rows past %d days", dropped,
+                     self.cfg.history.retention_days)
 
     def _poll_start_types(self):
         """Notice a service being disabled or re-enabled outside this app."""
@@ -708,6 +727,29 @@ class Application(QObject):
         self.qt.quit()
 
 
+def prepare_history() -> None:
+    """Make the event store usable before anything writes to it.
+
+    Order matters. The integrity check comes first, because a JSONL import needs
+    a working file to import *into*; and a store that cannot be opened is moved
+    aside rather than deleted, because damaged or not it is the customer's
+    evidence. Neither failure stops the app: a tray icon with no history is worth
+    more than no tray icon.
+
+    Its own function so it can be tested. Buried inside main(), next to
+    QApplication, nobody could.
+    """
+    verdict = db.integrity(history.path())
+    if verdict != "ok":
+        aside = db.set_aside(history.path())
+        log.error("history unusable (%s); moved to %s and starting a new one",
+                  verdict, aside or "nowhere — it could not be moved")
+    imported = history.migrate_jsonl()
+    if imported:
+        log.info("imported %d rows from %s into %s", imported,
+                 history.LEGACY_JSONL, history.path())
+
+
 def main() -> int:
     # Before anything opens a file under the new directory: the old per-user copy
     # is only carried over while the destination is still empty, and the log
@@ -717,6 +759,8 @@ def main() -> int:
     if brought:
         log.info("brought %s forward into %s", ", ".join(brought),
                  cfg_mod.APP_DIR)
+
+    prepare_history()
     # No manual DPI call here: Qt already opts into per-monitor v2 awareness
     # before we could, and calling SetProcessDpiAwareness afterwards just fails
     # with "access denied" and prints a warning.

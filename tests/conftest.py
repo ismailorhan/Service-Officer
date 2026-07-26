@@ -34,8 +34,19 @@ cfg_mod.APP_DIR = str(_SANDBOX)
 cfg_mod.CONFIG_PATH = str(_SANDBOX / "services.json")
 applog.LOG_PATH = str(_SANDBOX / "service-officer.log")
 
-from core import history                                   # noqa: E402
-history.HISTORY_PATH = str(_SANDBOX / "history.jsonl")
+from core import db, history                               # noqa: E402
+history.HISTORY_PATH = str(_SANDBOX / "history.db")
+history.LEGACY_JSONL = str(_SANDBOX / "history.jsonl")
+
+# A sandbox left over from an older run holds a *JSON Lines* file under a name
+# the store now expects to be SQLite, and "file is not a database" would then
+# fail the suite for a reason that has nothing to do with the code under test.
+for _stale in (Path(history.HISTORY_PATH), Path(history.LEGACY_JSONL)):
+    if _stale.exists():
+        db.close(str(_stale))
+        _stale.unlink(missing_ok=True)
+for _suffix in ("-wal", "-shm"):
+    Path(history.HISTORY_PATH + _suffix).unlink(missing_ok=True)
 
 
 @pytest.fixture

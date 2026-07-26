@@ -8,6 +8,11 @@ of these depend on where the product is rather than on first principles.
 
 ## Where data lives, and in what format — decided 2026-07-25
 
+> **The history's format was superseded on 2026-07-26** — see "The event
+> store" below. The reasoning here about *where* still stands; the
+> reasoning about JSON Lines is kept because the argument that replaced it
+> is only legible next to it.
+
 `%ProgramData%\Service Officer\`, not `%APPDATA%`. This describes the *machine*:
 which services it runs, when they should restart, what happened to them. Per-user
 storage meant a second administrator saw an empty install, the history a ticket
@@ -219,3 +224,74 @@ for itself twice in one afternoon:
 times, waiting 10 seconds first…") as labelled fields. Everything above is
 invisible to the user by design; that one is a change to what people read, so it
 is a product decision rather than a cleanup.
+
+---
+
+## The event store: SQLite — decided 2026-07-26
+
+The history moved from append-only JSON Lines to a SQLite file, `history.db`. The
+reason is not row counts, and it matters to be precise about that, because "JSON
+doesn't scale" would have been the wrong reason — reading the newest 200 rows had
+already been made cost what it displays (54 ms → 0.6 ms) by reading the file
+backwards.
+
+**The reason is that a second process is coming.** The next step on the roadmap is
+Service Officer installed as a Windows service, running the watchdog and the
+scheduler while the desktop panel becomes a client. Appending from two processes
+is safe. Retention was not: `trim()` rewrote the whole file through a temporary
+copy and `os.replace`, so any append landing during a trim went into the
+abandoned inode and was **lost without trace**. On a product whose promise is
+"here is what happened at 03:12", silently losing events is the worst class of
+bug there is. Retention is now a `DELETE`, and the file is never replaced — there
+is a test that asserts exactly that.
+
+Two more things follow from it:
+
+- **WAL mode.** One writer and many readers, neither blocking the other, with
+  each reader seeing a consistent snapshot. That is the agent-writes /
+  panel-reads split, without a locking protocol of our own.
+- **Aggregation becomes possible.** "AppEngine 99.8% this month" over indexed
+  rows is a query; over a text file it is a full parse every time. A daily
+  per-service rollup table exists for that (`uptime_daily`, schema version 2),
+  derived and rebuildable — `events` remains the only source of truth.
+
+**Measured** on 20,000 rows (2.8 MB of JSONL became a 3.4 MB database — larger,
+because of the indexes that are the point):
+
+| | JSONL | SQLite |
+|---|---:|---:|
+| `query(limit=200)` | 0.60 ms | 0.75 ms |
+| `query(service=…)` | 3.40 ms | 2.07 ms |
+| `runs(limit=200)`, no runs in the file | full scan | 0.01 ms |
+| one event written | ~0.05 ms | 0.04 ms |
+| retention pass dropping 15,954 rows | rewrite the file | 21 ms |
+| a day-by-service aggregate | not feasible | 1.2 ms |
+
+**Choices inside the choice**, so they are not re-litigated:
+
+- `sqlite3` from the standard library — no new dependency, which is a project
+  rule. No ORM: this is ten queries, and SQLAlchemy would cost a dependency and
+  build size for nothing.
+- Not PostgreSQL or SQL Server locally — installing a database server on a
+  customer's ERP box to hold a service log is absurd. Not a time-series database
+  either; that is the monitoring-suite market the product deliberately isn't in.
+- **One store, not two.** JSONL and CSV remain *export* formats. Two sources of
+  truth is how they disagree.
+- `ts` stays TEXT, ISO-8601 UTC: it sorts correctly as text, and someone opening
+  the file in any SQLite browser can read it.
+- An `extra` JSON column keeps the property that made JSON Lines attractive —
+  a new field doesn't need a schema change or break an older reader.
+- Migrations are numbered steps keyed by the version they produce, recorded in
+  `PRAGMA user_version`. A step, once shipped, is never edited: a customer has a
+  file at that version.
+
+**What went wrong while building it**, kept because it will happen again:
+`sqlite3.connect()` on a corrupt file *succeeds* — the first statement is what
+fails — so the error path left an open handle. On Windows that locks the file, and
+`set_aside()` could then never move a damaged history out of the way: recovery was
+impossible in precisely the case it exists for. The connection is closed on the
+error path now, and a test scribbles over a database header to prove it.
+
+Retention also now runs **daily** rather than only 3 seconds after start. A server
+runs for weeks without this app restarting, and retention that only ran at startup
+was retention that never ran.

@@ -1,7 +1,8 @@
 import json
+import pathlib
 from datetime import datetime, timedelta, timezone
 
-from core import history
+from core import db, history
 from core import state as st
 
 
@@ -54,7 +55,7 @@ def test_keep_only_drops_unconfigured_services():
 
 # ── history ────────────────────────────────────────────────────────────────
 def test_records_events_with_source_and_exit_code(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     store = st.Store()
     history.attach(store, lambda: True, path=p)
     store.update("AppEngine", st.RUNNING)
@@ -68,7 +69,7 @@ def test_records_events_with_source_and_exit_code(tmp_path):
 
 
 def test_recording_can_be_switched_off(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     store = st.Store()
     enabled = [False]
     history.attach(store, lambda: enabled[0], path=p)
@@ -80,28 +81,37 @@ def test_recording_can_be_switched_off(tmp_path):
 
 
 def test_trim_drops_entries_past_retention(tmp_path):
-    p = tmp_path / "h.jsonl"
+    p = tmp_path / "h.db"
     old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
     new = datetime.now(timezone.utc).isoformat()
-    p.write_text("\n".join(json.dumps({"ts": t, "service": "A", "to": "Running"})
-                           for t in (old, new)) + "\n", encoding="utf-8")
+    history.import_records(
+        [{"ts": t, "service": "A", "to": "Running"} for t in (old, new)],
+        path=str(p))
 
     dropped = history.trim(30, str(p))
     rows = history.read(str(p))
     assert dropped == 1 and len(rows) == 1 and rows[0]["ts"] == new
 
 
-def test_malformed_lines_are_skipped_not_fatal(tmp_path):
-    p = tmp_path / "h.jsonl"
-    p.write_text('{"ts": "x", broken\n' +
-                 json.dumps({"ts": datetime.now(timezone.utc).isoformat(),
-                             "service": "A", "to": "Running"}) + "\n",
-                 encoding="utf-8")
-    assert len(history.read(str(p))) == 1
+def test_trim_does_not_replace_the_file(tmp_path):
+    """Retention used to rewrite the whole file, which is how an append from
+    another process could be lost. Deleting rows must leave the file in place."""
+    p = tmp_path / "h.db"
+    history.import_records([{"ts": (datetime.now(timezone.utc)
+                                   - timedelta(days=40)).isoformat(),
+                            "service": "A", "to": "Running"}], path=str(p))
+    before = p.stat().st_ino if hasattr(p.stat(), "st_ino") else None
+
+    assert history.trim(30, str(p)) == 1
+
+    assert p.exists()
+    assert not (tmp_path / "h.db.tmp").exists()
+    if before:
+        assert p.stat().st_ino == before, "the file was replaced, not edited"
 
 
 def test_filter_by_service_and_csv_export(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     store = st.Store()
     history.attach(store, lambda: True, path=p)
     store.update("A", st.RUNNING)
@@ -116,70 +126,76 @@ def test_filter_by_service_and_csv_export(tmp_path):
     assert "Service" in lines[1] and any("A" in line for line in lines[2:])
 
 
-# -- reading from the end ---------------------------------------------------
-def _write_rows(path, n, start=0):
-    with open(path, "w", encoding="utf-8") as fh:
-        for i in range(start, start + n):
-            fh.write(json.dumps({"ts": f"2026-07-26T00:00:{i % 60:02d}",
-                                 "service": f"Svc{i % 3}", "to": "Running",
-                                 "seq": i}) + "\n")
+# -- what the store guarantees ----------------------------------------------
+def _seed(path, n, kind="state"):
+    """n rows with their own timestamps, oldest first."""
+    if kind == "run":
+        rows = [{"ts": f"2026-07-26T00:{i // 60:02d}:{i % 60:02d}+00:00",
+                 "run": "stack", "name": f"run{i}", "outcome": "ok",
+                 "seconds": 1} for i in range(n)]
+    else:
+        rows = [{"ts": f"2026-07-26T00:{i // 60:02d}:{i % 60:02d}+00:00",
+                 "service": f"Svc{i % 3}", "to": "Running", "note": str(i)}
+                for i in range(n)]
+    return history.import_records(rows, path=str(path))
 
 
-def test_reading_stops_once_it_has_enough(tmp_path, monkeypatch):
-    """A query must cost what it shows, not what the file has ever held."""
-    path = tmp_path / "h.jsonl"
-    _write_rows(path, 5000)
-    seen = []
-    real = history._parse
-    monkeypatch.setattr(history, "_parse",
-                        lambda raw: (seen.append(1), real(raw))[1])
+def _work_done(conn, sql: str) -> int:
+    """How much SQLite actually did, in virtual-machine steps.
+
+    A measurement rather than a reading of EXPLAIN: the plan for this query says
+    "SCAN events", which sounds like the whole table and is not — with a LIMIT it
+    walks the rowid tree from the end and stops. Counting the work says so
+    without depending on the wording of a plan.
+    """
+    steps = [0]
+
+    def tick():
+        steps[0] += 1
+        return 0
+
+    conn.set_progress_handler(tick, 100)
+    try:
+        conn.execute(sql).fetchall()
+    finally:
+        conn.set_progress_handler(None, 0)
+    return steps[0]
+
+
+def test_a_query_reads_what_it_shows_not_the_whole_table(tmp_path):
+    """The point of a database here: asking for ten rows out of five thousand
+    must not touch the other four thousand nine hundred and ninety."""
+    path = tmp_path / "h.db"
+    assert _seed(path, 5000) == 5000
 
     rows = history.read(path=str(path), limit=10)
 
-    assert [r["seq"] for r in rows] == list(range(4999, 4989, -1))
-    # 5,000 rows in the file; a limit of 10 must not have parsed them all.
-    assert len(seen) < 500, f"parsed {len(seen)} lines to return 10"
+    assert [r["note"] for r in rows] == [str(i) for i in range(4999, 4989, -1)]
+    conn = db.connect(str(path))
+    ten = _work_done(conn, "SELECT * FROM events ORDER BY id DESC LIMIT 10")
+    everything = _work_done(conn, "SELECT * FROM events ORDER BY id DESC")
+    assert ten * 20 < everything, f"ten rows cost {ten}, all 5000 cost {everything}"
 
 
-def test_a_record_split_across_two_chunks_survives(tmp_path, monkeypatch):
-    """The reverse reader joins fragments, so a tiny chunk must change nothing."""
-    path = tmp_path / "h.jsonl"
-    _write_rows(path, 400)
-    monkeypatch.setattr(history, "_CHUNK", 64)      # forces mid-record splits
+def test_asking_for_runs_uses_the_index_not_a_scan(tmp_path):
+    """A machine with no stacks still has a long history. Finding no runs in it
+    must cost nothing."""
+    path = tmp_path / "h.db"
+    _seed(path, 3000)                       # state changes only, no runs
 
-    rows = history.read(path=str(path), limit=400)
+    assert history.runs(path=str(path), limit=200) == []
 
-    assert len(rows) == 400
-    assert [r["seq"] for r in rows] == list(range(399, -1, -1))
-
-
-def test_no_trailing_newline_still_reads_the_last_row(tmp_path):
-    path = tmp_path / "h.jsonl"
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"ts": "2026-07-26T00:00:01", "service": "A",
-                             "to": "Running"}) + "\n")
-        fh.write(json.dumps({"ts": "2026-07-26T00:00:02", "service": "B",
-                             "to": "Running"}))       # no newline
-    rows = history.read(path=str(path), limit=10)
-    assert [r["service"] for r in rows] == ["B", "A"]
-
-
-def test_missing_and_empty_files_are_not_errors(tmp_path):
-    assert history.read(path=str(tmp_path / "nope.jsonl")) == []
-    empty = tmp_path / "empty.jsonl"
-    empty.write_text("", encoding="utf-8")
-    assert history.read(path=str(empty)) == []
+    conn = db.connect(str(path))
+    plan = " ".join(str(r[-1]) for r in conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM events WHERE kind = 'run' "
+        "ORDER BY id DESC LIMIT 200"))
+    assert "events_kind_id" in plan, plan
 
 
 def test_runs_returns_the_newest_executions(tmp_path):
-    path = tmp_path / "h.jsonl"
-    with open(path, "w", encoding="utf-8") as fh:
-        for i in range(50):
-            fh.write(json.dumps({"ts": f"2026-07-26T00:{i:02d}:00",
-                                 "run": "stack", "name": f"run{i}",
-                                 "outcome": "ok", "seconds": 1}) + "\n")
-            fh.write(json.dumps({"ts": f"2026-07-26T00:{i:02d}:30",
-                                 "service": "Svc", "to": "Running"}) + "\n")
+    path = tmp_path / "h.db"
+    _seed(path, 50, kind="run")
+    _seed(path, 50)                         # interleaved state changes
 
     got = history.runs(path=str(path), limit=5)
 
@@ -187,33 +203,66 @@ def test_runs_returns_the_newest_executions(tmp_path):
                                         "run45"]
 
 
-def test_looking_for_runs_does_not_parse_every_state_change(tmp_path,
-                                                            monkeypatch):
-    """A machine with no stacks still has a large history; asking for runs must
-    not pay for it."""
-    path = tmp_path / "h.jsonl"
-    _write_rows(path, 3000)                      # state changes only, no runs
-    parsed = []
-    real = history._parse
-    monkeypatch.setattr(history, "_parse",
-                        lambda raw: (parsed.append(1), real(raw))[1])
+def test_a_state_row_that_mentions_a_run_is_not_one(tmp_path):
+    path = tmp_path / "h.db"
+    history.import_records([
+        {"ts": "2026-07-26T00:00:01+00:00", "service": "A", "to": "Running",
+         "note": 'the word "run" here'},
+        {"ts": "2026-07-26T00:00:02+00:00", "run": "stack", "name": "morning",
+         "outcome": "ok", "seconds": 2},
+    ], path=str(path))
 
-    assert history.runs(path=str(path), limit=200) == []
-    assert not parsed, "parsed lines that could not possibly be runs"
+    assert [r["name"] for r in history.runs(path=str(path))] == ["morning"]
 
 
-def test_the_prefilter_never_hides_a_real_run(tmp_path):
-    """A state row mentioning "run" in its text is skipped by the caller, not by
-    the prefilter, and a real run is still found behind it."""
-    path = tmp_path / "h.jsonl"
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"ts": "2026-07-26T00:00:01", "service": "A",
-                             "to": "Running", "note": 'the word "run" here'})
-                 + "\n")
-        fh.write(json.dumps({"ts": "2026-07-26T00:00:02", "run": "stack",
-                             "name": "morning", "outcome": "ok",
-                             "seconds": 2}) + "\n")
+def test_a_missing_store_is_not_an_error(tmp_path):
+    assert history.read(path=str(tmp_path / "nope.db")) == []
+    assert history.runs(path=str(tmp_path / "nope.db")) == []
 
-    got = history.runs(path=str(path), limit=10)
 
-    assert [r["name"] for r in got] == ["morning"]
+def test_a_corrupt_store_is_set_aside_rather_than_losing_the_app(tmp_path):
+    """A history that cannot be opened must not stop the app, and must not be
+    deleted either — damaged or not, it is the customer's evidence."""
+    path = tmp_path / "h.db"
+    _seed(path, 5)
+    db.close(str(path))
+    with open(path, "r+b") as fh:           # scribble over the header
+        fh.seek(0)
+        fh.write(b"this is not a database at all")
+
+    assert db.integrity(str(path)) != "ok"
+    moved = db.set_aside(str(path))
+
+    assert moved and pathlib.Path(moved).exists(), "the damaged file was lost"
+    assert not path.exists()
+    history.record_action("A", "start", "panel", path=str(path))
+    assert len(history.read(path=str(path))) == 1
+
+
+def test_the_row_ceiling_keeps_the_newest(tmp_path, monkeypatch):
+    path = tmp_path / "h.db"
+    monkeypatch.setattr(history, "MAX_ROWS", 10)
+    _seed(path, 25)
+
+    dropped = history.trim(3650, str(path))     # retention wide open
+
+    rows = history.read(path=str(path), limit=100)
+    assert dropped == 15 and len(rows) == 10
+    assert rows[0]["note"] == "24", "kept the wrong end of the history"
+
+
+def test_two_connections_can_read_while_one_writes(tmp_path):
+    """WAL, and the reason for it: the agent will write while the panel reads."""
+    import sqlite3
+    path = tmp_path / "h.db"
+    _seed(path, 3)
+    reader = sqlite3.connect(str(path))
+    try:
+        history.record_action("A", "restart", "panel", path=str(path))
+        # A second, independent connection sees the committed row without having
+        # been blocked by the write.
+        count = reader.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        assert count == 4
+        assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        reader.close()

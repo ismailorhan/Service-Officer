@@ -101,3 +101,48 @@ def test_the_flyout_and_the_panel_reach_the_same_actions(application):
     application.do_bulk = lambda *a, **k: bulk.append(a)
     application.flyout.bulk_requested.emit("restart", [("AppEngine", "")])
     assert bulk == [("restart", [("AppEngine", "")])]
+
+
+# -- the store is made usable before anything writes to it -------------------
+def test_startup_imports_an_older_installs_jsonl(tmp_path, monkeypatch):
+    import json
+
+    import app as app_mod
+    from core import db, history
+
+    store = tmp_path / "history.db"
+    legacy = tmp_path / "history.jsonl"
+    legacy.write_text("\n".join(json.dumps(r) for r in (
+        {"ts": "2026-07-20T06:00:00+00:00", "service": "AppEngine",
+         "to": "Running", "source": "scm"},
+        {"ts": "2026-07-20T06:05:00+00:00", "service": "AppEngine",
+         "action": "restart", "source": "panel"},
+    )) + "\n", encoding="utf-8")
+    monkeypatch.setattr(history, "HISTORY_PATH", str(store))
+    monkeypatch.setattr(history, "LEGACY_JSONL", str(legacy))
+
+    app_mod.prepare_history()
+
+    rows = history.read(path=str(store))
+    assert [r.get("action") or r.get("to") for r in rows] == ["restart", "Running"]
+    assert not legacy.exists(), "the source was left where it would import twice"
+    assert (tmp_path / "history.jsonl.migrated").exists(), "evidence was deleted"
+    db.close(str(store))
+
+
+def test_startup_survives_a_corrupt_store(tmp_path, monkeypatch):
+    """A history that cannot be opened must cost the history, not the app."""
+    import app as app_mod
+    from core import db, history
+
+    store = tmp_path / "history.db"
+    store.write_bytes(b"not a database, not even close")
+    monkeypatch.setattr(history, "HISTORY_PATH", str(store))
+    monkeypatch.setattr(history, "LEGACY_JSONL", str(tmp_path / "absent.jsonl"))
+
+    app_mod.prepare_history()
+
+    assert list(tmp_path.glob("history.db.corrupt*")), "the damaged file vanished"
+    history.record_action("A", "start", "panel", path=str(store))
+    assert len(history.read(path=str(store))) == 1
+    db.close(str(store))

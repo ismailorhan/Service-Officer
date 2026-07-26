@@ -55,7 +55,7 @@ def test_stack_visibility_round_trips(tmp_path):
 
 # ── executions ─────────────────────────────────────────────────────────────
 def test_runs_are_recorded_with_outcome_and_duration(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     history.record_run("stack", "SAP B1", "success", seconds=31.4,
                        detail="2 steps", source=st.SRC_STACK, path=p)
     history.record_run("trigger", "nightly", "skipped",
@@ -69,7 +69,7 @@ def test_runs_are_recorded_with_outcome_and_duration(tmp_path):
 
 
 def test_runs_show_up_in_the_timeline_with_a_readable_source(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     history.record_run("trigger", "nightly", "failed", seconds=5,
                        detail="could not start", source=st.SRC_SCHEDULE, path=p)
     row = next(r for r in history.query(service_names=[], path=p)
@@ -81,7 +81,7 @@ def test_runs_show_up_in_the_timeline_with_a_readable_source(tmp_path):
 
 
 def test_a_skipped_run_is_a_warning_not_an_error(tmp_path):
-    p = str(tmp_path / "h.jsonl")
+    p = str(tmp_path / "h.db")
     history.record_run("trigger", "t", "skipped", source=st.SRC_SCHEDULE, path=p)
     row = next(r for r in history.query(service_names=[], path=p)
                if r["kind"] == "run")

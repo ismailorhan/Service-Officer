@@ -45,7 +45,7 @@ class ImmediateTimer:
 
 def wire(tmp_path, cfg):
     """Mirror app.py's wiring: history + watchdog on one store."""
-    hist = str(tmp_path / "history.jsonl")
+    hist = str(tmp_path / "history.db")
     store = st.Store()
     control = FakeControl()
     history.attach(store, lambda: cfg.history.enabled, path=hist)

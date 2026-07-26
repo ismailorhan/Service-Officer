@@ -1,30 +1,34 @@
-"""State-change history.
+"""State-change history: what happened, and what caused it.
 
-Append-only JSON Lines next to the config. One line per change, with where the
-change came from, so a timeline reads as a story: crashed → watchdog attempt →
-running again. That is what gets pasted into a customer's ticket, and it is the
-only way to notice a service that keeps dying quietly.
+One immutable row per change, with where the change came from, so a timeline
+reads as a story — crashed → watchdog attempt → running again. That is what gets
+pasted into a customer's ticket, and it is the only way to notice a service that
+keeps dying quietly.
 
-JSON Lines rather than a database: appending is a single write with no schema to
-migrate, a half-written last line costs one event, and the file can be read with
-any text editor on a server where nothing is installed.
+The rows live in SQLite (`core/db.py` says why, and it is not "row counts"). This
+module keeps the shape the rest of the app talks in: dictionaries that look the
+way they did when this was a JSON Lines file, so nothing outside had to learn
+about columns. Timestamps are UTC — see `core/clock.py`.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import threading
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from . import clock
 from . import config as cfg_mod
+from . import db
 from . import state as st
 
-HISTORY_PATH = os.path.join(cfg_mod.APP_DIR, "history.jsonl")
-MAX_BYTES = 5 * 1024 * 1024      # keep it well-behaved on a customer server
-
-_lock = threading.Lock()
+HISTORY_PATH = os.path.join(cfg_mod.APP_DIR, "history.db")
+#: What this used to be. Imported once, then set aside — see migrate_jsonl().
+LEGACY_JSONL = os.path.join(cfg_mod.APP_DIR, "history.jsonl")
+#: A hard ceiling, so a chatty server cannot fill a disk between retention runs.
+#: Rows, not bytes, because rows are what a retention policy is about.
+MAX_ROWS = 250_000
 
 #: Why the last write failed, if one did. Losing history must not take the app
 #: down — but it must not be invisible either. An empty timeline that turns out to
@@ -35,6 +39,13 @@ _reported = False
 
 
 def last_error() -> str:
+    """Why the last read or write failed, if one did.
+
+    Only this module's own last outcome — not whatever `db` remembers about the
+    default path. Mixing the two meant a successful write to one store could not
+    clear an error left by another, so the panel would keep showing a stale
+    complaint about a file nobody was using.
+    """
     return _last_error
 
 
@@ -47,16 +58,159 @@ def _write_failed(where: str, exc: Exception) -> None:
         applog.get("history").warning("cannot write history — %s", _last_error)
 
 
+def _read_failed(exc: Exception) -> None:
+    """A failed read is reported the same way, because an empty History page and
+    a broken database look identical on screen otherwise."""
+    global _last_error
+    _last_error = f"{type(exc).__name__}: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Between a record and a row
+# ---------------------------------------------------------------------------
+#: Which key in a record says what kind of row it is. Order matters: a run has no
+#: service, a health row has no action.
+_KINDS = (("run", "run"), ("health", "health"), ("action", "action"))
+
+
+def _to_row(rec: dict) -> tuple:
+    """A record dict as the columns of `events`, in db.COLUMNS order."""
+    kind = next((k for key, k in _KINDS if rec.get(key)), "state")
+    extra = json.dumps(rec["extra"]) if rec.get("extra") else None
+    if kind == "run":
+        # A run's name goes in `service`: it is what the timeline shows in that
+        # column, and it keeps one index serving both.
+        return (rec.get("ts"), "", rec.get("name", ""), "run", rec.get("run"),
+                None, None, rec.get("source"), rec.get("outcome"), None,
+                rec.get("seconds"), rec.get("detail"), extra)
+    event = rec.get("action") if kind == "action" else None
+    state = rec.get("health") if kind == "health" else rec.get("to")
+    detail = rec.get("detail") if kind == "health" else rec.get("note")
+    return (rec.get("ts"), rec.get("machine", "") or "", rec.get("service", ""),
+            kind, event, state, rec.get("from"), rec.get("source"), None,
+            rec.get("exit_code"), None, detail, extra)
+
+
+def _to_record(row) -> dict:
+    """A row as the record dict the rest of the app reads.
+
+    Deliberately the old JSON Lines shape, keys omitted when empty exactly as
+    they were: `query()` decides what a row *is* by which keys are present, so an
+    always-present "action": None would quietly turn every state change into an
+    action.
+    """
+    kind = row["kind"]
+    out = {"ts": row["ts"], "source": row["source"]}
+    if kind == "run":
+        out.update({"run": row["event"], "name": row["service"],
+                    "outcome": row["outcome"],
+                    "seconds": row["seconds"] or 0,
+                    "detail": row["detail"] or ""})
+        return out
+    out["service"] = row["service"]
+    out["machine"] = row["machine"] or ""
+    if kind == "health":
+        out["health"] = row["state"]
+        out["detail"] = row["detail"] or ""
+    elif kind == "action":
+        out["action"] = row["event"]
+        if row["detail"]:
+            out["note"] = row["detail"]
+    else:
+        out["from"] = row["from_state"]
+        out["to"] = row["state"]
+        if row["exit_code"]:
+            out["exit_code"] = row["exit_code"]
+        if row["detail"]:
+            out["note"] = row["detail"]
+    if row["extra"]:
+        try:
+            out["extra"] = json.loads(row["extra"])
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
 def _append(line: dict, path: str) -> None:
     """One place that writes, so one place reports when it can't."""
     global _last_error
+    conn = db.connect(path)
+    if conn is None:
+        _write_failed(path, RuntimeError(db.last_error(path) or "cannot open"))
+        return
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with _lock, open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        placeholders = ", ".join("?" * len(db.COLUMNS))
+        with db._lock, conn:
+            conn.execute(f"INSERT INTO events ({', '.join(db.COLUMNS)}) "
+                         f"VALUES ({placeholders})", _to_row(line))
         _last_error = ""
-    except OSError as exc:
+    except sqlite3.Error as exc:
         _write_failed(path, exc)
+
+
+def import_records(records, path: str = None) -> int:
+    """Insert records that already have their own timestamps.
+
+    The one way rows enter the store without being generated now: the JSONL
+    migration below, and tests that need a history at particular times. Sharing
+    it means the migration path is exercised by the suite rather than only by a
+    customer's first upgrade.
+    """
+    conn = db.connect(path or HISTORY_PATH)
+    if conn is None:
+        return 0
+    rows = [_to_row(rec) for rec in records if rec.get("ts")]
+    if not rows:
+        return 0
+    placeholders = ", ".join("?" * len(db.COLUMNS))
+    try:
+        with db._lock, conn:
+            conn.executemany(f"INSERT INTO events ({', '.join(db.COLUMNS)}) "
+                             f"VALUES ({placeholders})", rows)
+    except sqlite3.Error as exc:
+        _write_failed(path or HISTORY_PATH, exc)
+        return 0
+    return len(rows)
+
+
+def migrate_jsonl(path: str = None, source: str = None) -> int:
+    """Bring an older install's history into the database, once.
+
+    Only into an empty table, so a second run cannot double every row, and the
+    source is renamed rather than deleted — it is the customer's evidence, and if
+    this went wrong they should still have it.
+    """
+    path = path or HISTORY_PATH
+    source = source or LEGACY_JSONL
+    if not os.path.exists(source):
+        return 0
+    conn = db.connect(path)
+    if conn is None:
+        return 0
+    with db._lock:
+        if conn.execute("SELECT 1 FROM events LIMIT 1").fetchone():
+            return 0
+    records = []
+    try:
+        with open(source, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    records.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    continue          # one torn line is not worth the rest
+    except OSError as exc:
+        _write_failed(source, exc)
+        return 0
+    brought = import_records(records, path=path)
+    if brought:
+        try:
+            os.replace(source, source + ".migrated")
+        except OSError:
+            pass                      # imported is what matters; the rename isn't
+    return brought
 
 
 def path() -> str:
@@ -129,139 +283,90 @@ def record_run(kind: str, name: str, outcome: str, seconds: float = 0.0,
 
 def runs(path: str = None, limit: int = 200, kind: str = None,
          name: str = None) -> list:
-    """Recent executions, newest first — what the Schedule page lists."""
-    out = []
-    for rec in newest_first(path, must_contain=b'"run"'):
-        if not rec.get("run"):
-            continue
-        if kind and rec["run"] != kind:
-            continue
-        if name and rec.get("name") != name:
-            continue
-        out.append(rec)
-        if len(out) >= limit:
-            break
-    return out
+    """Recent executions, newest first — what the Schedule page lists.
 
-
-#: How much of the file to pull in at a time when reading backwards. Large enough
-#: that a normal query is one seek and one read; small enough to be worth it.
-_CHUNK = 64 * 1024
-
-
-def _parse(raw: bytes):
-    """One record, or None if the line isn't one. Never raises."""
-    raw = raw.strip()
-    if not raw:
-        return None
-    try:
-        return json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-
-
-def newest_first(path: str = None, must_contain: bytes = b""):
-    """Yield records from the end of the file towards the start.
-
-    The file is append-only and chronological, so the rows anyone wants are the
-    last bytes of it. Reading forwards meant showing 200 rows cost parsing every
-    line ever written — 54 ms for 20,000 rows, and linear in a file that only
-    grows. Reading backwards makes a query cost what it displays.
-
-    A generator on purpose: the caller stops when it has enough, and never has to
-    say how much "enough" might be in raw lines.
-
-    `must_contain` is a cheap pre-filter for callers that want one kind of record:
-    a line without those bytes cannot be one, so it is skipped without being
-    parsed. It only ever *saves* work — a coincidental match is parsed and then
-    discarded by the caller's own test, exactly as before. This matters because a
-    machine with no stacks has no run records at all, so asking for the last few
-    runs would otherwise parse every state change ever recorded.
+    A machine with no stacks has no run rows at all, and the index means asking
+    costs nothing rather than reading everything to find nothing.
     """
-    path = path or HISTORY_PATH
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            pos = f.tell()
-            carry = b""              # a line split across two chunks
-            while pos > 0:
-                step = min(_CHUNK, pos)
-                pos -= step
-                f.seek(pos)
-                lines = (f.read(step) + carry).split(b"\n")
-                carry = lines.pop(0)     # may be a fragment; the next read completes it
-                for raw in reversed(lines):
-                    if must_contain and must_contain not in raw:
-                        continue
-                    rec = _parse(raw)
-                    if rec is not None:
-                        yield rec
-            if not must_contain or must_contain in carry:
-                rec = _parse(carry)
-                if rec is not None:
-                    yield rec
-    except OSError:
-        return
+    where = ["kind = 'run'"]
+    args: list = []
+    if kind:
+        where.append("event = ?")
+        args.append(kind)
+    if name:
+        where.append("service = ?")
+        args.append(name)
+    return _select(where, args, limit, path)
 
 
 def read(path: str = None, limit: int = 500, service: str = None) -> list:
-    """Most recent first. Malformed lines are skipped, not fatal."""
-    out = []
-    for rec in newest_first(path):
-        if service and rec.get("service") != service:
-            continue
-        out.append(rec)
-        if len(out) >= limit:
-            break
-    return out
+    """Most recent first."""
+    where, args = [], []
+    if service:
+        where.append("service = ?")
+        args.append(service)
+    return _select(where, args, limit, path)
+
+
+def _select(where: list, args: list, limit: int, path: str = None) -> list:
+    """Newest rows first, as the record dicts the rest of the app expects.
+
+    Ordered by `id`, not by `ts`: id is the order things were written, which is
+    what "newest" means, and it needs no index of its own.
+    """
+    conn = db.connect(path or HISTORY_PATH)
+    if conn is None:
+        return []
+    sql = f"SELECT * FROM events{_clause(where)} ORDER BY id DESC LIMIT ?"
+    try:
+        with db._lock:
+            rows = conn.execute(sql, (*args, int(limit))).fetchall()
+    except sqlite3.Error as exc:
+        _read_failed(exc)
+        return []
+    return [_to_record(row) for row in rows]
+
+
+def _clause(where: list) -> str:
+    return f" WHERE {' AND '.join(where)}" if where else ""
 
 
 def trim(retention_days: int, path: str = None) -> int:
-    """Drop entries older than the retention window, and hard-cap the file.
-    Returns how many were removed."""
+    """Drop rows past the retention window, and hard-cap how many are kept.
+    Returns how many were removed.
+
+    Two DELETEs, where this used to rewrite the whole file through a temporary
+    copy. That rewrite is exactly what could not survive a second process: an
+    append landing mid-trim went into the file being replaced. Deleting rows never
+    moves the file, so a writer and a trimmer can be different programs.
+    """
     path = path or HISTORY_PATH
-    if not os.path.exists(path):
+    conn = db.connect(path)
+    if conn is None:
         return 0
-    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, retention_days))
-    kept, dropped = [], 0
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(days=max(1, retention_days))).isoformat(timespec="seconds")
+    removed = 0
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
-                    dropped += 1
-                    continue
-                ts = clock.parse(rec.get("ts"))
-                if ts is None:
-                    dropped += 1
-                    continue
-                if ts >= cutoff:
-                    kept.append(raw)
-                else:
-                    dropped += 1
-    except OSError:
+        with db._lock, conn:
+            removed += conn.execute("DELETE FROM events WHERE ts < ?",
+                                    (cutoff,)).rowcount
+            # The ceiling, newest kept. One id lookup and a range delete, rather
+            # than counting rows.
+            edge = conn.execute("SELECT id FROM events ORDER BY id DESC "
+                                "LIMIT 1 OFFSET ?", (MAX_ROWS,)).fetchone()
+            if edge is not None:
+                removed += conn.execute("DELETE FROM events WHERE id <= ?",
+                                        (edge["id"],)).rowcount
+        if removed:
+            # Hand the freed pages back a chunk at a time. A full VACUUM would
+            # rewrite the file — the very thing this change exists to avoid.
+            with db._lock:
+                conn.execute("PRAGMA incremental_vacuum")
+    except sqlite3.Error as exc:
+        _read_failed(exc)
         return 0
-
-    # Size cap, newest kept.
-    while kept and sum(len(k) + 1 for k in kept) > MAX_BYTES:
-        kept.pop(0)
-        dropped += 1
-
-    if not dropped:
-        return 0
-    try:
-        tmp = path + ".tmp"
-        with _lock:
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write("\n".join(kept) + ("\n" if kept else ""))
-            os.replace(tmp, path)
-    except OSError:
-        return 0
-    return dropped
+    return max(0, removed)
 
 
 # ---------------------------------------------------------------------------
@@ -282,15 +387,6 @@ ACTION_TEXT = {"start": "start requested", "stop": "stop requested",
                "run stack": "stack run requested"}
 
 
-def _within(ts: str, since) -> bool:
-    if since is None:
-        return True
-    when = clock.parse(ts)
-    # A row we cannot date is kept: it is better seen and questioned than
-    # silently dropped from a timeline someone is using as evidence.
-    return True if when is None else when >= since
-
-
 #: Transitional states. Every one is written to the log, but a restart producing
 #: "Stopping", "Stopped", "Starting", "Running" is four rows saying one thing, so
 #: the halfway states are held back unless full detail is asked for.
@@ -308,33 +404,41 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
 
     full=False leaves out the halfway states, so a restart reads as "restart
     requested" then "Running" instead of four rows. Nothing is dropped from the
-    file — this only decides what is worth looking at.
+    store — this only decides what is worth looking at.
     """
-    since = None
+    where: list = []
+    args: list = []
     if hours:
         since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        where.append("ts >= ?")
+        args.append(since.isoformat(timespec="seconds"))
+    if service:
+        # A run is about a stack or a trigger, not about one service, so filtering
+        # by service excludes them rather than showing unrelated runs.
+        where.append("service = ? AND kind != 'run'")
+        args.append(service)
+    if not full:
+        # The halfway states, left out in SQL rather than after the fact, so the
+        # limit counts rows that will actually be shown.
+        marks = ", ".join("?" * len(PENDING_STATES))
+        where.append(f"NOT (kind = 'state' AND state IN ({marks})"
+                     f" AND exit_code IS NULL)")
+        args.extend(PENDING_STATES)
 
     label_of = dict(zip(service_names or [], labels or []))
     rows = []
 
-    # Newest first, and we stop as soon as we have a table's worth. The sort at
-    # the end still decides the order, because the Windows event log is merged in
-    # with timestamps of its own.
-    for rec in newest_first(path):
-        if len(rows) >= limit:
-            break
-        if service and rec.get("service") != service:
-            continue
-        if not _within(str(rec.get("ts", "")), since):
-            continue
+    # Newest first, limited in the query. Taking the newest `limit` from each
+    # source and then merging still gives the newest `limit` overall, which is why
+    # the Windows event log can be limited separately below.
+    for rec in _select(where, args, limit, path):
         name = rec.get("service", "")
         common = {"ts": rec.get("ts", ""), "service": name,
                   "label": label_of.get(name, name), "level": ""}
         if rec.get("run"):
             # A whole run — shown in the timeline too, so a stack's outcome sits
-            # among the state changes it caused.
-            if service:
-                continue
+            # among the state changes it caused. (A service filter has already
+            # excluded these in SQL.)
             level = {"failed": "Error", "skipped": "Warning"}.get(rec["outcome"], "")
             rows.append({**common, "kind": "run", "service": rec.get("name", ""),
                          "label": rec.get("name", ""),
@@ -363,9 +467,7 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
                          "source": SOURCE_TEXT.get(rec.get("source", ""),
                                                    rec.get("source", ""))})
         else:
-            to = rec.get("to", "")
-            if not full and to in PENDING_STATES and not rec.get("exit_code"):
-                continue          # halfway there says nothing on its own
+            to = rec.get("to", "")      # the halfway states are excluded in SQL
             detail = []
             if rec.get("from"):
                 detail.append(f"was {rec['from']}")

@@ -9,10 +9,10 @@ from core import state as st
 
 
 def test_what_we_write_down_is_utc(tmp_path):
-    path = str(tmp_path / "h.jsonl")
+    path = str(tmp_path / "h.db")
     history.record_action("AppEngine", "restart", st.SRC_PANEL, path=path)
 
-    row = json.loads(open(path, encoding="utf-8").read().strip())
+    row = history.read(path=path, limit=1)[0]
     written = datetime.fromisoformat(row["ts"])
 
     assert written.utcoffset() == timedelta(0), f"not UTC: {row['ts']}"
@@ -55,13 +55,13 @@ def test_a_mixed_file_is_still_in_time_order(tmp_path):
     two. As text, though, "09:00…+03:00" sorts above "07:00…+00:00", which is how
     a string sort put the older row first.
     """
-    path = str(tmp_path / "h.jsonl")
-    with open(path, "w", encoding="utf-8") as fh:
-        for row in ({"ts": "2026-07-26T09:00:00+03:00", "service": "B",
-                     "to": "Running", "source": st.SRC_SCM},
-                    {"ts": "2026-07-26T07:00:00+00:00", "service": "A",
-                     "to": "Running", "source": st.SRC_SCM}):
-            fh.write(json.dumps(row) + "\n")
+    path = str(tmp_path / "h.db")
+    history.import_records([
+        {"ts": "2026-07-26T09:00:00+03:00", "service": "B", "to": "Running",
+         "source": st.SRC_SCM},
+        {"ts": "2026-07-26T07:00:00+00:00", "service": "A", "to": "Running",
+         "source": st.SRC_SCM},
+    ], path=path)
 
     rows = history.query(service_names=["A", "B"], path=path)
 
@@ -73,11 +73,10 @@ def test_a_mixed_file_is_still_in_time_order(tmp_path):
 
 
 def test_the_exported_time_is_local_and_excel_shaped(tmp_path):
-    path = str(tmp_path / "h.jsonl")
+    path = str(tmp_path / "h.db")
     stored = "2026-07-26T08:23:39+00:00"
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"ts": stored, "service": "A", "to": "Running",
-                             "source": st.SRC_SCM}) + "\n")
+    history.import_records([{"ts": stored, "service": "A", "to": "Running",
+                            "source": st.SRC_SCM}], path=path)
     rows = history.query(service_names=["A"], path=path)
     dest = str(tmp_path / "out.csv")
 
