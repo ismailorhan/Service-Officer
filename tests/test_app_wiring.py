@@ -60,14 +60,14 @@ def test_a_health_verdict_repaints_the_tray_icon(application, qtbot=None):
     not an SCM event — so the icon stayed green while a service was dead."""
     application.tray.apply_state()
     green = _icon_pixels(application)
-    assert application.tray._anything_unhealthy() is False
+    assert application.tray._anything_unsettled() is False
 
     application.health_signals.verdict.emit(
         "AppEngine", "", health.UNHEALTHY,
         "failed: something answers on CTL052:54002")
 
     assert application.store.health_of("AppEngine") == "unhealthy"
-    assert application.tray._anything_unhealthy() is True
+    assert application.tray._anything_unsettled() is True
     assert _icon_pixels(application) != green, "the icon did not change"
 
     application.health_signals.verdict.emit("AppEngine", "", health.HEALTHY, "ok")
@@ -222,3 +222,72 @@ def test_no_grace_means_no_warm_up_state(application):
 
     assert application.store.health_of("webclient.service", "hanadev") == \
         health.UNKNOWN
+
+
+def test_every_surface_says_the_same_thing_about_a_warming_service(application):
+    """The row said "Starting...", the hover card said "Running" and the tray icon
+    stayed green — three surfaces, three answers, one service. They ask one
+    function now, and this test looks at all three."""
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    application.flyout.rebuild()
+
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+    application.flyout.apply_states()
+    application.hover._render()
+    application.tray.apply_state()
+
+    # the list
+    row = application.flyout._rows[("hanadev", "webclient.service")]
+    assert row.chip.text() == "Starting\u2026"
+    # the hover card
+    from PySide6.QtWidgets import QLabel
+    said = [w.text() for w in application.hover.findChildren(QLabel)
+            if w.property("role") == "cardState"]
+    assert said == ["starting\u2026"], said
+    # the tray: not green, and turning
+    assert application.tray._anything_unsettled() is True
+    assert application.tray._should_spin() is True
+
+
+def test_the_tray_settles_once_the_service_has_answered(application):
+    """And the gear has to stop: a spinner that never stops says nothing."""
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+    assert application.tray._should_spin() is True
+
+    # what the monitor does when its first check passes
+    application.store.set_health("webclient.service", health.HEALTHY,
+                                 "HTTP 401 as expected", machine="hanadev")
+
+    assert application.tray._should_spin() is False
+    assert application.tray._anything_unsettled() is False
+
+
+def test_a_service_that_is_not_answering_is_red_everywhere(application):
+    """The case that came before this one, and must keep working."""
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    application.flyout.rebuild()
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+    application.store.set_health("webclient.service", health.UNHEALTHY,
+                                 "HTTP 500", machine="hanadev")
+
+    application.flyout.apply_states()
+    application.hover._render()
+
+    from PySide6.QtWidgets import QLabel
+    row = application.flyout._rows[("hanadev", "webclient.service")]
+    assert row.chip.text() == "Not responding"
+    said = [(w.text(), w.property("bad"))
+            for w in application.hover.findChildren(QLabel)
+            if w.property("role") == "cardState"]
+    assert said == [("not responding", "true")], said
+    assert application.tray._anything_unsettled() is True

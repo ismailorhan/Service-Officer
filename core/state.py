@@ -47,6 +47,32 @@ def category(status: str) -> str:
     return "none"
 
 
+#: Health verdicts, named here because three separate surfaces have to agree on
+#: what they mean, and two of them once did not know one existed.
+HEALTHY, UNHEALTHY, STARTING = "healthy", "unhealthy", "starting"
+
+
+def effective(status: str, health: str = "unknown") -> tuple:
+    """(label, category) for a service, once health is taken into account.
+
+    "Running" is only the truth when something has vouched for it. A service that
+    is running and failing its checks is not responding; one still inside its
+    grace window has not been asked yet. Drawn green, both are lies.
+
+    Here because the flyout, the hover card and the tray icon each worked this out
+    for themselves — so when a fourth verdict appeared, only the flyout learned
+    about it. The row said "Starting...", the card said "Running" and the icon
+    stayed green, at the same moment, about the same service.
+    """
+    cat = category(status)
+    if cat == "running":
+        if health == UNHEALTHY:
+            return "Not responding", "stopped"
+        if health == STARTING:
+            return "Starting\u2026", "pending"
+    return status, cat
+
+
 def is_pending(status: str) -> bool:
     return status in PENDING
 

@@ -100,29 +100,21 @@ class ServiceRow(QWidget):
             self.setToolTip("This service is disabled in Windows — enable it in "
                             "services.msc before it can start.")
             return
-        # Started, but nothing has vouched for it yet. Neither "Running" nor "Not
-        # responding" is true in that window, and it is a long window: a service
-        # whose start script returns in a second can take half a minute to answer.
-        if health == "starting" and not busy_label and cat == "running":
-            self.chip.set_state("Starting…", "pending")
-            self.setToolTip(health_detail or "It has started; its health checks "
-                                             "have not passed yet.")
-            self._set_buttons(cat, busy_label)
-            return
-        # Running but not answering is the failure the service list cannot show.
-        # It gets the chip, because "Running" next to a dead service is a lie —
-        # and the reason goes in the tooltip, where the next question is answered.
-        if health == "unhealthy" and not busy_label and cat == "running":
-            self.chip.set_state("Not responding", "stopped")
+        # What it effectively is: st.effective() owns that judgement, so the row,
+        # the hover card and the tray icon cannot disagree about it.
+        label, shown = st.effective(status, health)
+        if busy_label:
+            label, shown = busy_label, "pending"
+        if shown == "stopped" and cat == "running":
             self.setToolTip("The service is running, but its health checks are "
                             "failing:\n" + (health_detail or "no detail"))
-            self._set_buttons(cat, busy_label)
-            return
-
-        self.setToolTip(f"Health checks pass — {health_detail}"
-                        if health == "healthy" and health_detail else "")
-        self.chip.set_state(busy_label or status,
-                            "pending" if busy_label else cat)
+        elif shown == "pending" and cat == "running" and not busy_label:
+            self.setToolTip(health_detail or "It has started; its health checks "
+                                             "have not passed yet.")
+        else:
+            self.setToolTip(f"Health checks pass — {health_detail}"
+                            if health == st.HEALTHY and health_detail else "")
+        self.chip.set_state(label, shown)
         self._set_buttons(cat, busy_label)
 
     def _set_buttons(self, cat: str, busy_label: str) -> None:

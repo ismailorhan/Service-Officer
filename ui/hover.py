@@ -137,10 +137,13 @@ class HoverCard(QWidget):
             name.setProperty("role", "cardName")
             rl.addWidget(name)
             rl.addStretch(1)
-            # Running and not answering says "Running" here too unless we say
-            # otherwise, and this card is what people glance at.
-            sick = self._store.health_of(svc.name, svc.machine) == "unhealthy"
-            state = QLabel("not responding" if sick else status)
+            # This card is what people glance at, so it has to say what the list
+            # says. It used to read "Running" beside a row reading "Starting...",
+            # because it decided for itself and knew only one verdict.
+            health = self._store.health_of(svc.name, svc.machine)
+            label, shown = st.effective(status, health)
+            sick = shown == "stopped" and st.category(status) == "running"
+            state = QLabel(label if label == status else label.lower())
             state.setProperty("role", "cardState")
             state.setProperty("bad", "true" if sick else "false")
             rl.addWidget(state)

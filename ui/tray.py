@@ -116,13 +116,22 @@ class Tray(QObject):
         # A service that is running and not answering left the icon green, which
         # is the one case the icon most needs to warn about — all-running and
         # all-fine are not the same thing.
-        if colour == "green" and self._anything_unhealthy():
+        if colour == "green" and self._anything_unsettled():
             colour = "yellow"
         self.icon.setIcon(icons.base_icon(colour))
 
-    def _anything_unhealthy(self) -> bool:
+    def _anything_unsettled(self) -> bool:
+        """Anything running that nobody has vouched for — failing its checks, or
+        still inside its grace window. All-running and all-fine are not the same
+        thing, and a service that has not answered yet is not fine yet."""
+        return self._any_health_in((st.UNHEALTHY, st.STARTING))
+
+    def _anything_starting(self) -> bool:
+        return self._any_health_in((st.STARTING,))
+
+    def _any_health_in(self, verdicts) -> bool:
         try:
-            return any(self._store.health_of(s.name, s.machine) == "unhealthy"
+            return any(self._store.health_of(s.name, s.machine) in verdicts
                        for s in self._config().services)
         except Exception:
             return False
@@ -135,6 +144,11 @@ class Tray(QObject):
         icon spinning forever with nothing happening.
         """
         if self._busy > 0:
+            return True
+        # A service warming up is as much "in flight" as one mid-transition, and
+        # the gear is how the tray says "not settled yet". The grace window bounds
+        # it, so this cannot spin forever.
+        if self._anything_starting():
             return True
         if not self._store.any_pending():
             return False

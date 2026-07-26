@@ -1180,14 +1180,14 @@ def test_the_tray_icon_warns_when_something_is_running_but_dead(qapp, sample):
     tray.apply_state()                              # all running, all answering
 
     store.set_health("AppEngine", "unhealthy", "port refused")
-    assert tray._anything_unhealthy() is True
+    assert tray._anything_unsettled() is True
     # The count still says green; the icon must not.
     assert icons.colour_for(*store.counts()) == "green"
     tray.apply_state()
     assert not tray.icon.icon().isNull()
 
     store.set_health("AppEngine", "healthy", "ok")
-    assert tray._anything_unhealthy() is False
+    assert tray._anything_unsettled() is False
 
 
 def test_the_hover_card_says_not_responding(qapp, sample):
