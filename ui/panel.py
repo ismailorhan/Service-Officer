@@ -1435,7 +1435,10 @@ class StackDetail(_Page):
             num = _label(str(i))
             num.setFixedSize(24, 24)
             num.setAlignment(Qt.AlignCenter)
-            num.setStyleSheet(f"background:#232323; border:1px solid {theme.LINE2};"
+            # theme.BG_RAISE, not a fixed dark grey: the step number's disc was
+            # near-black on a white page in light mode.
+            num.setStyleSheet(f"background:{theme.BG_RAISE};"
+                              f"border:1px solid {theme.LINE2};"
                               f"border-radius:12px; color:{theme.FG3};"
                               f"font-family:'{theme.MONO}'; font-size:8.5pt;")
             rl.addWidget(num)

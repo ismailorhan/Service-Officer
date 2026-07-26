@@ -28,8 +28,10 @@ class HoverCard(QWidget):
         self._store = store
         self._rect = None
 
+        # theme.BORDER, not a hard-coded grey: the same dark border on a white
+        # card in light mode was the one colour in the app that ignored the theme.
         self.setStyleSheet(f"QWidget#card {{ background:{theme.BG}; "
-                           f"border:1px solid #3a3a3a; }}")
+                           f"border:1px solid {theme.BORDER}; }}")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         card = QWidget()
