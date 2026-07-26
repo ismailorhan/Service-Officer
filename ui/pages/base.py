@@ -7,7 +7,9 @@ a number sit inside a sentence.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import threading
+
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QDoubleSpinBox, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMessageBox, QScrollArea,
@@ -86,6 +88,9 @@ class ServicePicker(QDialog):
     """Choose one or more installed services. Multi-select is the point: adding
     a SAP stack means adding five services, not repeating a dialog five times."""
 
+    #: the listing, or an empty list and a reason, from the reading thread
+    loaded = Signal(list, str)
+
     def __init__(self, taken, parent=None, machine="", record=None):
         super().__init__(parent)
         self.setWindowTitle("Add services")
@@ -119,6 +124,7 @@ class ServicePicker(QDialog):
 
         self.count = _label("", "hint")
         lay.addWidget(self.count)
+        self.loaded.connect(self._arrived)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -129,12 +135,44 @@ class ServicePicker(QDialog):
         self._load()
 
     def _load(self):
+        """Read the machine's services, off the UI thread when it is another machine.
+
+        Enumerating this computer takes a few milliseconds. Enumerating a remote
+        Windows box took **fifteen seconds** — during which the dialog was blank,
+        unresponsive and titled "Not Responding", because the listing ran on the
+        thread that draws it.
+        """
+        if not self._machine:
+            try:
+                self._all = control.list_all_services(self._machine, self._record)
+            except Exception as exc:
+                QMessageBox.warning(self, "Service Officer", self._why(exc))
+                self._all = []
+            self._populate()
+            return
+        where = self._machine
+        self.count.setText(f"Reading the services on {where}…")
+        self.list.setEnabled(False)
+
+        def work():
+            try:
+                self.loaded.emit(control.list_all_services(where, self._record), "")
+            except Exception as exc:
+                self.loaded.emit([], self._why(exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _arrived(self, found: list, problem: str) -> None:
+        """Back on the UI thread. Guarded, because the dialog may be gone: fifteen
+        seconds is long enough to press Cancel."""
         try:
-            self._all = control.list_all_services(self._machine, self._record)
-        except Exception as exc:
-            QMessageBox.warning(self, "Service Officer", self._why(exc))
-            self._all = []
-        self._populate()
+            self.list.setEnabled(True)
+            if problem:
+                self.count.setText("")
+                QMessageBox.warning(self, "Service Officer", problem)
+            self._all = found
+            self._populate()
+        except RuntimeError:
+            pass
 
     def _why(self, exc) -> str:
         """Say which machine and what to look at.

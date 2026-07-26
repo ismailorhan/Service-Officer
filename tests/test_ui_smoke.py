@@ -1707,6 +1707,22 @@ def test_with_no_services_chosen_the_block_still_runs(qapp):
     assert "sudoers.d" not in text
 
 
+def _settled(qapp, done, seconds: float = 5.0):
+    """Pump the event loop until a reading thread has reported back.
+
+    Another machine is enumerated off the UI thread now, so the answer arrives
+    through a signal rather than before the constructor returns.
+    """
+    import time
+    deadline = time.perf_counter() + seconds
+    while time.perf_counter() < deadline:
+        qapp.processEvents()
+        if done():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def test_the_picker_asks_a_linux_machine_with_systemctl(qapp, monkeypatch):
     """What broke in the real panel: choosing hanadev in Add services… asked the
     Windows service manager and reported "the RPC server is unavailable"."""
@@ -1726,8 +1742,50 @@ def test_the_picker_asks_a_linux_machine_with_systemctl(qapp, monkeypatch):
     machine = cfg_mod.Machine(name="hanadev", kind="linux")
 
     picker = ServicePicker(set(), None, machine="hanadev", record=machine)
+    assert _settled(qapp, lambda: picker.list.count() == 1)
 
     assert asked == {"machine": "hanadev", "kind": "linux"}
+    picker.deleteLater()
+
+
+def test_the_picker_opens_at_once_however_slow_the_machine_is(qapp, monkeypatch):
+    """Measured on a real remote Windows box: listing its services took fifteen
+    seconds, and the dialog was blank and titled "Not Responding" for all of them."""
+    import time
+
+    from ui.pages.base import ServicePicker
+
+    def slow(machine="", record=None):
+        time.sleep(1.5)
+        return [{"name": "B1ServerTools64", "display": "SAP B1 Server Tools",
+                 "status": "Running"}]
+
+    monkeypatch.setattr("ui.pages.base.control.list_all_services", slow)
+
+    started = time.perf_counter()
+    picker = ServicePicker(set(), None, machine="sc-sql",
+                           record=cfg_mod.Machine(name="sc-sql", kind="windows",
+                                                  address="10.77.3.112"))
+    opened = time.perf_counter() - started
+
+    assert opened < 0.5, f"the dialog waited {opened:.1f}s for the machine"
+    assert "Reading the services on sc-sql" in picker.count.text()
+    assert _settled(qapp, lambda: picker.list.count() == 1), "the listing never came"
+    picker.deleteLater()
+
+
+def test_this_computer_is_still_enumerated_straight_away(qapp, monkeypatch):
+    """No thread, no "Reading…": the local service manager answers in milliseconds,
+    and a picker that flickered through a loading state would be worse."""
+    from ui.pages.base import ServicePicker
+
+    monkeypatch.setattr("ui.pages.base.control.list_all_services",
+                        lambda machine="", record=None: [
+                            {"name": "AppEngine", "display": "CompuTec AppEngine",
+                             "status": "Running"}])
+
+    picker = ServicePicker(set(), None, machine="")
+
     assert picker.list.count() == 1
     picker.deleteLater()
 
@@ -1748,10 +1806,12 @@ def test_a_machine_that_does_not_answer_is_explained_not_quoted(qapp,
                         lambda *args, **kw: warned.append(args[2]))
 
     ServicePicker(set(), None, machine="CTL099")
+    assert _settled(qapp, lambda: len(warned) == 1)
     windows_text = warned[-1]
 
     ServicePicker(set(), None, machine="hanadev",
                   record=cfg_mod.Machine(name="hanadev", kind="linux"))
+    assert _settled(qapp, lambda: len(warned) == 2)
     linux_text = warned[-1]
 
     assert "CTL099 did not answer" in windows_text

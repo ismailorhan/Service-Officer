@@ -64,11 +64,15 @@ class ActionSignals(QObject):
     spinning forever after every start/stop because the completion handler that
     clears the busy counter was never called.
     """
-    #: service, machine, action, error, announce errors, part of a bulk run.
+    #: service, machine, action, error, announce errors, part of a bulk run, and
+    #: the status the service ended up in.
     #: The flags travel with the result rather than living on the app: a bulk
     #: action has several of these in flight at once, and a shared attribute
-    #: would be whatever the last caller set.
-    done = Signal(str, str, str, object, bool, bool)
+    #: would be whatever the last caller set. The status travels with it because
+    #: asking for it in the handler meant asking from the thread that paints — on
+    #: another machine that is a network round trip, and the window stops redrawing
+    #: for the length of it.
+    done = Signal(str, str, str, object, bool, bool, str)
 
 
 class Application(QObject):
@@ -220,9 +224,17 @@ class Application(QObject):
                      self.cfg.history.retention_days)
 
     def _poll_start_types(self):
-        """Notice a service being disabled or re-enabled outside this app."""
+        """Notice a service being disabled or re-enabled outside this app.
+
+        Local services only, and on a 30-second timer: reading a start type costs
+        0.2 ms here and a network round trip elsewhere, so including remote ones
+        froze the window every half minute for as long as they took. A remote
+        machine reports its start types with each poll instead — see poller.
+        """
         changed = False
         for svc in self.cfg.services:
+            if svc.machine:
+                continue
             try:
                 found = control.start_type(svc.name, svc.machine)
             except Exception:
@@ -261,8 +273,18 @@ class Application(QObject):
         return self.qt.exec()
 
     def _prime_states(self):
-        """Fill the store before the first paint so nothing shows as Unknown."""
+        """Fill the store before the first paint so nothing shows as Unknown.
+
+        This computer only. Asking another machine here is asking on the thread that
+        paints: the local SCM answers in a fraction of a millisecond, a remote one
+        took fifteen seconds, and a firewalled one forty-two — each of them a window
+        that has stopped redrawing and says "Not Responding". Remote states arrive
+        from the poller, which has a thread for waiting in, within its interval.
+        """
         for svc in self.cfg.services:
+            if svc.machine:
+                self.poller.poll_soon(svc.machine)
+                continue
             try:
                 status = control.query_status(svc.name, svc.machine)
             except Exception:
@@ -411,24 +433,33 @@ class Application(QObject):
                 else:
                     error = getattr(exc, "strerror", None) or str(exc)
                 self.store.clear_expected(name, machine)
-            finally:
-                self.action_signals.done.emit(name, machine, action, error,
-                                              announce_errors, bulk)
+            # Asked here, on this thread, and carried to the handler: it is the same
+            # round trip the action just made, and the handler runs on the UI thread.
+            try:
+                status = control.query_status(name, machine)
+            except Exception:
+                status = ""
+            self.action_signals.done.emit(name, machine, action, error,
+                                          announce_errors, bulk, status)
         threading.Thread(target=work, daemon=True).start()
 
     def _action_done(self, name, machine, action, error, announce=True,
-                     bulk=False):
+                     bulk=False, status=""):
         self.tray.action_finished()
-        try:
-            status = control.query_status(name, machine)
+        # `status` was read on the worker thread. Falling back to asking is for the
+        # tests that call this directly; the running app always brings it along.
+        if not status:
+            try:
+                status = control.query_status(name, machine)
+            except Exception:
+                status = ""
+        if status:
             self.store.update(name, status, machine=machine, source=st.SRC_PANEL)
             # We started it, so we know it just started — even if the status
             # published nothing because it read "Running" before and after.
             if error is None and action in ("start", "restart") \
                     and status == st.RUNNING:
                 self._note_started(name, machine)
-        except Exception:
-            pass
         self._clear_busy(name, machine)
         if self.flyout.isVisible():
             self.flyout.apply_states()
@@ -717,7 +748,12 @@ class Application(QObject):
             self.panel.dashboard.clear_busy(name, machine)
 
     def refresh(self):
+        """Ask again now. This computer directly; other machines through the poller,
+        which is the only thing allowed to wait for them."""
+        self.poller.poll_soon()
         for svc in self.cfg.services:
+            if svc.machine:
+                continue
             try:
                 self.store.update(svc.name, control.query_status(svc.name, svc.machine),
                                   machine=svc.machine)

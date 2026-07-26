@@ -125,6 +125,22 @@ class Poller:
             out.append((machine, services))
         return out
 
+    def poll_soon(self, machine: str = None) -> None:
+        """Ask on the next tick rather than when the interval runs out.
+
+        This is how Refresh reaches another machine. Asking it on the spot is what
+        the button used to do, and the window was frozen for as long as the machine
+        took to answer — measured at fifteen seconds against one remote Windows box,
+        and forty-two against a firewalled one. The poller already has a thread for
+        waiting in.
+        """
+        if machine is None:
+            self._due.clear()
+            self._down.clear()
+        else:
+            self._due.pop(machine or "", None)
+            self._down.pop(machine or "", None)
+
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:

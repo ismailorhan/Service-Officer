@@ -184,6 +184,66 @@ def test_reaching_running_shows_starting_all_the_way_to_the_store(application):
         application.store.health_detail("webclient.service", "hanadev")
 
 
+def _watching_control(monkeypatch):
+    """Record every question asked of a machine, and how long each took."""
+    asked = []
+    monkeypatch.setattr(app_mod.control, "query_status",
+                        lambda name, machine="": asked.append(("status", machine))
+                        or st.RUNNING)
+    monkeypatch.setattr(app_mod.control, "start_type",
+                        lambda name, machine="": asked.append(("start_type", machine))
+                        or "Automatic")
+    return asked
+
+
+def _two_machines():
+    return cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="sc-sql", kind="windows",
+                                  address="10.77.3.112", auth="password",
+                                  username="SC\\ismailorhan")],
+        services=[cfg_mod.Service(name="AppEngine"),
+                  cfg_mod.Service(name="B1ServerTools64", machine="sc-sql")])
+
+
+def test_the_ui_thread_never_asks_another_machine_anything(application, monkeypatch):
+    """The frozen window, measured: enumerating a remote Windows box took fifteen
+    seconds and a firewalled one forty-two, all of it on the thread that paints.
+    Priming, the start-type sweep and Refresh each walked every service.
+
+    Remote answers come from the poller, which exists to wait."""
+    application.cfg = _two_machines()
+    asked = _watching_control(monkeypatch)
+    soon = []
+    monkeypatch.setattr(application.poller, "poll_soon",
+                        lambda machine=None: soon.append(machine))
+
+    application._prime_states()
+    application._poll_start_types()
+    application.refresh()
+
+    remote = [(what, where) for what, where in asked if where]
+    assert remote == [], f"asked another machine from the UI thread: {remote}"
+    # And this computer is still asked, or the rows would be empty until a poll.
+    assert ("status", "") in asked and ("start_type", "") in asked
+    # The poller was told to go and look instead.
+    assert "sc-sql" in soon and None in soon
+
+
+def test_an_action_brings_its_status_back_rather_than_asking_again(application,
+                                                                  monkeypatch):
+    """The handler runs on the UI thread, so the round trip belongs to the worker
+    that already made one."""
+    application.cfg = _two_machines()
+    asked = _watching_control(monkeypatch)
+
+    application._action_done("B1ServerTools64", "sc-sql", "restart", None,
+                            status=st.RUNNING)
+
+    assert [(w, m) for w, m in asked if m] == [], "asked the machine again"
+    assert application.store.status_of("B1ServerTools64", "sc-sql") == st.RUNNING
+
+
 def test_a_restart_says_starting_even_though_the_status_never_changed(
         application, monkeypatch):
     """The case the user hit twice: restart from the panel, and the row went
