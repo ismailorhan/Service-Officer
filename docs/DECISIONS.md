@@ -8,7 +8,7 @@ of these depend on where the product is rather than on first principles.
 
 ## Where data lives, and in what format — decided 2026-07-25
 
-`%ProgramData%\ServiceOfficer\`, not `%APPDATA%`. This describes the *machine*:
+`%ProgramData%\Service Officer\`, not `%APPDATA%`. This describes the *machine*:
 which services it runs, when they should restart, what happened to them. Per-user
 storage meant a second administrator saw an empty install, the history a ticket
 needs sat in whichever profile happened to be logged in, and running as a Windows
@@ -175,3 +175,47 @@ Standard library only: `smtplib` + `email.message.EmailMessage`. No dependency.
   aggregation is missing. Waits on the SQLite move if it is to be quick.
 - **Resource sparklines.** CPU and memory per service in the row, to show
   "running but bloated".
+
+---
+
+## How the UI layer is kept from drifting — decided 2026-07-26
+
+An audit of `ui/` found the same value written in several places: 27 per-widget
+`setStyleSheet` calls carrying palette colours, paddings as literals in each row,
+and eight pages sharing one 2,415-line module. None of it was broken; all of it
+made the next change cost more than it should.
+
+Three rules now, in priority order:
+
+1. **`ui/theme.py` is the only file that names a colour, a spacing or a glyph.**
+   Widgets carry `objectName`s and properties (`role="hint"`, `kind="destructive"`,
+   `chip="true"`), and the sheet decides what those look like. A theme switch is
+   one `setStyleSheet(theme.sheet())`, not a walk of the widget tree — which is
+   why `MainPanel.restyle()` now only redraws icons.
+2. **An inline stylesheet may carry geometry, never a palette value.** Three
+   remain, all on `FlatEdit`: padding and a hover underline. QSS cannot
+   hover-underline a `QLabel` reliably (a synthetic `QEnterEvent` doesn't trigger
+   `:hover`; it needs real pointer tracking), so that one stays inline — but it
+   holds no colour, so no mode switch can invalidate it.
+3. **One page, one module.** `ui/panel.py` keeps the window; `ui/pages/*` holds
+   the pages. `ui.panel` re-exports them, so nothing outside had to change.
+
+**Refactors of this layer are verified, not asserted.** A harness records 36
+screenshots across both themes and every page, then compares them pixel for
+pixel after the change; both `[ui-std]` commits came out 36/36 identical. It paid
+for itself twice in one afternoon:
+
+- Deleting an inline `color: FG3` from the fold chevron would have silently
+  darkened it to `FG`. Moving a colour to the sheet means *adding the rule*, not
+  just removing the old line.
+- The harness itself lied at first. It grabs windows shown on the real screen, so
+  a mouse resting on a row put that row in `:hover` and baked `BG_HOVER` into the
+  baseline — a 17,461-pixel "regression" that was a pointer. Worse, moving the
+  window away is not enough: Qt only clears `WA_UnderMouse` when a leave event
+  arrives, so a stale hover survived the move. The harness now moves each window
+  to the corner farthest from the pointer *and* delivers the leave itself.
+
+**Deferred on purpose:** rewriting the sentence-style settings ("Try up to 3
+times, waiting 10 seconds first…") as labelled fields. Everything above is
+invisible to the user by design; that one is a change to what people read, so it
+is a product decision rather than a cleanup.

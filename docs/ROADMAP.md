@@ -3,12 +3,23 @@
 Candidate features, kept here so each can be reviewed on its own. Ordered by
 what changes the product most per unit of work, not by ease.
 
-> **Status, 2026-07-25 — v2.0.0 shipped.** Tiers 1–3 are built: watchdog,
-> ordered stacks, remote-capable core, scheduler, categories, dashboard, history
-> with the Windows event log merged in. Data moved to `%ProgramData%`.
+> **Status, 2026-07-26.** v2.0.0 shipped. Tiers 1–3 are built: watchdog, ordered
+> stacks, remote-capable core, scheduler, categories, dashboard, history with the
+> Windows event log merged in. Data moved to `%ProgramData%`. **Health checks
+> (feature 5) are built** — five kinds, a master switch per service, a visible
+> "last / next check" summary, and a restart cooldown that used to be a hidden
+> constant.
 >
-> **Agreed next**, in order: health checks ("running but dead"), maintenance
-> windows, post-reboot verification, then mail notifications.
+> The UI layer was then standardised, in three commits tagged `[ui-std]`:
+> `ui/theme.py` owns every colour, metric and glyph; no widget carries a palette
+> value of its own; and the panel's eight pages moved out of a 2,415-line
+> `ui/panel.py` into `ui/pages/`. Both steps were verified pixel-identical
+> (36 screenshots, both themes) rather than asserted. Converting the
+> sentence-style settings to labelled fields was reviewed and **deferred**: it
+> changes what people see, unlike the rest.
+>
+> **Agreed next**, in order: maintenance windows (9), post-reboot verification
+> (7), then mail notifications.
 >
 > **Designed but not built** — reasoning in [DECISIONS.md](DECISIONS.md):
 > auto-update, how remote machines are reached, the agent-then-hub path to a web
@@ -99,18 +110,29 @@ through the firewall, credentials (simplest first version: the account the app
 already runs as, i.e. same domain), and a per-machine offline/unreachable state
 in the UI.
 
-### 5. "Running but dead" health checks
+### 5. "Running but dead" health checks — **built, 2026-07-26**
 **Value: high · Effort: medium**
 
 The real ERP failure mode isn't a stopped service — it's a service that reports
-Running while nothing answers. Optional per-service check:
+Running while nothing answers. Built generically rather than for one stack: TCP,
+HTTP(S), process alive, file exists/fresh, and command exits 0. A service failing
+its checks shows **Not responding** instead of Running, in the tray icon, the
+hover card, the flyout and the dashboard, and can be restarted automatically.
 
-- TCP port listening
-- HTTP(S) endpoint returns expected status
-- SQL Server connection succeeds
+What the build taught, kept because it will come up again:
 
-A failing check shows an amber "unhealthy" state distinct from Stopped, and can
-feed the same recovery rules as Tier 1.
+- An unfinished check must not be *run*. A URL check with no URL was being
+  executed and failing, so a half-typed setting looked like an outage;
+  `is_configured()` now skips it and says "No URL set yet".
+- `socket.getaddrinfo` returns link-local IPv6 first for a Windows hostname, so a
+  TCP check against a name cost 2.05 s before trying the address that works.
+  Addresses are ordered with link-local last, and the failure reported is the
+  first address's, not the last.
+- A restart cooldown is essential and must be visible. It existed as a hidden
+  `COOLDOWN_SECONDS = 300`, which is why a 1-minute check interval looked like it
+  was firing every 6–7 minutes.
+- `time.monotonic()` is uptime, so "now − 0" comparisons mean a freshly booted
+  machine skips its first restart.
 
 ---
 

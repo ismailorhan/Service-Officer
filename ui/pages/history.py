@@ -39,6 +39,11 @@ class HistoryPage(_Page):
                          "ticket, and the only way to see a service that keeps "
                          "dying quietly.")
         self.cfg = cfg_ref
+        #: Filling the table means reading the history file. The panel opens on
+        #: the Dashboard, so that read happened before anyone had asked to see
+        #: it — 340 ms of a 300 ms window open, on a 2.8 MB file. Load when the
+        #: page is first shown instead, and again whenever it goes stale.
+        self._stale = True
 
         row = QHBoxLayout()
         row.setSpacing(9)
@@ -222,7 +227,16 @@ class HistoryPage(_Page):
         for svc in cfg.services:
             self.service_filter.addItem(svc.display(), svc.name)
         self.service_filter.blockSignals(False)
-        self.reload()
+        # The filters are cheap and must be right before the page is shown; the
+        # table itself waits until somebody looks at it.
+        self._stale = True
+        if not self.isHidden():
+            self.reload()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if self._stale:
+            self.reload()
 
     def _current_rows(self) -> list:
         cfg = self.cfg()
@@ -243,6 +257,7 @@ class HistoryPage(_Page):
         return rows
 
     def reload(self):
+        self._stale = False
         rows = self._current_rows()
         self._rows_cache = rows
         self.clear_filters.setVisible(self._filtered())

@@ -129,7 +129,7 @@ def runs(path: str = None, limit: int = 200, kind: str = None,
          name: str = None) -> list:
     """Recent executions, newest first — what the Schedule page lists."""
     out = []
-    for rec in read(path=path, limit=100000):
+    for rec in newest_first(path, must_contain=b'"run"'):
         if not rec.get("run"):
             continue
         if kind and rec["run"] != kind:
@@ -137,32 +137,81 @@ def runs(path: str = None, limit: int = 200, kind: str = None,
         if name and rec.get("name") != name:
             continue
         out.append(rec)
-    return out[:limit]
+        if len(out) >= limit:
+            break
+    return out
+
+
+#: How much of the file to pull in at a time when reading backwards. Large enough
+#: that a normal query is one seek and one read; small enough to be worth it.
+_CHUNK = 64 * 1024
+
+
+def _parse(raw: bytes):
+    """One record, or None if the line isn't one. Never raises."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def newest_first(path: str = None, must_contain: bytes = b""):
+    """Yield records from the end of the file towards the start.
+
+    The file is append-only and chronological, so the rows anyone wants are the
+    last bytes of it. Reading forwards meant showing 200 rows cost parsing every
+    line ever written — 54 ms for 20,000 rows, and linear in a file that only
+    grows. Reading backwards makes a query cost what it displays.
+
+    A generator on purpose: the caller stops when it has enough, and never has to
+    say how much "enough" might be in raw lines.
+
+    `must_contain` is a cheap pre-filter for callers that want one kind of record:
+    a line without those bytes cannot be one, so it is skipped without being
+    parsed. It only ever *saves* work — a coincidental match is parsed and then
+    discarded by the caller's own test, exactly as before. This matters because a
+    machine with no stacks has no run records at all, so asking for the last few
+    runs would otherwise parse every state change ever recorded.
+    """
+    path = path or HISTORY_PATH
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            carry = b""              # a line split across two chunks
+            while pos > 0:
+                step = min(_CHUNK, pos)
+                pos -= step
+                f.seek(pos)
+                lines = (f.read(step) + carry).split(b"\n")
+                carry = lines.pop(0)     # may be a fragment; the next read completes it
+                for raw in reversed(lines):
+                    if must_contain and must_contain not in raw:
+                        continue
+                    rec = _parse(raw)
+                    if rec is not None:
+                        yield rec
+            if not must_contain or must_contain in carry:
+                rec = _parse(carry)
+                if rec is not None:
+                    yield rec
+    except OSError:
+        return
 
 
 def read(path: str = None, limit: int = 500, service: str = None) -> list:
     """Most recent first. Malformed lines are skipped, not fatal."""
-    path = path or HISTORY_PATH
-    if not os.path.exists(path):
-        return []
     out = []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if service and rec.get("service") != service:
-                    continue
-                out.append(rec)
-    except OSError:
-        return []
-    out.reverse()
-    return out[:limit]
+    for rec in newest_first(path):
+        if service and rec.get("service") != service:
+            continue
+        out.append(rec)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def trim(retention_days: int, path: str = None) -> int:
@@ -268,7 +317,12 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
     label_of = dict(zip(service_names or [], labels or []))
     rows = []
 
-    for rec in read(path=path, limit=100000):
+    # Newest first, and we stop as soon as we have a table's worth. The sort at
+    # the end still decides the order, because the Windows event log is merged in
+    # with timestamps of its own.
+    for rec in newest_first(path):
+        if len(rows) >= limit:
+            break
         if service and rec.get("service") != service:
             continue
         if not _within(str(rec.get("ts", "")), since):
