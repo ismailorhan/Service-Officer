@@ -184,7 +184,7 @@ class TriggerDetail(_Page):
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
         crumb.addWidget(_button("Schedule", "quiet", self.back.emit))
-        crumb.addWidget(_label("›", "hint"))
+        crumb.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
         self.crumb_name = _label("", "hint")
         crumb.addWidget(self.crumb_name)
         crumb.addStretch(1)
@@ -309,7 +309,7 @@ class TriggerDetail(_Page):
         body.addWidget(self.summary)
         body.addSpacing(12)
         run = QHBoxLayout()
-        run.addWidget(_button("Run now ▸", None,
+        run.addWidget(_button(f"Run now {theme.GLYPH_FOLDED}", None,
                               lambda: self.run_now.emit(self.trigger)))
         run.addStretch(1)
         body.addLayout(run)

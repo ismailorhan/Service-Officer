@@ -17,11 +17,19 @@ if it has to resize itself afterwards.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QLineEdit,
+                               QWidget)
 
 from core import state as st
 from . import theme
-from .rows import SectionBar, ServiceRow, StackRow, is_collapsed
+from .rows import BulkBar, SectionBar, ServiceRow, StackRow, is_collapsed
+
+#: The same words in both windows, so they cannot drift apart in one of them.
+SEARCH_HINT = "Search services…"
+SELECT_ALL_HINT = "Select every service shown"
+COLUMNS = (("SERVICE", 0, Qt.AlignLeft),
+           ("STATUS", theme.COL_STATUS_W, Qt.AlignCenter),
+           ("ACTIONS", theme.COL_ACTIONS_W, Qt.AlignRight))
 
 
 class ServiceListMixin:
@@ -32,7 +40,48 @@ class ServiceListMixin:
     `bulk_requested`.
     """
 
-    # -- building ----------------------------------------------------------
+    # -- the parts above the list ------------------------------------------
+    def _make_search(self) -> QLineEdit:
+        """The search box. The host places it; where it sits differs, what it
+        does does not."""
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(SEARCH_HINT)
+        self.search.textChanged.connect(self._filter)
+        return self.search
+
+    def _make_column_header(self) -> QWidget:
+        """SERVICE · STATUS · ACTIONS, with the box that selects them all."""
+        cols = QWidget()
+        cols.setObjectName("columnHeader")
+        cols.setAttribute(Qt.WA_StyledBackground, True)
+        lay = QHBoxLayout(cols)
+        lay.setContentsMargins(*theme.HEAD_PAD)
+        lay.setSpacing(10)
+        self.tick_all = QCheckBox()
+        self.tick_all.setTristate(True)
+        self.tick_all.setToolTip(SELECT_ALL_HINT)
+        self.tick_all.clicked.connect(self._toggle_all)
+        lay.addWidget(self.tick_all)
+        for text, width, align in COLUMNS:
+            label = QLabel(text)
+            label.setProperty("role", "section")
+            label.setAlignment(align | Qt.AlignVCenter)
+            if width:
+                label.setFixedWidth(width)
+                lay.addWidget(label)
+            else:
+                lay.addWidget(label, 1)
+        return cols
+
+    def _make_bulk_bar(self) -> BulkBar:
+        """What appears once rows are ticked. It belongs directly under the
+        header, because the box that selects everything is right above it."""
+        self.bulk = BulkBar()
+        self.bulk.chosen.connect(self._bulk)
+        self.bulk.cleared.connect(lambda: self._set_all(False))
+        return self.bulk
+
+    # -- building the list -------------------------------------------------
     def _add_service_groups(self, cfg, add) -> list:
         """Fill `self._rows` from the config; return the section bars created.
 

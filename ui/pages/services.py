@@ -107,8 +107,8 @@ class ServicesPage(QWidget):
         cats = [c.name for c in self.cfg().categories]
         if name in cats:
             index = cats.index(name)
-            for glyph, delta, tip in (("▲", -1, "Move this category up"),
-                                      ("▼", 1, "Move this category down")):
+            for glyph, delta, tip in ((theme.GLYPH_UP, -1, "Move this category up"),
+                                      (theme.GLYPH_DOWN, 1, "Move this category down")):
                 b = _button(glyph, "quiet")
                 b.setFixedSize(22, 20)
                 b.setToolTip(tip)
@@ -303,7 +303,7 @@ class ServiceDetail(_Page):
         crumb.setSpacing(6)
         b = _button("Services", "quiet", self.back.emit)
         crumb.addWidget(b)
-        crumb.addWidget(_label("›", "hint"))
+        crumb.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
         self.crumb_name = _label("", "hint")
         crumb.addWidget(self.crumb_name)
         crumb.addStretch(1)

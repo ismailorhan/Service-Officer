@@ -29,6 +29,7 @@ ROW_PAD = (SP_14, SP_8, SP_14, SP_8)        # a service or stack row
 BAR_PAD = (SP_12, 5, SP_14, 5)              # a section heading bar
 PAGE_PAD = (SP_16, SP_14, SP_16, SP_14)     # dialog bodies
 FOOT_PAD = (SP_10, 9, SP_10, 9)             # the footer, and the bulk bar
+HEAD_PAD = (SP_14, SP_4, SP_14, SP_4)       # the SERVICE/STATUS/ACTIONS header
 PANEL_PAD = (28, 24, 28, 20)                # a page inside the main panel
 
 #: Type, in points. Roles live in sheet(); these are the sizes those roles use,
@@ -49,6 +50,7 @@ GLYPH_START, GLYPH_STOP, GLYPH_RESTART = "▶", "■", "↻"
 GLYPH_KILL, GLYPH_REFRESH, GLYPH_SERVICES = "✕", "↻", "▤"
 GLYPH_FOLD, GLYPH_FOLDED, GLYPH_GRIP = "▾", "▸", "⁝"
 GLYPH_SETTINGS, GLYPH_CRUMB, GLYPH_CHEVRON = "⚙", "›", "▾"
+GLYPH_UP, GLYPH_DOWN = "▲", "▼"              # reordering, where drag is awkward
 
 _DARK = dict(
     # Surfaces, and the order they stack in. There used to be six near-blacks

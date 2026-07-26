@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QHBoxLayout,
 
 from core import config as cfg_mod
 
+from .. import theme
 from ..widgets import (Duration, Grip, SearchableList, button as _button,
                        label as _label)
 from .base import _ListRow, _Page
@@ -115,7 +116,7 @@ class StackDetail(_Page):
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
         crumb.addWidget(_button("Stacks", "quiet", self.back.emit))
-        crumb.addWidget(_label("›", "hint"))
+        crumb.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
         self.crumb_name = _label("", "hint")
         crumb.addWidget(self.crumb_name)
         crumb.addStretch(1)
@@ -150,7 +151,7 @@ class StackDetail(_Page):
         bar.addStretch(1)
         # Hand over the stack being edited, not its name: a test run has to use
         # what's on screen, otherwise it silently tests the last saved values.
-        bar.addWidget(_button("Test run ▸", None,
+        bar.addWidget(_button(f"Test run {theme.GLYPH_FOLDED}", None,
                               lambda: self.test_run.emit(self.stack, "start")))
         self.root.addSpacing(12)
         self.root.addLayout(bar)

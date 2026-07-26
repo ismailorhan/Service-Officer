@@ -101,7 +101,8 @@ class HistoryPage(_Page):
 
         # Only offered once something is actually filtered — a permanently
         # visible "clear" invites the question of what it would clear.
-        self.clear_filters = _button("Clear filters ✕", "quiet", self._clear_filters)
+        self.clear_filters = _button(f"Clear filters {theme.GLYPH_KILL}",
+                                     "quiet", self._clear_filters)
         self.clear_filters.setToolTip("Back to all services, the last 24 hours, "
                                       "any trigger.")
         self.clear_filters.setVisible(False)

@@ -78,7 +78,7 @@ class _ListRow(QWidget):
         lay.addLayout(col, 1)
         if tag:
             lay.addWidget(Chip(tag, tag_category))
-        lay.addWidget(_label("›", "hint"))
+        lay.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
 
 
 # ── service picker ─────────────────────────────────────────────────────────

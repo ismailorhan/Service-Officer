@@ -10,13 +10,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QScrollArea,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
+                               QScrollArea, QVBoxLayout, QWidget)
 
 from core import state as st
 from . import icons, theme
-from .rows import BulkBar, ServiceRow
+from .rows import ServiceRow
 from .servicelist import ServiceListMixin
 from .widgets import Chip
 
@@ -115,49 +114,15 @@ class Flyout(ServiceListMixin, QWidget):
         wrap = QWidget()
         sl = QHBoxLayout(wrap)
         sl.setContentsMargins(10, 0, 10, 6)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search services…")
-        self.search.textChanged.connect(self._filter)
-        sl.addWidget(self.search)
+        sl.addWidget(self._make_search())
         root.addWidget(wrap)
 
-        # column header
-        cols = QWidget()
-        cols.setObjectName("columnHeader")
-        cols.setAttribute(Qt.WA_StyledBackground, True)
-        cl = QHBoxLayout(cols)
-        cl.setContentsMargins(14, 4, 14, 4)
-        cl.setSpacing(10)
-        self.tick_all = QCheckBox()
-        self.tick_all.setTristate(True)
-        self.tick_all.setToolTip("Select every service shown")
-        self.tick_all.clicked.connect(self._toggle_all)
-        cl.addWidget(self.tick_all)
-        for text, width, align in (("SERVICE", 0, Qt.AlignLeft),
-                                   ("STATUS", theme.COL_STATUS_W, Qt.AlignCenter),
-                                   ("ACTIONS", theme.COL_ACTIONS_W, Qt.AlignRight)):
-            lb = QLabel(text)
-            lb.setProperty("role", "section")
-            lb.setAlignment(align | Qt.AlignVCenter)
-            if width:
-                lb.setFixedWidth(width)
-                cl.addWidget(lb)
-            else:
-                cl.addWidget(lb, 1)
-        root.addWidget(cols)
+        root.addWidget(self._make_column_header())
 
-        # Bulk actions appear directly under the header they belong to — the
-        # tick box that selects everything is right above them. Its buttons are
-        # laid out like the footer's, and its own background says it acts on a
-        # selection rather than on everything.
-        #
-        # Appearing must not shove the rows down: the window is anchored to its
-        # bottom edge (see _keep_bottom), so it grows upwards and every row stays
-        # exactly where the pointer left it.
-        self.bulk = BulkBar()
-        self.bulk.chosen.connect(self._bulk)
-        self.bulk.cleared.connect(lambda: self._set_all(False))
-        root.addWidget(self.bulk)
+        # The bulk bar appearing must not shove the rows down: this window is
+        # anchored to its bottom edge (see _apply_geometry), so it grows upwards
+        # and every row stays exactly where the pointer left it.
+        root.addWidget(self._make_bulk_bar())
 
         # list
         self.scroll = QScrollArea()

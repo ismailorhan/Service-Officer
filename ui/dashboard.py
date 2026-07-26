@@ -13,12 +13,12 @@ would be a lie about what happened.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLineEdit,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QScrollArea, QVBoxLayout,
+                               QWidget)
 
 from core import state as st
 from . import theme
-from .rows import BulkBar, ServiceRow
+from .rows import ServiceRow
 from .servicelist import ServiceListMixin
 from .widgets import Chip, button as _button, label as _label
 
@@ -55,8 +55,10 @@ class DashboardPage(ServiceListMixin, QWidget):
         self.badge = Chip("", "running")
         head.addWidget(self.badge)
         head.addStretch(1)
-        head.addWidget(_button("↻  Refresh", "quiet", self.refresh_requested.emit))
-        head.addWidget(_button("▤  Services", "quiet", self.open_services_mmc.emit))
+        head.addWidget(_button(f"{theme.GLYPH_REFRESH}  Refresh", "quiet",
+                               self.refresh_requested.emit))
+        head.addWidget(_button(f"{theme.GLYPH_SERVICES}  Services", "quiet",
+                               self.open_services_mmc.emit))
         root.addLayout(head)
 
         self.summary = _label("", "hint")
@@ -64,40 +66,11 @@ class DashboardPage(ServiceListMixin, QWidget):
         root.addWidget(self.summary)
         root.addSpacing(14)
 
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search services…")
-        self.search.textChanged.connect(self._filter)
-        root.addWidget(self.search)
+        root.addWidget(self._make_search())
         root.addSpacing(10)
-
-        cols = QWidget()
-        cols.setObjectName("columnHeader")
-        cols.setAttribute(Qt.WA_StyledBackground, True)
-        cl = QHBoxLayout(cols)
-        cl.setContentsMargins(14, 4, 14, 4)
-        cl.setSpacing(10)
-        self.tick_all = QCheckBox()
-        self.tick_all.setTristate(True)
-        self.tick_all.setToolTip("Select every service shown")
-        self.tick_all.clicked.connect(self._toggle_all)
-        cl.addWidget(self.tick_all)
-        for text, width, align in (("SERVICE", 0, Qt.AlignLeft),
-                                   ("STATUS", theme.COL_STATUS_W, Qt.AlignCenter),
-                                   ("ACTIONS", theme.COL_ACTIONS_W, Qt.AlignRight)):
-            lb = _label(text, "section")
-            lb.setAlignment(align | Qt.AlignVCenter)
-            if width:
-                lb.setFixedWidth(width)
-                cl.addWidget(lb)
-            else:
-                cl.addWidget(lb, 1)
-        root.addWidget(cols)
-
-        # Under the header it belongs to, same as the tray panel's.
-        self.bulk = BulkBar()
-        self.bulk.chosen.connect(self._bulk)
-        self.bulk.cleared.connect(lambda: self._set_all(False))
-        root.addWidget(self.bulk)
+        root.addWidget(self._make_column_header())
+        # Under the header it belongs to, same as the tray flyout's.
+        root.addWidget(self._make_bulk_bar())
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
