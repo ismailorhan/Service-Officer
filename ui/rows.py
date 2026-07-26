@@ -33,6 +33,8 @@ class ServiceRow(QWidget):
         self.service = service
         self.status = st.UNKNOWN
         self.disabled = False
+        #: an action of ours in flight ("Restarting…"), until it reports back
+        self._busy = ""
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("row")
 
@@ -90,6 +92,14 @@ class ServiceRow(QWidget):
                    health_detail: str = "") -> None:
         self.status = status
         self.disabled = disabled
+        # "Restarting…" has to survive the next repaint. It did not: any status
+        # arriving from anywhere — another service's poll, a start-type sweep —
+        # called this without a busy label and wiped it, so pressing Restart on a
+        # Linux service showed "Restarting…" for a moment and then "Running" again
+        # while the restart was still going on.
+        if busy_label:
+            self._busy = busy_label
+        busy_label = busy_label or self._busy
         cat = st.category(status)
         # A disabled service can't be started at all, so say so instead of
         # showing "Stopped" next to a Start button that would only fail.

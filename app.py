@@ -352,24 +352,37 @@ class Application(QObject):
         # service is not unhealthy — it is stopped.
         machine = event.state.machine
         if event.status == st.RUNNING:
-            self.health.note_running(event.name, machine)
+            self._note_started(event.name, machine)
+            if self.cfg.notifications.on_recovery and \
+                    self.watchdog.attempts_for(event.name, machine):
+                self.tray.notify("Service Officer", f"{event.name} is running again.")
         elif not st.is_pending(event.status):
             self.health.note_stopped(event.name, machine)
-        else:
-            return
-        # Whatever the monitor now says, not a hard-coded "unknown". Overwriting it
-        # here threw away the verdict note_running had *just* published — which is
-        # why "Starting…" never appeared on screen although the monitor was
-        # producing it correctly. The monitor is the authority on health; this only
-        # copies its answer into the store.
-        self.store.set_health(event.name,
-                              self.health.verdict(event.name, machine),
-                              self.health.detail(event.name, machine),
-                              machine=machine)
+            self._copy_verdict(event.name, machine)
 
-        if event.status == st.RUNNING and self.cfg.notifications.on_recovery:
-            if self.watchdog.attempts_for(event.name, event.state.machine):
-                self.tray.notify("Service Officer", f"{event.name} is running again.")
+    def _note_started(self, name: str, machine: str = "") -> None:
+        """Tell the monitor a service has just started, and show what it says.
+
+        Said explicitly rather than left to be inferred from a status change,
+        because the change is often never seen: `store.update` publishes only when
+        the status *string* differs, and `systemctl restart` returns with the unit
+        already active again. The app asked, got "Running", saw no difference and
+        stayed quiet — so a restart from the panel went straight back to green with
+        no warm-up at all, on exactly the surface someone was watching.
+        """
+        self.health.note_running(name, machine)
+        self._copy_verdict(name, machine)
+
+    def _copy_verdict(self, name: str, machine: str = "") -> None:
+        """Copy the monitor's verdict into the store, whatever it is.
+
+        Not a hard-coded "unknown": that overwrote the verdict note_running had
+        *just* published, which is why "Starting…" never reached the screen while
+        the monitor was producing it correctly. The monitor is the authority on
+        health; this only carries its answer to the widgets.
+        """
+        self.store.set_health(name, self.health.verdict(name, machine),
+                              self.health.detail(name, machine), machine=machine)
 
     # -- actions -----------------------------------------------------------
     def do_action(self, action: str, name: str, machine: str = "",
@@ -407,10 +420,16 @@ class Application(QObject):
                      bulk=False):
         self.tray.action_finished()
         try:
-            self.store.update(name, control.query_status(name, machine),
-                              machine=machine, source=st.SRC_PANEL)
+            status = control.query_status(name, machine)
+            self.store.update(name, status, machine=machine, source=st.SRC_PANEL)
+            # We started it, so we know it just started — even if the status
+            # published nothing because it read "Running" before and after.
+            if error is None and action in ("start", "restart") \
+                    and status == st.RUNNING:
+                self._note_started(name, machine)
         except Exception:
             pass
+        self._clear_busy(name, machine)
         if self.flyout.isVisible():
             self.flyout.apply_states()
         if self.panel is not None and self.panel.isVisible():
@@ -643,6 +662,15 @@ class Application(QObject):
             if self.cfg.history.enabled:
                 history.record_action(service, action, st.SRC_STACK,
                                       note=f"step {index} of {total}")
+        elif phase in ("ok", "fail"):
+            machine = next((s.machine for s in self.cfg.services
+                            if s.name == service), "")
+            self._clear_busy(service, machine)
+            # A stack step starts a service just as a button does, and the status
+            # it leaves behind is just as likely to be unchanged.
+            if phase == "ok" and action in ("start", "restart") \
+                    and self.store.status_of(service, machine) == st.RUNNING:
+                self._note_started(service, machine)
 
     def _on_stack_done(self, result):
         self.tray.action_finished()
@@ -681,6 +709,12 @@ class Application(QObject):
         self.flyout.mark_busy(name, machine, label)
         if self.panel is not None and self.panel.isVisible():
             self.panel.dashboard.mark_busy(name, machine, label)
+
+    def _clear_busy(self, name: str, machine: str) -> None:
+        """And both have to stop saying it once the action has reported back."""
+        self.flyout.clear_busy(name, machine)
+        if self.panel is not None:
+            self.panel.dashboard.clear_busy(name, machine)
 
     def refresh(self):
         for svc in self.cfg.services:

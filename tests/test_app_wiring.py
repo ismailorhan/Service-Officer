@@ -11,6 +11,8 @@ Application.__init__ only wires things together, which is exactly what is under
 test.
 """
 
+import socket
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -180,6 +182,90 @@ def test_reaching_running_shows_starting_all_the_way_to_the_store(application):
         health.STARTING
     assert "waiting for it to answer" in \
         application.store.health_detail("webclient.service", "hanadev")
+
+
+def test_a_restart_says_starting_even_though_the_status_never_changed(
+        application, monkeypatch):
+    """The case the user hit twice: restart from the panel, and the row went
+    straight back to green.
+
+    `systemctl restart` returns with the unit already active, so the app queried
+    "Running", compared it with the "Running" it had, published no event, and
+    nothing ever told the monitor the service had restarted. Nothing was wrong with
+    the monitor — it was simply never asked.
+    """
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    # A check that will pass, so the service can be got into the state a restart
+    # starts from — running, asked, and vouched for — through the real code rather
+    # than by calling note_running here, which would have produced "Starting…" by
+    # itself and made this test pass with or without the fix. It did, at first.
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        service = application.cfg.services[0]
+        service.health.checks = [cfg_mod.HealthCheck(kind="tcp", host="127.0.0.1",
+                                                     port=port)]
+        application.flyout.rebuild()
+        application.store.update("webclient.service", st.RUNNING,
+                                 machine="hanadev")
+        application.health.check_now(service)
+        assert application.store.health_of("webclient.service", "hanadev") == \
+            health.HEALTHY, "could not reach the pre-restart state"
+
+        monkeypatch.setattr(app_mod.control, "query_status",
+                            lambda *_a, **_k: st.RUNNING)
+        application._action_done("webclient.service", "hanadev", "restart", None)
+    assert application.store.health_of("webclient.service", "hanadev") == \
+        health.STARTING
+    application.flyout.apply_states()
+    assert application.flyout._rows[("hanadev", "webclient.service")] \
+        .chip.text() == st.LABEL_STARTING
+
+
+def test_restarting_survives_a_repaint_and_stops_when_the_action_reports_back(
+        application, monkeypatch):
+    """Half of "it went straight back to Running": for the seconds the restart
+    took, the row said Running.
+
+    "Restarting…" was written straight onto the chip, and the next apply_states —
+    triggered by any status from anywhere, including another machine's poll — wrote
+    the plain status over the top of it.
+    """
+    application.do_action = lambda *_a, **_k: None       # no real service calls
+    application.flyout.rebuild()
+    application._mark_busy("AppEngine", "", "Restarting…")
+    assert application.flyout._rows[("", "AppEngine")].chip.text() == "Restarting…"
+
+    application.flyout.apply_states()                    # what used to wipe it
+    assert application.flyout._rows[("", "AppEngine")].chip.text() == "Restarting…"
+
+    monkeypatch.setattr(app_mod.control, "query_status",
+                        lambda *_a, **_k: st.RUNNING)
+    application._action_done("AppEngine", "", "restart", None)
+    application.flyout.apply_states()
+
+    assert application.flyout._rows[("", "AppEngine")].chip.text() == st.RUNNING
+
+
+def test_a_failed_restart_does_not_claim_the_service_is_starting(application,
+                                                                monkeypatch):
+    """Otherwise a service that refused to start sits at amber "Starting…"
+    for its whole grace window instead of showing what happened."""
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    monkeypatch.setattr(app_mod.control, "query_status",
+                        lambda *_a, **_k: st.STOPPED)
+    application._action_done("webclient.service", "hanadev", "restart",
+                            "Job for webclient.service failed", announce=False)
+
+    assert application.store.health_of("webclient.service", "hanadev") != \
+        health.STARTING
 
 
 def test_the_header_counts_a_starting_service_as_starting(application):

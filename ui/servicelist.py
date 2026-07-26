@@ -222,3 +222,13 @@ class ServiceListMixin:
         row = self._rows.get((machine or "", name))
         if isinstance(row, ServiceRow):
             row.set_status(row.status, busy_label=label)
+
+    def clear_busy(self, name: str, machine: str) -> None:
+        """Our action has reported back, so the row can show the truth again.
+
+        Explicit rather than expiring on the next repaint: the whole point is that
+        it outlives repaints, so something has to say when it is over.
+        """
+        row = self._rows.get((machine or "", name))
+        if isinstance(row, ServiceRow):
+            row._busy = ""
