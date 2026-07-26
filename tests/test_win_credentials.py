@@ -127,19 +127,76 @@ def test_an_existing_session_as_someone_else_is_explained(monkeypatch):
     assert "one account per machine" in said and "/delete" in said
 
 
+def _fake_scm(monkeypatch, per_service=None):
+    """Stand in for the held service-manager connection.
+
+    The connection is the thing being measured elsewhere, so here it is replaced
+    wholesale: `do(work)` hands the work a fake handle and counts the calls.
+    """
+    opens = []
+
+    class Held:
+        def do(self, work):
+            opens.append("used")
+            return work(object())
+
+    monkeypatch.setattr(scm_windows, "held_for", lambda machine="": Held())
+    monkeypatch.setattr(scm_windows, "state_on",
+                        per_service or (lambda _scm, _name: ("Running", 42, 0)))
+    monkeypatch.setattr(scm_windows, "start_type_on",
+                        lambda _scm, _name: "Automatic")
+    return opens
+
+
 def test_the_session_is_made_once_and_reused(wnet, monkeypatch):
     """It is established before every command, so it has to be free when it is
     already there — otherwise a five-second poll reconnects all day."""
     monkeypatch.setattr("core.secrets.get", lambda _ref: "s3cret")
-    monkeypatch.setattr(scm_windows, "query_status", lambda name, host: "Running")
-    monkeypatch.setattr(scm_windows, "start_type", lambda name, host: "Automatic")
-    monkeypatch.setattr(scm_windows, "process_id", lambda name, host: 42)
+    _fake_scm(monkeypatch)
     conn = scm_windows.WindowsConnector("ctl053", _machine())
 
     for _ in range(4):
         conn.status("MSSQLSERVER")
 
     assert len(wnet.added) == 1
+
+
+def test_every_service_on_a_machine_is_read_over_one_connection(wnet, monkeypatch):
+    """Measured: opening a connection to a remote Windows machine in another domain
+    took 21 seconds, and reading a service on the open one took 7 milliseconds. The
+    poller asked per service and each question opened its own — three of them, so
+    sixty-three seconds to learn one service's state."""
+    monkeypatch.setattr("core.secrets.get", lambda _ref: "s3cret")
+    opens = _fake_scm(monkeypatch)
+    conn = scm_windows.WindowsConnector("ctl053", _machine())
+
+    found = conn.statuses(["MSSQLSERVER", "SQLWriter", "B1ServerTools64"])
+
+    assert set(found) == {"MSSQLSERVER", "SQLWriter", "B1ServerTools64"}
+    assert all(s.state == "Running" and s.start_type == "Automatic"
+               for s in found.values())
+    assert len(opens) == 1, f"used the connection {len(opens)} times for one poll"
+
+
+def test_one_missing_service_does_not_sink_the_whole_poll(wnet, monkeypatch):
+    """A service that has been uninstalled is about that service. Losing the other
+    four to it would blank the machine on screen."""
+    monkeypatch.setattr("core.secrets.get", lambda _ref: "s3cret")
+
+    def per_service(_scm, name):
+        if name == "GoneAway":
+            raise FakeError(1060, "The specified service does not exist")
+        return ("Running", 7, 0)
+
+    monkeypatch.setattr(scm_windows, "pywintypes",
+                        type("m", (), {"error": FakeError}))
+    _fake_scm(monkeypatch, per_service)
+    conn = scm_windows.WindowsConnector("ctl053", _machine())
+
+    found = conn.statuses(["MSSQLSERVER", "GoneAway"])
+
+    assert found["MSSQLSERVER"].state == "Running"
+    assert found["GoneAway"].installed is False
 
 
 def test_a_new_account_replaces_the_old_session(wnet, monkeypatch):

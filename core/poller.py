@@ -45,6 +45,8 @@ class Poller:
         self._thread = None
         self._due: dict = {}          # machine -> when to ask next
         self._down: dict = {}         # machine -> when to retry after a failure
+        self._busy: set = set()       # machines with a poll still in flight
+        self._busy_lock = threading.RLock()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -147,7 +149,34 @@ class Poller:
                 for machine, services in self.due_now():
                     if self._stop.is_set():
                         break
-                    self.poll_once(machine, services)
+                    self._poll_in_background(machine, services)
             except Exception:
                 pass              # a poller that dies leaves the UI frozen in time
             self._stop.wait(self._tick)
+
+    def _poll_in_background(self, machine: str, services: list) -> None:
+        """One thread per machine, because machines answer at wildly different
+        speeds and they were being asked in a queue.
+
+        Measured: SSH to the SUSE box answers about four services in 64 ms, while a
+        remote Windows box took a minute. In one queue the Linux services showed
+        "Unknown" on screen — not because anything was wrong with them, but because
+        their turn never came round. A machine's slowness is now its own problem.
+
+        At most one poll per machine at a time: a machine that takes longer than its
+        interval must not accumulate threads.
+        """
+        key = machine or ""
+        with self._busy_lock:
+            if key in self._busy:
+                return
+            self._busy.add(key)
+
+        def work():
+            try:
+                self.poll_once(machine, services)
+            finally:
+                with self._busy_lock:
+                    self._busy.discard(key)
+        threading.Thread(target=work, daemon=True,
+                         name=f"poll-{key or 'local'}").start()

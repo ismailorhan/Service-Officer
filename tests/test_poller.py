@@ -159,3 +159,72 @@ def test_a_machine_we_cannot_even_ask_about_is_polled_anyway(monkeypatch):
     p = poller.Poller(lambda: cfg, on_status=lambda *a: None)
 
     assert "hanadev" in p.machines_to_poll()
+
+
+def test_a_slow_machine_does_not_starve_a_fast_one(monkeypatch):
+    """What the panel showed: four SUSE services reading "Unknown" while nothing was
+    wrong with them.
+
+    They were behind a remote Windows machine in one queue, and that machine took a
+    minute to answer — measured, 63 seconds for a single service — so the SSH
+    machine's turn never came round. Each machine is asked on its own thread now.
+    """
+    import threading
+    import time
+
+    slow_started = threading.Event()
+
+    class Slow(FakeConn):
+        def statuses(self, names):
+            slow_started.set()
+            time.sleep(3)
+            return super().statuses(names)
+
+    conns = {"": FakeConn(push=True), "sc-sql": Slow(), "hanadev": FakeConn()}
+    use(monkeypatch, conns)
+    cfg = config_with(cfg_mod.Machine(name="sc-sql"),
+                      cfg_mod.Machine(name="hanadev", kind="linux"),
+                      services=[("B1ServerTools64", "sc-sql"),
+                                ("webclient.service", "hanadev")])
+    answered = []
+    p = poller.Poller(lambda: cfg,
+                      on_status=lambda name, machine, status:
+                          answered.append(machine))
+
+    for machine, services in p.due_now():
+        p._poll_in_background(machine, services)
+    assert slow_started.wait(2), "the slow machine was never asked"
+
+    # The fast machine has answered while the slow one is still thinking.
+    deadline = time.perf_counter() + 2
+    while time.perf_counter() < deadline and "hanadev" not in answered:
+        time.sleep(0.02)
+    assert "hanadev" in answered, "waited behind the slow machine"
+    assert "sc-sql" not in answered
+
+
+def test_a_machine_slower_than_its_interval_is_not_asked_twice_at_once(monkeypatch):
+    """Otherwise a machine that takes a minute at a five-second interval accumulates
+    twelve threads all asking it the same question."""
+    import threading
+    import time
+
+    calls = []
+
+    class Slow(FakeConn):
+        def statuses(self, names):
+            calls.append(time.perf_counter())
+            time.sleep(1)
+            return super().statuses(names)
+
+    conns = {"": FakeConn(push=True), "sc-sql": Slow()}
+    use(monkeypatch, conns)
+    cfg = config_with(cfg_mod.Machine(name="sc-sql"),
+                      services=[("B1ServerTools64", "sc-sql")])
+    p = poller.Poller(lambda: cfg, on_status=lambda *a: None)
+
+    for _ in range(5):
+        p._poll_in_background("sc-sql", ["B1ServerTools64"])
+        time.sleep(0.05)
+
+    assert len(calls) == 1, f"asked {len(calls)} times over each other"

@@ -13,6 +13,7 @@ neither one knows the other exists.
 from __future__ import annotations
 
 import threading
+import time
 
 import win32service
 import win32serviceutil
@@ -42,34 +43,64 @@ def _m(machine: str):
 
 def query_status(service_name: str, machine: str = "") -> str:
     try:
-        status = win32serviceutil.QueryServiceStatus(service_name, _m(machine))
-        return _STATUS_MAP.get(status[1], st.UNKNOWN)
+        return held_for(machine).do(lambda scm: state_on(scm, service_name)[0])
     except pywintypes.error:
         return st.NOT_FOUND
 
 
 def start_service(service_name: str, machine: str = "") -> None:
-    win32serviceutil.StartService(service_name, machine=_m(machine))
+    def work(scm):
+        handle = win32service.OpenService(scm, service_name,
+                                          win32service.SERVICE_START)
+        try:
+            win32service.StartService(handle, None)
+        finally:
+            win32service.CloseServiceHandle(handle)
+    held_for(machine).do(work)
+
+
+#: How long to wait for a service to admit it has stopped, before starting it again.
+#: Only used by restart — a stop on its own is reported as soon as it is accepted,
+#: and the poller sees the rest.
+STOP_WAIT = 30.0
 
 
 def stop_service(service_name: str, machine: str = "") -> None:
-    win32serviceutil.StopService(service_name, _m(machine))
+    def work(scm):
+        handle = win32service.OpenService(scm, service_name,
+                                          win32service.SERVICE_STOP)
+        try:
+            win32service.ControlService(handle, win32service.SERVICE_CONTROL_STOP)
+        finally:
+            win32service.CloseServiceHandle(handle)
+    held_for(machine).do(work)
 
 
 def restart_service(service_name: str, machine: str = "") -> None:
-    win32serviceutil.RestartService(service_name, machine=_m(machine))
+    """Stop, wait for it to be stopped, start.
+
+    Written out rather than using win32serviceutil.RestartService, which opens its
+    own connection to the machine for each step — 21 seconds each, measured, against
+    a remote box whose held connection answers in 7 milliseconds.
+    """
+    try:
+        stop_service(service_name, machine)
+    except pywintypes.error as exc:
+        if not nothing_to_do(exc):
+            raise
+    deadline = time.monotonic() + STOP_WAIT
+    while time.monotonic() < deadline:
+        if query_status(service_name, machine) == st.STOPPED:
+            break
+        time.sleep(0.4)
+    start_service(service_name, machine)
 
 
 def list_all_services(machine: str = "") -> list:
     """Every installed Win32 service as {"name", "display", "status"}, sorted by
     display name — what the settings picker offers."""
-    scm = win32service.OpenSCManager(_m(machine), None,
-                                     win32service.SC_MANAGER_ENUMERATE_SERVICE)
-    try:
-        raw = win32service.EnumServicesStatus(
-            scm, win32service.SERVICE_WIN32, win32service.SERVICE_STATE_ALL)
-    finally:
-        win32service.CloseServiceHandle(scm)
+    raw = held_for(machine).do(lambda scm: win32service.EnumServicesStatus(
+        scm, win32service.SERVICE_WIN32, win32service.SERVICE_STATE_ALL))
 
     services = [{"name": name, "display": display,
                  "status": _STATUS_MAP.get(status[1], st.UNKNOWN)}
@@ -95,22 +126,9 @@ def start_type(service_name: str, machine: str = "") -> str:
     offering a Start button for it is a lie.
     """
     try:
-        scm = win32service.OpenSCManager(_m(machine), None,
-                                         win32service.SC_MANAGER_CONNECT)
+        return held_for(machine).do(lambda scm: start_type_on(scm, service_name))
     except pywintypes.error:
         return ""
-    try:
-        handle = win32service.OpenService(scm, service_name,
-                                         win32service.SERVICE_QUERY_CONFIG)
-        try:
-            config = win32service.QueryServiceConfig(handle)
-            return _START_TYPES.get(config[1], "")
-        finally:
-            win32service.CloseServiceHandle(handle)
-    except pywintypes.error:
-        return ""
-    finally:
-        win32service.CloseServiceHandle(scm)
 
 
 def process_id(service_name: str, machine: str = "") -> int:
@@ -120,22 +138,9 @@ def process_id(service_name: str, machine: str = "") -> int:
     process for resource figures later.
     """
     try:
-        scm = win32service.OpenSCManager(_m(machine), None,
-                                         win32service.SC_MANAGER_CONNECT)
+        return held_for(machine).do(lambda scm: state_on(scm, service_name)[1])
     except pywintypes.error:
         return 0
-    try:
-        handle = win32service.OpenService(scm, service_name,
-                                         win32service.SERVICE_QUERY_STATUS)
-        try:
-            info = win32service.QueryServiceStatusEx(handle)
-            return int(info.get("ProcessId", 0) or 0)
-        finally:
-            win32service.CloseServiceHandle(handle)
-    except pywintypes.error:
-        return 0
-    finally:
-        win32service.CloseServiceHandle(scm)
 
 
 def kill_process(service_name: str, machine: str = "") -> int:
@@ -183,22 +188,132 @@ def nothing_to_do(exc) -> str:
     return NOTHING_TO_DO.get(code, "")
 
 
+#: Errors that mean the held connection is no longer usable, so reopen and retry.
+_STALE = (6, 1722, 1723, 1726, 1727, 5)
+#: One held connection per machine, "" being this computer.
+_held: dict = {}
+_held_lock = threading.RLock()
+
+
+def held_for(machine: str = ""):
+    """The kept-open connection to a machine's service manager."""
+    key = machine or ""
+    with _held_lock:
+        found = _held.get(key)
+        if found is None:
+            found = _Held(key)
+            _held[key] = found
+        return found
+
+
+def disconnect(machine: str = None) -> None:
+    """Close held connections, so changed credentials are actually used and a
+    machine that has gone away is not represented by a stale handle."""
+    with _held_lock:
+        keys = [machine or ""] if machine is not None else list(_held)
+        for key in keys:
+            found = _held.pop(key, None)
+            if found is not None:
+                found.drop()
+
+
+class _Held:
+    """One machine's service manager, kept open between calls.
+
+    Measured against a remote Windows box in another domain: `OpenSCManager` took
+    **21 seconds**, every single time. On the connection it returns, listing every
+    service took 18 ms and querying one took 7 ms. So the entire cost was opening,
+    and the code opened afresh for every question — three per service per poll, which
+    is where sixty-three seconds to read one service's status came from.
+
+    Held, that becomes 21 seconds once per machine per run, and milliseconds after.
+    The handle is a kernel/RPC object, safe to use from several threads; only opening
+    and closing are serialised, so a stop that takes a while cannot block a poll.
+    """
+
+    ACCESS = (win32service.SC_MANAGER_CONNECT
+              | win32service.SC_MANAGER_ENUMERATE_SERVICE)
+
+    def __init__(self, host: str = ""):
+        self.host = host or ""
+        self._handle = None
+        self._lock = threading.RLock()
+
+    def handle(self):
+        with self._lock:
+            if self._handle is None:
+                self._handle = win32service.OpenSCManager(_m(self.host), None,
+                                                          self.ACCESS)
+                if self.host:
+                    log.info("connected to %s's service manager", self.host)
+            return self._handle
+
+    def drop(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle is not None:
+            try:
+                win32service.CloseServiceHandle(handle)
+            except Exception:
+                pass
+
+    def do(self, work):
+        """Run work(scm), reopening once if the connection has gone stale.
+
+        A machine that was rebooted, or a session that expired, leaves a handle that
+        fails on use rather than announcing itself — so the retry is what keeps a
+        held connection from being worse than opening every time.
+        """
+        try:
+            return work(self.handle())
+        except pywintypes.error as exc:
+            if getattr(exc, "winerror", None) not in _STALE:
+                raise
+            log.info("%s: reconnecting (%s)", self.host or "this computer",
+                     getattr(exc, "strerror", exc))
+            self.drop()
+            return work(self.handle())
+
+
+def state_on(scm, service_name: str) -> tuple:
+    """(status, pid, exit code) for one service, on an open connection."""
+    handle = win32service.OpenService(scm, service_name,
+                                      win32service.SERVICE_QUERY_STATUS)
+    try:
+        found = win32service.QueryServiceStatusEx(handle)
+        return (_STATUS_MAP.get(found["CurrentState"], st.UNKNOWN),
+                int(found.get("ProcessId") or 0),
+                int(found.get("Win32ExitCode") or 0))
+    finally:
+        win32service.CloseServiceHandle(handle)
+
+
+def start_type_on(scm, service_name: str) -> str:
+    handle = win32service.OpenService(scm, service_name,
+                                      win32service.SERVICE_QUERY_CONFIG)
+    try:
+        return _START_TYPES.get(win32service.QueryServiceConfig(handle)[1], "")
+    finally:
+        win32service.CloseServiceHandle(handle)
+
+
 def _ask_scm(machine: str) -> bool:
     try:
-        scm = win32service.OpenSCManager(_m(machine), None,
-                                         win32service.SC_MANAGER_CONNECT)
-        win32service.CloseServiceHandle(scm)
+        held_for(machine).do(lambda scm: True)
         return True
     except pywintypes.error:
         return False
 
 
 #: How long to wait for another machine's SCM before calling it unreachable.
-#: Measured against a box with RPC's dynamic ports firewalled: OpenSCManager took
-#: **42 seconds** to give up with "the RPC server is unavailable". That is a hang as
-#: far as anyone watching is concerned, and it blocked the poll of every other
-#: machine behind it.
-REMOTE_TIMEOUT = 8.0
+#:
+#: Two measurements set this. A box with RPC's dynamic ports firewalled took **42
+#: seconds** to give up with "the RPC server is unavailable" — a hang, to anyone
+#: watching. A box that works, in another domain, took **21 seconds** to open and
+#: then answered in milliseconds. So the limit has to sit above the second and below
+#: the first, and it is only ever paid once per machine now that the connection is
+#: held: eight seconds was wrong and reported a working machine as unreachable.
+REMOTE_TIMEOUT = 30.0
 
 
 def reachable(machine: str, timeout: float = REMOTE_TIMEOUT) -> bool:
@@ -266,8 +381,12 @@ class WindowsConnector:
         win_session.ensure(self.host, record.username, password)
 
     def forget(self) -> None:
-        """Drop the session, so edited credentials are actually used."""
-        if self.machine and getattr(self.record, "auth", "") == "password":
+        """Let go of the machine: the held service-manager connection first, then
+        the Windows session, so edited credentials are actually used."""
+        if not self.machine:
+            return
+        disconnect(self.host)
+        if getattr(self.record, "auth", "") == "password":
             from . import win_session
             win_session.forget(self.host)
 
@@ -302,9 +421,36 @@ class WindowsConnector:
     def status(self, name: str):
         from .connectors import Status
         self._sign_in()
-        return Status(state=query_status(name, self.host),
-                      start_type=start_type(name, self.host),
-                      pid=process_id(name, self.host))
+        return self.statuses([name]).get(name) or Status(state=st.NOT_FOUND)
+
+    def statuses(self, names: list) -> dict:
+        """Every service in one pass over one held connection.
+
+        The poller asks for this by name. Doing it per service, each opening its own
+        connection, is what made a single remote service cost sixty-three seconds:
+        three opens at twenty-one seconds each. Here the opens happen once, ever, and
+        each service costs about fourteen milliseconds.
+        """
+        from .connectors import Status
+        self._sign_in()
+
+        def work(scm):
+            out = {}
+            for name in names:
+                try:
+                    state, pid, code = state_on(scm, name)
+                    kind = start_type_on(scm, name)
+                    out[name] = Status(state=state, pid=pid, exit_code=code,
+                                       start_type=kind)
+                except pywintypes.error as exc:
+                    if getattr(exc, "winerror", None) in _STALE:
+                        raise           # the connection, not the service: retry it
+                    # 1060 is "the service does not exist", which is about this one
+                    # service and must not sink the whole batch.
+                    out[name] = Status(state=st.NOT_FOUND, installed=False,
+                                       detail=getattr(exc, "strerror", str(exc)))
+            return out
+        return held_for(self.host).do(work)
 
     def start(self, name: str) -> None:
         self._sign_in()
