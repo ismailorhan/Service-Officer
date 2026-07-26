@@ -9,8 +9,9 @@ each row.
 from __future__ import annotations
 
 import threading
+import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QStackedWidget, QVBoxLayout,
@@ -31,9 +32,10 @@ class MachinesPage(QWidget):
     #: an address resolved on a worker thread; redraw on the GUI thread
     address_found = Signal()
 
-    def __init__(self, cfg_ref):
+    def __init__(self, cfg_ref, store=None):
         super().__init__()
         self.cfg = cfg_ref
+        self.store = store
         self.address_found.connect(self.refresh)
 
         self.stack = QStackedWidget()
@@ -65,7 +67,26 @@ class MachinesPage(QWidget):
 
         self.stack.addWidget(self.list_page)
         self.stack.addWidget(self.detail)
+
+        # "answered 3s ago" has to keep being true, so the list re-reads the store
+        # while it is on screen. Four rows, so this is cheap; stopped when it is not
+        # visible, so it is not paid at all the rest of the time.
+        self._tick = QTimer(self)
+        self._tick.setInterval(3000)
+        self._tick.timeout.connect(self._retick)
         self.refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._tick.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._tick.stop()
+
+    def _retick(self):
+        if self.stack.currentWidget() is self.list_page and self.isVisible():
+            self.refresh()
 
     # -- list --------------------------------------------------------------
     def refresh(self):
@@ -76,9 +97,12 @@ class MachinesPage(QWidget):
             count = sum(1 for s in cfg.services
                         if (s.machine or "") == machine.name)
             item = QListWidgetItem()
-            widget = _ListRow(self._title(machine), self._summary(machine, count),
-                              tag="This PC" if machine.is_local else "",
-                              tag_category="running")
+            reach, tag, tag_kind, why = self._reachability(machine)
+            widget = _ListRow(self._title(machine),
+                              self._summary(machine, count, reach),
+                              tag=tag, tag_category=tag_kind)
+            if why:
+                widget.setToolTip(why)
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
@@ -119,7 +143,41 @@ class MachinesPage(QWidget):
             return f"{name}  ({address})"
         return name
 
-    def _summary(self, machine, count: int) -> str:
+    def _reachability(self, machine) -> tuple:
+        """(what to add to the summary, chip text, chip category, the full reason).
+
+        The reason is kept out of the summary on purpose. Put there, a transport's own
+        words — "pywintypes.error: (1722, 'OpenSCManager', 'The RPC server is
+        unavailable.')" — made the row wider than the window, pushed every chip out of
+        sight and grew a horizontal scrollbar. It goes in the row's tooltip, where it
+        is one hover away and costs the layout nothing.
+
+        This is here because it was missing and cost an evening: every service on the
+        SUSE machine read "Unknown" and there was no way to see that the machine had
+        never been asked at all — the transport was claiming it would push changes,
+        so the poller left it alone. "Unknown" on a service has several explanations;
+        "never asked" on its machine has one.
+        """
+        if machine.is_local:
+            return "", "This PC", "running", ""
+        known = self.store.machine_state(machine.name) if self.store else {}
+        if not known:
+            return ("not asked yet", "waiting", "none",
+                    "Nothing has asked this machine anything yet. It is asked "
+                    f"every {machine.poll_seconds}s once the app is watching a "
+                    "service on it.")
+        ago = max(0.0, time.monotonic() - known.get("at", 0.0))
+        when = ("just now" if ago < 2 else
+                f"{ago:.0f}s ago" if ago < 60 else
+                f"{ago / 60:.0f} min ago" if ago < 3600 else
+                f"{ago / 3600:.1f} h ago")
+        why = (known.get("detail") or "").strip()
+        if known.get("reachable"):
+            return f"answered {when}", "connected", "running", ""
+        return (f"no answer, last tried {when}", "no answer", "stopped",
+                why or "It did not answer, and said nothing about why.")
+
+    def _summary(self, machine, count: int, reach: str = "") -> str:
         """What it is and how it is reached, in one line."""
         parts = [f"{count} service{'s' if count != 1 else ''}"]
         if machine.is_local:
@@ -134,6 +192,8 @@ class MachinesPage(QWidget):
                          f"{machine.username or 'no account set'}")
         else:
             parts.append("Windows service manager · this computer's account")
+        if reach:
+            parts.append(reach)
         return "  ·  ".join(parts)
 
     def _selected(self):

@@ -313,10 +313,12 @@ class Application(QObject):
                           pid=status.pid, machine=machine)
         if status.start_type:
             self.store.set_start_type(name, status.start_type, machine=machine)
+        self.store.note_machine(machine, True)
 
     def _on_unreachable(self, machine, why):
         """Said once per outage, not once per interval: a machine that is down for
         an hour must not write 720 identical lines into the log."""
+        self.store.note_machine(machine, False, why)
         if getattr(self, "_down_note", None) == (machine, why):
             return
         self._down_note = (machine, why)

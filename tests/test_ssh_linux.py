@@ -225,9 +225,9 @@ def test_no_sudo_means_watch_but_do_not_touch():
         conn.start("sshd.service")
 
 
-def test_no_journal_means_polling_and_says_so():
-    """Also measured: without the systemd-journal group the journal is
-    unreadable, so changes cannot arrive on their own."""
+def test_no_journal_means_no_logs_and_says_so():
+    """Without the systemd-journal group the journal is unreadable, so the log view
+    has nothing to show."""
     run = runner_for({"sudo -n true": (0, ""),
                       "journalctl -n 0": (1, "No journal files were opened due "
                                              "to insufficient permissions.")})
@@ -237,7 +237,25 @@ def test_no_journal_means_polling_and_says_so():
 
     assert can.control is True
     assert can.push is False and can.logs is False
-    assert "systemd-journal" in can.why
+    assert "journal" in can.why
+
+
+def test_a_readable_journal_is_still_not_a_doorbell():
+    """The bug this exists to prevent, seen on a real machine.
+
+    `push` was set from whether the journal could be *read*, but nothing follows it —
+    there is no `journalctl -f` anywhere in this app. Claiming push told the poller
+    to leave the machine alone, and root can always read the journal, so all four
+    SAP services on the SUSE box sat at "Unknown" for as long as the app ran. Reading
+    logs and being told about changes are different abilities.
+    """
+    run = runner_for({"sudo -n true": (0, ""), "journalctl -n 0": (0, "")})
+    conn = ssh_linux.LinuxConnector(Machine(), runner=run)
+
+    can = conn.abilities()
+
+    assert can.logs is True
+    assert can.push is False, "said it would tell us, and nothing is listening"
 
 
 def test_control_verbs_go_through_sudo_and_report_why_they_failed():

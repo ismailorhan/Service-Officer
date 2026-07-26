@@ -102,7 +102,9 @@ class MainPanel(QDialog):
         self.categories_page = CategoriesPage(get)
         self.stacks_page = StacksPage(get)
         self.schedule_page = SchedulePage(get)
-        self.machines_page = MachinesPage(get)
+        # The store, because a machine's row says whether it is answering — which is
+        # live, not a setting.
+        self.machines_page = MachinesPage(get, self._store)
         self.history_page = HistoryPage(get)
         self.general_page = GeneralPage(get)
         self.services_page.changed.connect(self.stacks_page.refresh)

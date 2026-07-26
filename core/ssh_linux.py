@@ -360,11 +360,15 @@ class LinuxConnector:
                        "watched but not controlled")
         journal_ok = self._run("journalctl -n 0 --quiet", timeout=10)[0] == 0
         if not journal_ok:
-            why.append("it cannot read the journal, so changes are polled instead "
-                       "of arriving instantly — add the account to the "
-                       "systemd-journal group")
+            why.append("it cannot read the journal, so logs are not available here")
+        # push=False, always. Being *able* to read the journal is not the same as
+        # something watching it: nothing here follows `journalctl -f` yet. Claiming
+        # otherwise told the poller to leave this machine alone, and since the only
+        # other thing that ever asked was the priming pass at startup, a root
+        # account — which can always read the journal — meant every service on the
+        # machine sat at "Unknown" for as long as the app ran.
         self._can = connectors.Abilities(
-            control=sudo_ok, kill=sudo_ok, logs=journal_ok, push=journal_ok,
+            control=sudo_ok, kill=sudo_ok, logs=journal_ok, push=False,
             why=" · ".join(why))
         return self._can
 

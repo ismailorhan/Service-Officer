@@ -1906,3 +1906,51 @@ def test_every_detail_page_offers_a_way_back(qapp, sample):
         backs = [b for b in page.findChildren(QPushButton)
                  if b.text().startswith(theme.GLYPH_BACK)]
         assert backs, f"{name} detail has no back button"
+
+
+def test_a_machine_row_says_whether_it_is_answering(qapp):
+    """The gap that cost an evening: four services reading "Unknown" with nowhere to
+    see that their machine had never been asked."""
+    cfg = cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="hanadev", kind="linux", address="hanadev"),
+                  cfg_mod.Machine(name="sc-sql", kind="windows",
+                                  address="10.77.3.112")],
+        services=[cfg_mod.Service(name="webclient.service", machine="hanadev"),
+                  cfg_mod.Service(name="B1ServerTools64", machine="sc-sql")])
+    store = st.Store()
+    win = panel_mod.MainPanel(cfg, store=store)
+    page = win.machines_page
+
+    # Never asked — which is a state of its own, not "down".
+    reach, tag, kind, why = page._reachability(cfg.machines[1])
+    assert reach == "not asked yet" and tag == "waiting" and kind == "none"
+    assert "asked every 5s" in why
+
+    store.note_machine("hanadev", True)
+    reach, tag, kind, _why = page._reachability(cfg.machines[1])
+    assert reach.startswith("answered") and tag == "connected" and kind == "running"
+
+    store.note_machine("sc-sql", False, "TimeoutError: timed out")
+    reach, tag, kind, why = page._reachability(cfg.machines[2])
+    assert reach == "no answer, last tried just now"
+    assert tag == "no answer" and kind == "stopped"
+    # The transport's own words are one hover away, not in the row: put in the
+    # summary they made it wider than the window and hid every chip.
+    assert why == "TimeoutError: timed out"
+    assert "TimeoutError" not in reach
+
+    # And it reaches the row, next to what the machine is.
+    page.refresh()
+    row = page.list.itemWidget(page.list.item(1))
+    said = " ".join(lb.text() for lb in row.findChildren(QLabel))
+    assert "answered" in said and "systemd over SSH" in said
+    win.deleteLater()
+
+
+def test_this_computer_is_not_described_as_answering(qapp):
+    """It is not asked and cannot fail to answer: it is the thing doing the asking."""
+    cfg = cfg_mod.Config(machines=[cfg_mod.Machine()])
+    page = panel_mod.MainPanel(cfg, store=st.Store()).machines_page
+
+    assert page._reachability(cfg.machines[0]) == ("", "This PC", "running", "")

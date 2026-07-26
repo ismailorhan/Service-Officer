@@ -137,6 +137,7 @@ class Store:
         self._start_types: dict = {}
         self._health: dict = {}        # key -> (verdict, detail)
         self._health_timing: dict = {}  # key -> {last, next, failures, …}
+        self._machines: dict = {}      # machine -> {reachable, detail, at, wall}
 
     # -- subscription ------------------------------------------------------
     def subscribe(self, fn) -> None:
@@ -254,6 +255,23 @@ class Store:
     def health_timing(self, name: str, machine: str = "") -> dict:
         with self._lock:
             return dict(self._health_timing.get((machine or "", name), {}))
+
+    # -- machines ----------------------------------------------------------
+    # Whether a machine is answering, and when it last did. A fourth axis, and the
+    # one that was missing: every service on the SUSE box read "Unknown" for a whole
+    # session and there was nowhere to see that the machine had simply never been
+    # asked. "Unknown" on a service is ambiguous; "never asked" on its machine is not.
+    def note_machine(self, machine: str, reachable: bool, detail: str = "") -> None:
+        with self._lock:
+            self._machines[machine or ""] = {
+                "reachable": bool(reachable), "detail": detail,
+                "at": time.monotonic(), "wall": time.time()}
+
+    def machine_state(self, machine: str = "") -> dict:
+        """{"reachable", "detail", "at", "wall"} or {} if it has never answered or
+        failed — which is itself worth showing."""
+        with self._lock:
+            return dict(self._machines.get(machine or "", {}))
 
     # -- intent ------------------------------------------------------------
     def expect_stop(self, name: str, machine: str = "") -> None:
