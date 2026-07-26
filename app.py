@@ -353,10 +353,19 @@ class Application(QObject):
         machine = event.state.machine
         if event.status == st.RUNNING:
             self.health.note_running(event.name, machine)
-            self.store.set_health(event.name, health.UNKNOWN, machine=machine)
         elif not st.is_pending(event.status):
             self.health.note_stopped(event.name, machine)
-            self.store.set_health(event.name, health.UNKNOWN, machine=machine)
+        else:
+            return
+        # Whatever the monitor now says, not a hard-coded "unknown". Overwriting it
+        # here threw away the verdict note_running had *just* published — which is
+        # why "Starting…" never appeared on screen although the monitor was
+        # producing it correctly. The monitor is the authority on health; this only
+        # copies its answer into the store.
+        self.store.set_health(event.name,
+                              self.health.verdict(event.name, machine),
+                              self.health.detail(event.name, machine),
+                              machine=machine)
 
         if event.status == st.RUNNING and self.cfg.notifications.on_recovery:
             if self.watchdog.attempts_for(event.name, event.state.machine):

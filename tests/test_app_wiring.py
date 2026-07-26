@@ -32,6 +32,11 @@ def application(monkeypatch):
     """
     qapp = QApplication.instance() or QApplication([])
     monkeypatch.setattr(app_mod, "QApplication", lambda _argv: qapp)
+    # A fresh store per test. The application uses the module-level singleton, so
+    # without this one test's statuses and health verdicts leak into the next —
+    # and worse, a status that is already Running publishes no event, so the
+    # handler under test never runs and the stale verdict is what gets asserted.
+    monkeypatch.setattr(st, "store", st.Store())
     built = app_mod.Application([])
     built.cfg = cfg_mod.Config(services=[
         cfg_mod.Service(name="AppEngine", label="CompuTec AppEngine"),
@@ -146,3 +151,74 @@ def test_startup_survives_a_corrupt_store(tmp_path, monkeypatch):
     history.record_action("A", "start", "panel", path=str(store))
     assert len(history.read(path=str(store))) == 1
     db.close(str(store))
+
+
+# -- the window between started and ready, end to end -----------------------
+def _watched(name="webclient.service", machine="hanadev", grace=60):
+    return cfg_mod.Service(
+        name=name, label="Web Client", machine=machine,
+        health=cfg_mod.Health(enabled=True, grace_seconds=grace,
+                              interval_seconds=5, checks=[
+                                  cfg_mod.HealthCheck(
+                                      kind="http", expect_status=401,
+                                      url="https://hanadev/tcli/dbtype/get.svc")]))
+
+
+def test_reaching_running_shows_starting_all_the_way_to_the_store(application):
+    """The unit tests passed while nothing appeared on screen: the handler set
+    health to "unknown" immediately after note_running had published "starting",
+    throwing it away. This drives the real signal path."""
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    application.flyout.rebuild()
+
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+
+    assert application.store.health_of("webclient.service", "hanadev") == \
+        health.STARTING
+    assert "60s" in application.store.health_detail("webclient.service", "hanadev")
+
+
+def test_the_row_says_starting_rather_than_running(application):
+    """And it reaches the pixels: the chip is what the user was looking at."""
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    application.flyout.rebuild()
+
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+    application.flyout.apply_states()
+
+    row = application.flyout._rows[("hanadev", "webclient.service")]
+    assert row.chip.text() == "Starting…"
+    assert "checks" in row.toolTip() or "check" in row.toolTip()
+
+
+def test_a_service_without_checks_still_goes_straight_to_running(application):
+    """The fix must not turn every start into a warm-up."""
+    application.cfg = cfg_mod.Config(services=[
+        cfg_mod.Service(name="Plain", label="Plain")])
+    application.flyout.rebuild()
+
+    application.store.update("Plain", st.RUNNING)
+    application.flyout.apply_states()
+
+    assert application.store.health_of("Plain") == health.UNKNOWN
+    assert application.flyout._rows[("", "Plain")].chip.text() == st.RUNNING
+
+
+def test_no_grace_means_no_warm_up_state(application):
+    """Zero grace is "judge me immediately", so there is no window to report."""
+    application.cfg = cfg_mod.Config(services=[_watched(grace=0)],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    application.flyout.rebuild()
+
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+
+    assert application.store.health_of("webclient.service", "hanadev") == \
+        health.UNKNOWN
