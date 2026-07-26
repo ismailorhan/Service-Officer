@@ -614,6 +614,10 @@ class MachineDetail(_Page):
             return
         machine.secret_ref = secrets.ref_for_machine(machine.name)
         stored = secrets.put(machine.secret_ref, typed)
+        # The config cannot show that this changed — it holds the name of the entry,
+        # which is the same name as before — so nothing at save time would know to
+        # let go of a connection made with the old password. Say so here.
+        connectors.forget(machine.name)
         # Dots, not the value: it is set and it looks set.
         self.password.show_stored(stored)
         if stored:
@@ -631,6 +635,7 @@ class MachineDetail(_Page):
         if machine is None:
             return
         secrets.forget(machine.secret_ref or secrets.ref_for_machine(machine.name))
+        connectors.forget(machine.name)
         self.password.show_stored(False)
         self.password_state.setText("not set")
         self.result.setText("Forgotten. That machine cannot be reached with a "

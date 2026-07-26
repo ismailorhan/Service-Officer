@@ -206,6 +206,26 @@ def _two_machines():
                   cfg_mod.Service(name="B1ServerTools64", machine="sc-sql")])
 
 
+def test_saving_only_lets_go_of_machines_that_changed(application):
+    """Every connection was dropped on every save. Rebuilding one to a remote
+    Windows machine costs twenty-one seconds — measured — so changing the theme took
+    that machine off the screen for twenty-one seconds."""
+    before = _two_machines()
+    after = _two_machines()
+    assert application._machines_changed(before, after) == []
+
+    after.machines[1].username = "SC\\someone-else"
+    assert application._machines_changed(before, after) == ["sc-sql"]
+
+    gone = _two_machines()
+    gone.machines.pop(1)
+    assert application._machines_changed(before, gone) == ["sc-sql"]
+
+    arrived = _two_machines()
+    arrived.machines.append(cfg_mod.Machine(name="new", kind="linux"))
+    assert application._machines_changed(before, arrived) == ["new"]
+
+
 def test_the_ui_thread_never_asks_another_machine_anything(application, monkeypatch):
     """The frozen window, measured: enumerating a remote Windows box took fifteen
     seconds and a firewalled one forty-two, all of it on the thread that paints.

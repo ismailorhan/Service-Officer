@@ -819,11 +819,16 @@ class Application(QObject):
 
     def _settings_saved(self, new_cfg):
         old_auto = self.cfg.auto_start
-        self.cfg = new_cfg
         # A machine may have been repointed, given a different account, or had its
-        # transport changed. Drop the cached connectors — and with them any SSH
-        # session still open to where that machine used to be.
-        connectors.forget()
+        # transport changed: those connections have to go, along with any session
+        # still open to where the machine used to be.
+        #
+        # Only those, though. Dropping every connection on every save cost a fresh
+        # connection to each machine, and to one remote Windows box that is
+        # twenty-one seconds of "Unknown" for changing an unrelated setting.
+        for name in self._machines_changed(self.cfg, new_cfg):
+            connectors.forget(name)
+        self.cfg = new_cfg
         try:
             cfg_mod.save(self.cfg)
         except Exception as exc:
@@ -846,6 +851,20 @@ class Application(QObject):
         self.tray.apply_state()
         log.info("settings saved: %d service(s), %d stack(s)",
                  len(self.cfg.services), len(self.cfg.stacks))
+
+    @staticmethod
+    def _machines_changed(old, new) -> list:
+        """Machines whose settings differ between two configs, plus any that have
+        appeared or gone. Dataclass equality does the comparing.
+
+        A changed password is not visible here — it lives in the secret store and the
+        config only holds the unchanged name of the entry — so the panel drops that
+        machine's connection itself when it stores one.
+        """
+        before = {m.name: m for m in getattr(old, "machines", [])}
+        after = {m.name: m for m in getattr(new, "machines", [])}
+        return [name for name in set(before) | set(after)
+                if before.get(name) != after.get(name)]
 
     @staticmethod
     def _open_services_mmc():
