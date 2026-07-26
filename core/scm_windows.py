@@ -62,7 +62,13 @@ def start_service(service_name: str, machine: str = "") -> None:
 #: How long to wait for a service to admit it has stopped, before starting it again.
 #: Only used by restart — a stop on its own is reported as soon as it is accepted,
 #: and the poller sees the rest.
-STOP_WAIT = 30.0
+#:
+#: Thirty seconds was not enough for a real one: SAP's Server Tools is a Tomcat, and
+#: a restart of it left the service stopped for good. Windows answers a start request
+#: with 1056, "already running", for a service in *any* state other than Stopped —
+#: Stopping included — so the start was refused, and 1056 was on the list of errors
+#: treated as nothing to worry about.
+STOP_WAIT = 120.0
 
 
 def stop_service(service_name: str, machine: str = "") -> None:
@@ -76,24 +82,58 @@ def stop_service(service_name: str, machine: str = "") -> None:
     held_for(machine).do(work)
 
 
+#: Windows' answer to "start this" for a service that is not Stopped. It says
+#: "already running" even when the service is Stopping, which is what made a restart
+#: give up quietly in the middle.
+ALREADY_RUNNING = 1056
+
+
+def _wait_until_stopped(service_name: str, machine: str, seconds: float) -> str:
+    """The state it reached. Returns as soon as it is Stopped."""
+    deadline = time.monotonic() + seconds
+    state = query_status(service_name, machine)
+    while state != st.STOPPED and time.monotonic() < deadline:
+        time.sleep(0.5)
+        state = query_status(service_name, machine)
+    return state
+
+
 def restart_service(service_name: str, machine: str = "") -> None:
-    """Stop, wait for it to be stopped, start.
+    """Stop, wait for it to actually be stopped, start.
 
     Written out rather than using win32serviceutil.RestartService, which opens its
     own connection to the machine for each step — 21 seconds each, measured, against
     a remote box whose held connection answers in 7 milliseconds.
+
+    The waiting is the whole job. A service that has been asked to stop and has not
+    finished refuses a start with "already running", and a restart that treats that as
+    nothing to worry about leaves the service stopped and reports success — which is
+    the worst outcome available, because nobody goes to look.
     """
     try:
         stop_service(service_name, machine)
     except pywintypes.error as exc:
         if not nothing_to_do(exc):
             raise
-    deadline = time.monotonic() + STOP_WAIT
-    while time.monotonic() < deadline:
-        if query_status(service_name, machine) == st.STOPPED:
-            break
-        time.sleep(0.4)
-    start_service(service_name, machine)
+
+    state = _wait_until_stopped(service_name, machine, STOP_WAIT)
+    if state != st.STOPPED:
+        raise RuntimeError(
+            f"it was still {state.lower()} {STOP_WAIT:.0f}s after being asked to "
+            f"stop, so it has not been started again")
+    try:
+        start_service(service_name, machine)
+    except pywintypes.error as exc:
+        if getattr(exc, "winerror", None) != ALREADY_RUNNING:
+            raise
+        # It had not finished stopping after all: the state we read was a moment old.
+        # Wait the rest of the budget out and try the one thing that remains.
+        state = _wait_until_stopped(service_name, machine, STOP_WAIT)
+        if state != st.STOPPED:
+            raise RuntimeError(
+                f"it would not stop — Windows still calls it {state.lower()} — so it "
+                f"has not been started again") from exc
+        start_service(service_name, machine)
 
 
 def list_all_services(machine: str = "") -> list:

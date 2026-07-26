@@ -222,6 +222,72 @@ def test_no_password_saved_says_so_rather_than_failing_obscurely(wnet, monkeypat
     assert "no password saved" in str(raised.value)
 
 
+def test_a_restart_waits_for_the_service_to_actually_stop(monkeypatch):
+    """SAP's Server Tools is a Tomcat and takes its time. A restart of it left the
+    service stopped for good: the wait ran out while it was still Stopping, the start
+    was refused with 1056 "already running" — which is what Windows says about any
+    service that is not Stopped — and 1056 was on the list of errors treated as
+    nothing to worry about. So the app reported success about a service it had just
+    turned off."""
+    states = iter(["Running", "Stopping", "Stopping", "Stopping", "Stopped"])
+    started = []
+    monkeypatch.setattr(scm_windows, "stop_service", lambda name, machine="": None)
+    monkeypatch.setattr(scm_windows, "query_status",
+                        lambda name, machine="": next(states, "Stopped"))
+    monkeypatch.setattr(scm_windows, "start_service",
+                        lambda name, machine="": started.append(name))
+    monkeypatch.setattr(scm_windows.time, "sleep", lambda _s: None)
+
+    scm_windows.restart_service("B1ServerTools64", "10.77.3.112")
+
+    assert started == ["B1ServerTools64"], "started it before it had stopped"
+
+
+def test_a_service_that_will_not_stop_is_reported_not_swallowed(monkeypatch):
+    """And it must be an error the app cannot mistake for "nothing to do": leaving a
+    service stopped while saying the restart worked is the worst outcome available,
+    because nobody goes to look."""
+    monkeypatch.setattr(scm_windows, "stop_service", lambda name, machine="": None)
+    monkeypatch.setattr(scm_windows, "query_status",
+                        lambda name, machine="": "Stopping")
+    monkeypatch.setattr(scm_windows, "start_service",
+                        lambda name, machine="": pytest.fail("started it anyway"))
+    monkeypatch.setattr(scm_windows.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(scm_windows, "STOP_WAIT", 1.0)
+
+    with pytest.raises(RuntimeError) as raised:
+        scm_windows.restart_service("B1ServerTools64", "10.77.3.112")
+
+    said = str(raised.value)
+    assert "still stopping" in said and "not been started again" in said
+    assert scm_windows.nothing_to_do(raised.value) == "", \
+        "a restart that failed would be logged as nothing to do"
+
+
+def test_already_running_on_the_start_waits_again_rather_than_giving_up(monkeypatch):
+    """The state read a moment ago can be out of date, so this is a real race rather
+    than only a too-short budget."""
+    states = iter(["Stopped", "Stopping", "Stopped"])
+    attempts = []
+
+    def start(name, machine=""):
+        attempts.append(name)
+        if len(attempts) == 1:
+            raise FakeError(scm_windows.ALREADY_RUNNING, "already running")
+
+    monkeypatch.setattr(scm_windows, "stop_service", lambda name, machine="": None)
+    monkeypatch.setattr(scm_windows, "query_status",
+                        lambda name, machine="": next(states, "Stopped"))
+    monkeypatch.setattr(scm_windows, "start_service", start)
+    monkeypatch.setattr(scm_windows, "pywintypes",
+                        type("m", (), {"error": FakeError}))
+    monkeypatch.setattr(scm_windows.time, "sleep", lambda _s: None)
+
+    scm_windows.restart_service("B1ServerTools64", "10.77.3.112")
+
+    assert len(attempts) == 2, "gave up on the first refusal"
+
+
 def test_an_unanswering_machine_gives_up_instead_of_hanging(monkeypatch):
     """Measured on 10.77.3.110, which has RPC's dynamic ports firewalled:
     OpenSCManager took **42 seconds** to answer "the RPC server is unavailable".

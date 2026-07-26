@@ -434,6 +434,11 @@ class Application(QObject):
                     log.info("%s %s: nothing to do, %s", action, name, harmless)
                 else:
                     error = getattr(exc, "strerror", None) or str(exc)
+                    # Logged, not only shown: a dialog is gone the moment it is
+                    # dismissed, and the one failure that mattered tonight left
+                    # nothing behind but a line saying it was harmless.
+                    log.warning("%s %s%s failed: %s", action, name,
+                                f" on {machine}" if machine else "", error)
                 self.store.clear_expected(name, machine)
             # Asked here, on this thread, and carried to the handler: it is the same
             # round trip the action just made, and the handler runs on the UI thread.
