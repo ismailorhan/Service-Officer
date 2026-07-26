@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import shlex
 import threading
-import time
 
 from . import connectors
 from . import state as st

@@ -20,7 +20,6 @@ import ctypes.wintypes
 import threading
 import time
 
-from . import state as _st
 
 _advapi = ctypes.windll.advapi32
 _kernel = ctypes.windll.kernel32

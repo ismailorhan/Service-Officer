@@ -16,7 +16,6 @@ import threading
 import time
 
 import win32service
-import win32serviceutil
 import pywintypes
 
 from . import applog

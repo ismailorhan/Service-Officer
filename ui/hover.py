@@ -13,7 +13,7 @@ from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from core import state as st
-from . import icons, theme
+from . import icons
 
 SHOW_DELAY_MS = 350
 

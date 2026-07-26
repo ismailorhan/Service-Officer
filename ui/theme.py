@@ -225,7 +225,7 @@ def _glyph(kind: str, colour: str) -> str:
     global _glyph_dir
     import os
     import tempfile
-    from PySide6.QtCore import QRectF, Qt as _Qt
+    from PySide6.QtCore import Qt as _Qt
     from PySide6.QtGui import QPainter, QPen, QPixmap
 
     if _glyph_dir is None:

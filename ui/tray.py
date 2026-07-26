@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from core import state as st

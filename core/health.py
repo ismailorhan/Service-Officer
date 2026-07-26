@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from . import applog
-from . import config as cfg_mod
 
 log = applog.get("health")
 

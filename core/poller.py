@@ -18,7 +18,6 @@ import threading
 import time
 
 from . import connectors
-from . import state as st
 
 
 class Poller:

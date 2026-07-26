@@ -4,7 +4,7 @@ A Windows tray app for the servers an ERP runs on. It watches services, restarts
 them when they fail, runs them in the right order, and tells you when one is
 running but not actually answering — without opening Services MMC and guessing.
 
-Version 2.0.0. Python 3.12 + PySide6, packaged with PyInstaller and Inno Setup.
+Version 2.1.0. Python 3.12 + PySide6, packaged with PyInstaller and Inno Setup.
 
 ## What it does
 
@@ -51,6 +51,19 @@ restart loop is not the cure.
 
 **Stacks** — start or stop several services in order, each step waiting for the
 one before it: for a delay, or until the service reports the state you asked for.
+
+**Other machines** — the panel manages more than the computer it runs on, and how
+each one is reached is a property of that machine rather than a mode of the app:
+
+| Target | Reached by | Needs on that machine |
+|---|---|---|
+| This computer | the service manager directly | nothing |
+| Another Windows machine | the service manager over RPC, as the signed-in account or as a named one (`DOMAIN\account` and a password kept encrypted here) | the *Remote Service Management* and *File and Printer Sharing (SMB-In)* firewall rules, in the domain profile |
+| A Linux machine | `systemctl` and `journalctl` over SSH, by key or password, with the host key pinned | nothing installed — an account, and `sudo` without a password if you want to control rather than only watch |
+
+A Linux service is not a second-class one: the same rows, the same recovery, the
+same health checks, the same history. `sapb1servertools.service` and
+`CompuTec AppEngine` sit in one list.
 
 ## Requirements
 
@@ -104,7 +117,7 @@ iscc installer.iss
 
 Output: `dist\ServiceOfficerSetup.exe`.
 
-Versions are `2.0.0` for a release and `2.0.0.N` for internal builds, where N is
+Versions are `2.1.0` for a release and `2.1.0.N` for internal builds, where N is
 a build counter in `.build-number` (not committed). `stamp_version.py` refuses to
 build if `core/version.py`, `installer.iss` and the git tag disagree.
 
@@ -144,14 +157,22 @@ renamed `.migrated`.
 app.py             wiring: tray, timers, and who hears what
 core/              no UI imports at all
   config.py        the typed model, atomic save, migration
-  control.py       the SCM, remote-capable (machine= on every call)
-  scm.py           push notifications for status changes
+  control.py       one door to every target; picks the transport and nothing more
+  connectors.py    what a transport has to be able to do, and the registry of them
+  scm_windows.py   transport: the Windows service manager, local or remote
+  win_session.py   signing in to another Windows machine as a named account
+  ssh_linux.py     transport: systemctl and journalctl over SSH
+  poller.py        statuses for the machines that cannot tell us themselves
+  scm.py           push notifications, for the one machine that can
   state.py         status cache and event bus
   health.py        the five checks, and the monitor that acts on them
   watchdog.py      recovery rules
   stacks.py        the ordered runner
   schedule.py      triggers
   history.py       append, query, export
+  db.py            the SQLite event store and its migrations
+  clock.py         one rule about time: store UTC, show local
+  secrets.py       passwords, encrypted per machine, never in services.json
   applog.py        the rotating log
   version.py       one place that knows the version
 ui/                Qt only

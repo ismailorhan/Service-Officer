@@ -170,9 +170,29 @@ Monthly per-service availability, derived from the history in feature 3.
 
 ## Non-features (deliberately out of scope)
 
-- Central server, agents, dashboards — that's the monitoring-suite market, and
-  the point of this tool is that it needs none of that.
-- Cross-platform. The whole value is Win32/SCM depth.
+- **Agents on managed machines.** Measured on 2026-07-26: SSH reads four services
+  on the SUSE box in 64 ms and installs nothing, and a held connection to a remote
+  Windows service manager answers in 9 ms. An agent on a headless server is
+  software to deploy, update, secure and watch, in exchange for tens of
+  milliseconds. It stays possible — an agent would be a third `Connector`
+  implementation and nothing above `control.py` would know — but it is not the
+  plan.
+- **Dashboards, alerting pipelines, metric stores.** That is the monitoring-suite
+  market. This tool tells one team about one landscape.
+- Cross-platform *clients*. The whole value is Win32/SCM depth; Linux is a
+  **target**, not a place this runs.
+
+### No longer a non-feature: a central service
+
+The line above used to read "central server, agents, dashboards — the point of
+this tool is that it needs none of that", and half of that stopped being true the
+moment a second person wanted to see the same landscape. A hub is now planned:
+one Windows service owning the config, the connections and the history, with the
+tray app and later a browser page reading it. Agents are still out; the hub
+reaches its targets itself.
+
+The reasoning and the task-by-task plan:
+[docs/superpowers/plans/2026-07-27-hub-service-and-clients.md](superpowers/plans/2026-07-27-hub-service-and-clients.md).
 
 ---
 

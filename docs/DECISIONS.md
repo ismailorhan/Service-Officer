@@ -96,6 +96,19 @@ If explicit credentials become a real requirement, they go in **Windows
 Credential Manager** (`win32cred.CredWrite`) and a session is established with
 `WNetAddConnection2` before the SCM calls — never a password in `services.json`.
 
+> **Built on 2026-07-26**, and the requirement was real within a day: the machines
+> to manage are in the `SC` domain and this workstation is in `CT.CORP`, so the
+> caller's token is refused with "access denied" no matter how many rights it has
+> at home. The `WNetAddConnection2` half is exactly as predicted. The store is
+> **DPAPI machine scope** (`core/secrets.py`) rather than Credential Manager,
+> because a credential written to a user's vault cannot be read by a LocalSystem
+> service, and that service is where this engine is going. `services.json` holds
+> the name of the store entry and never the password, as promised.
+>
+> The **known gap** below was closed the same week: `core/poller.py` polls every
+> machine without push, and 2026-07-27 established that no remote transport has
+> push — see "The two lies a transport can tell".
+
 Alternatives considered and rejected for now:
 - **WinRM (5985/5986)** — cleaner credential handling and friendlier to modern
   firewalls, but needs enabling on every target, is slower per call, and gives up
@@ -113,6 +126,31 @@ a polling loop for them — a few seconds' interval, since remote queries measur
 ---
 
 ## Four servers, and a central hub — designed 2026-07-25, not built
+
+> **Superseded on 2026-07-27, in the part that matters.** Stage 1 stands and is
+> what gets built: the engine as a Windows service, the panel as its client.
+> Stage 2 does not — **there are no agents on managed machines, so there is
+> nothing for a hub to receive.** The hub *is* Stage 1's service, and it reaches
+> its targets itself: the SCM for Windows, SSH for Linux.
+>
+> What changed was evidence rather than taste. Between them, 2026-07-26 and
+> 2026-07-27 measured SSH reading four services on a real SUSE box in 64 ms with
+> nothing installed there, and a held connection to a remote Windows service
+> manager answering in 9 ms. An agent buys tens of milliseconds and costs a
+> deployment, an update path and a second thing to monitor on every server — and
+> the Linux targets are headless boxes where the owner does not want our software
+> at all, which is a reasonable position and also the technically correct one.
+>
+> Agent→hub's real prize was **not storing credentials for targets**. That is
+> answered more cheaply: run the hub as a domain service account in the targets'
+> domain and there is nothing to store. Where a target is in another forest — the
+> `SC` domain reached from `CT.CORP`, measured on 2026-07-26 — a per-machine
+> credential in the DPAPI store covers it.
+>
+> The plan that replaces Stage 2:
+> [superpowers/plans/2026-07-27-hub-service-and-clients.md](superpowers/plans/2026-07-27-hub-service-and-clients.md).
+> An agent transport remains possible as a third `Connector` implementation, per
+> target, if a machine ever turns out to be genuinely unreachable by pull.
 
 Yes, a centre is needed, but the *first* step is not centralisation.
 
@@ -357,3 +395,83 @@ Tools for real, photographed every two seconds. The row said "Starting…" from 
 tenth second to the thirty-fourth and Running from the thirty-sixth — twenty-six
 seconds of warm-up against 24.1 seconds of measured downtime — with the dot amber
 and the tray gear turning in every one of those frames.
+
+---
+
+## Managing another Windows machine: three numbers that shaped the code — 2026-07-27
+
+All three were bugs before they were measurements, and each one is invisible until
+somebody points a stopwatch at it.
+
+**Opening a connection costs everything; using it costs nothing.** Against a Windows
+box in another domain (`10.77.3.112`, ours is `CT.CORP`, its is `SC`):
+
+| | |
+|---|---:|
+`OpenSCManager`, three times over | 21032 ms, 21022 ms, 21033 ms |
+`EnumServicesStatus` on a held handle | 28 ms, 18 ms, 19 ms |
+`OpenService` + `QueryServiceStatus` on a held handle | 7 ms, 7 ms, 6 ms |
+
+The code opened afresh for every question — status, start type and pid are three —
+so reading one service's state cost 63 seconds. The connection is now held per
+machine and reopened only when a handle goes stale: 21 seconds once per run, then
+9 ms a poll.
+
+**Where the 21 seconds goes.** A TCP connect to any high port on that machine takes
+21036 ms to fail, which is Windows' SYN retry budget. RPC tries a dynamic TCP port
+first, that port is firewalled, and it falls back to named pipes over SMB — which
+works, twenty-one seconds later. `sc.exe` pays exactly the same 21.1 s, so this is
+Windows' behaviour and not ours. Enabling the *Remote Service Management (RPC)* rule
+on the target removes it.
+
+**A Tomcat takes a minute to stop.** SAP's Server Tools, timed through the code that
+restarts it:
+
+    stop asked           0.0s  ->  Stopping
+    Stopped             61.0s
+    running again       62.8s
+
+The budget was 30 seconds. When it ran out the code started the service anyway, and
+Windows answers a start request with 1056, "already running", for a service in *any*
+state other than Stopped — Stopping included. 1056 was on the list of errors meaning
+"nothing to do", so the refusal was swallowed, the restart was recorded as a success,
+and the service finished stopping in peace. The budget is two minutes now, the wait is
+checked rather than assumed, and a service that will not stop raises an error that
+"nothing to do" cannot forgive.
+
+## The two lies a transport can tell — 2026-07-27
+
+Both cost an evening, and both were a component claiming an ability it did not have.
+
+**`push` meant "can read the journal".** The SSH connector set it from whether
+`journalctl` worked, and a machine that claims push is excluded from polling. Nothing
+in this app follows a journal — there is no `journalctl -f` anywhere — and the SUSE
+box signs in as root, which can always read it. So every service on it sat at
+"Unknown" for a whole session. It had been hidden by the startup priming pass asking
+each service directly: the state was right once and then quietly frozen, which is the
+failure the poller exists to prevent. Reading logs and being told about changes are
+different abilities, and only the first is true over SSH.
+
+**"Unknown" on a service had several explanations and no way to choose between them.**
+So a machine's row now says whether it is answering — "connected · answered 3s ago",
+"no answer, last tried 12s ago", or "not asked yet", which is a state of its own and
+was the one in play. With that on screen the diagnosis is one glance instead of an
+evening.
+
+## Nothing that repeats is slow — 2026-07-27
+
+Measured rather than assumed, on a nine-service, three-machine configuration, because
+the honest answer to "should we optimise the UI" turned out to be no:
+
+| Path | Median |
+|---|---:|
+`flyout.apply_states()` — runs on every event | 0.05 ms |
+`hover._render()` — rebuilt on every refresh | 1.09 ms |
+`machines_page.refresh()` — every 3 s while open | 3.17 ms |
+`dashboard.apply_states()` | 0.05 ms |
+`store.update()` with no change | under 0.01 ms |
+
+The one to watch is the machines list, and 3 ms every three seconds is a thousandth of
+a core. The expensive things in this application are all on the other side of a
+network, which is why the rule that came out of tonight is about threads and not about
+algorithms: **the UI thread only ever asks this computer.**
