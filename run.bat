@@ -50,5 +50,5 @@ exit /b %errorlevel%
 :panel
 REM Just the panel, so a UI change can be looked at without the tray, the
 REM watchdog, the scheduler or the health monitor running.
-"%PY%" -c "import sys; from PySide6.QtWidgets import QApplication; from core import config, connectors, state; from ui import panel, theme; a=QApplication(sys.argv); cfg=config.load(); connectors.use_config(lambda: cfg); theme.set_mode(cfg.theme); a.setStyleSheet(theme.sheet()); w=panel.MainPanel(cfg, store=state.store); w.resize(1060,700); w.show(); sys.exit(a.exec())"
+"%PY%" -c "import sys; from PySide6.QtWidgets import QApplication; from core import config, connectors, state; from ui import panel, theme; a=QApplication(sys.argv); cfg=config.load(); connectors.use_config(lambda: cfg); theme.set_mode(cfg.theme); a.setStyleSheet(theme.sheet()); w=panel.MainPanel(cfg, store=state.store); w.saved.connect(lambda c: (config.save(c), connectors.forget())); w.resize(1060,700); w.show(); sys.exit(a.exec())"
 exit /b %errorlevel%
