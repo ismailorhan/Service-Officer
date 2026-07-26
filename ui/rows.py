@@ -14,10 +14,12 @@ from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QPushButton,
 
 from core import state as st
 from . import theme
-from .widgets import Elide
+from .widgets import Chip, Elide
 
 #: what each action's button looks like in a narrow row
-GLYPHS = (("start", "▶", "Start"), ("stop", "■", "Stop"), ("restart", "↻", "Restart"))
+GLYPHS = (("start", theme.GLYPH_START, "Start"),
+          ("stop", theme.GLYPH_STOP, "Stop"),
+          ("restart", theme.GLYPH_RESTART, "Restart"))
 
 
 class ServiceRow(QWidget):
@@ -36,7 +38,7 @@ class ServiceRow(QWidget):
         self.setStyleSheet(f"#row:hover {{ background: {theme.BG_HOVER}; }}")
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setContentsMargins(*theme.ROW_PAD)
         lay.setSpacing(8)
 
         # Ticking rows is how a whole SAP stack gets stopped without clicking
@@ -56,10 +58,7 @@ class ServiceRow(QWidget):
         who.addWidget(self.short)
         lay.addLayout(who, 1)
 
-        self.chip = QLabel("…")
-        self.chip.setAlignment(Qt.AlignCenter)
-        self.chip.setMinimumWidth(70)
-        self.chip.setStyleSheet(theme.chip_style("none"))
+        self.chip = Chip("…", "none", min_width=theme.CHIP_MIN_W)
         lay.addWidget(self.chip)
 
         self.buttons = {}
@@ -76,7 +75,7 @@ class ServiceRow(QWidget):
 
         # Last resort, kept visually apart and in red: when a service wedges,
         # Stop does nothing and the SCM reports "Stopping" for ever.
-        kill = QPushButton("✕")
+        kill = QPushButton(theme.GLYPH_KILL)
         kill.setProperty("kind", "kill")
         kill.setToolTip("Kill the process — for when Stop doesn't work")
         kill.setCursor(Qt.PointingHandCursor)
@@ -96,8 +95,7 @@ class ServiceRow(QWidget):
         # A disabled service can't be started at all, so say so instead of
         # showing "Stopped" next to a Start button that would only fail.
         if disabled and cat == "stopped":
-            self.chip.setText(busy_label or "Disabled")
-            self.chip.setStyleSheet(theme.chip_style("none"))
+            self.chip.set_state(busy_label or "Disabled", "none")
             for action, b in self.buttons.items():
                 b.setEnabled(False)
             self.setToolTip("This service is disabled in Windows — enable it in "
@@ -107,8 +105,7 @@ class ServiceRow(QWidget):
         # It gets the chip, because "Running" next to a dead service is a lie —
         # and the reason goes in the tooltip, where the next question is answered.
         if health == "unhealthy" and not busy_label and cat == "running":
-            self.chip.setText("Not responding")
-            self.chip.setStyleSheet(theme.chip_style("stopped"))
+            self.chip.set_state("Not responding", "stopped")
             self.setToolTip("The service is running, but its health checks are "
                             "failing:\n" + (health_detail or "no detail"))
             self._set_buttons(cat, busy_label)
@@ -116,8 +113,8 @@ class ServiceRow(QWidget):
 
         self.setToolTip(f"Health checks pass — {health_detail}"
                         if health == "healthy" and health_detail else "")
-        self.chip.setText(busy_label or status)
-        self.chip.setStyleSheet(theme.chip_style("pending" if busy_label else cat))
+        self.chip.set_state(busy_label or status,
+                            "pending" if busy_label else cat)
         self._set_buttons(cat, busy_label)
 
     def _set_buttons(self, cat: str, busy_label: str) -> None:
@@ -148,7 +145,7 @@ class StackRow(QWidget):
         self.setObjectName("row")
         self.setAttribute(Qt.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setContentsMargins(*theme.ROW_PAD)
         lay.setSpacing(10)
 
         col = QVBoxLayout()
@@ -157,7 +154,7 @@ class StackRow(QWidget):
         col.addWidget(Elide(stack.summary(services) or "no steps yet", "hint"))
         lay.addLayout(col, 1)
 
-        trigger = QPushButton("▶  Run")
+        trigger = QPushButton(f"{theme.GLYPH_START}  Run")
         trigger.setProperty("kind", "primary")
         trigger.setCursor(Qt.PointingHandCursor)
         trigger.setEnabled(bool(stack.steps))
@@ -199,7 +196,7 @@ class SectionBar(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 5, 14, 5)
+        lay.setContentsMargins(*theme.BAR_PAD)
         lay.setSpacing(8)
 
         self.chevron = QLabel()
@@ -217,7 +214,7 @@ class SectionBar(QWidget):
         # ▸ / ▾ rather than a drawn icon: these are BMP glyphs, and an astral
         # one costs ~600 ms of colour-emoji font loading in this process.
         folded = is_collapsed(self.category)
-        self.chevron.setText("▸" if folded else "▾")
+        self.chevron.setText(theme.GLYPH_FOLDED if folded else theme.GLYPH_FOLD)
         self.chevron.setStyleSheet(f"color:{theme.FG3};")
         self.setToolTip("Click to show these services" if folded
                         else "Click to fold this group away")
@@ -252,7 +249,7 @@ class BulkBar(QWidget):
         self.setObjectName("bulkBar")
         self.setAttribute(Qt.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 9, 10, 9)
+        lay.setContentsMargins(*theme.FOOT_PAD)
         lay.setSpacing(6)
 
         self.count = QLabel("")

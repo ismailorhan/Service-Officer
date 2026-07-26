@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
 from core import state as st
 from . import theme
 from .rows import (BulkBar, SectionBar, ServiceRow, StackRow, is_collapsed)
-from .widgets import button as _button, label as _label
+from .widgets import Chip, button as _button, label as _label
 
 
 class DashboardPage(QWidget):
@@ -46,8 +46,7 @@ class DashboardPage(QWidget):
         head.setSpacing(10)
         title = _label("Dashboard", "title")
         head.addWidget(title)
-        self.badge = _label("")
-        self.badge.setStyleSheet(theme.chip_style("running"))
+        self.badge = Chip("", "running")
         head.addWidget(self.badge)
         head.addStretch(1)
         head.addWidget(_button("↻  Refresh", "quiet", self.refresh_requested.emit))
@@ -77,8 +76,8 @@ class DashboardPage(QWidget):
         self.tick_all.clicked.connect(self._toggle_all)
         cl.addWidget(self.tick_all)
         for text, width, align in (("SERVICE", 0, Qt.AlignLeft),
-                                   ("STATUS", 74, Qt.AlignCenter),
-                                   ("ACTIONS", 96, Qt.AlignRight)):
+                                   ("STATUS", theme.COL_STATUS_W, Qt.AlignCenter),
+                                   ("ACTIONS", theme.COL_ACTIONS_W, Qt.AlignRight)):
             lb = _label(text, "section")
             lb.setAlignment(align | Qt.AlignVCenter)
             if width:
@@ -154,7 +153,7 @@ class DashboardPage(QWidget):
             bar.setObjectName("sectionBar")
             bar.setAttribute(Qt.WA_StyledBackground, True)
             bl = QHBoxLayout(bar)
-            bl.setContentsMargins(12, 5, 14, 5)
+            bl.setContentsMargins(*theme.BAR_PAD)
             bl.addWidget(_label("STACKS", "section"))
             bl.addStretch(1)
             self._extras.append(bar)
@@ -187,11 +186,10 @@ class DashboardPage(QWidget):
                 stopped += 1
 
         total = len(cfg.services)
-        self.badge.setText(f"{running} of {total} running" if total
-                           else "no services")
-        self.badge.setStyleSheet(theme.chip_style(
+        self.badge.set_state(
+            f"{running} of {total} running" if total else "no services",
             "running" if total and running == total
-            else "stopped" if not running else "pending"))
+            else "stopped" if not running else "pending")
         parts = [f"{total} service{'s' if total != 1 else ''}",
                  f"{running} running", f"{stopped} stopped"]
         other = total - running - stopped

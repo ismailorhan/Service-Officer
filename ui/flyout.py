@@ -17,8 +17,9 @@ from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
 from core import state as st
 from . import icons, theme
 from .rows import BulkBar, SectionBar, ServiceRow, StackRow, is_collapsed
+from .widgets import Chip
 
-WIDTH = 466
+WIDTH = theme.FLYOUT_WIDTH          # kept as a name others import
 ROW_MIN = 3          # keep a comfortable minimum even with one service
 MARGIN = 12
 
@@ -70,8 +71,7 @@ class Flyout(QWidget):
         title.setObjectName("flyoutTitle")
         head.addWidget(title)
         head.addStretch(1)
-        self.badge = QLabel("")
-        self.badge.setStyleSheet(theme.chip_style("running"))
+        self.badge = Chip("", "running")
         head.addWidget(self.badge)
 
         # Pinned, the panel stops closing when you click elsewhere — for
@@ -79,7 +79,7 @@ class Flyout(QWidget):
         self.pin = QPushButton()
         self.pin.setProperty("kind", "quiet")
         self.pin.setCheckable(True)
-        self.pin.setFixedSize(26, 24)
+        self.pin.setFixedSize(*theme.ACTION_BTN)
         self.pin.setIconSize(QSize(13, 13))
         self.pin.setCursor(Qt.PointingHandCursor)
         self.pin.toggled.connect(self._pin_toggled)
@@ -90,7 +90,7 @@ class Flyout(QWidget):
         # the button's font had no such character.
         close = QPushButton()
         close.setProperty("kind", "quiet")
-        close.setFixedSize(26, 24)
+        close.setFixedSize(*theme.ACTION_BTN)
         close.setIcon(icons.nav_icon("close", 12, theme.FG3))
         close.setIconSize(QSize(12, 12))
         close.setToolTip("Close")
@@ -128,8 +128,8 @@ class Flyout(QWidget):
         self.tick_all.clicked.connect(self._toggle_all)
         cl.addWidget(self.tick_all)
         for text, width, align in (("SERVICE", 0, Qt.AlignLeft),
-                                   ("STATUS", 74, Qt.AlignCenter),
-                                   ("ACTIONS", 96, Qt.AlignRight)):
+                                   ("STATUS", theme.COL_STATUS_W, Qt.AlignCenter),
+                                   ("ACTIONS", theme.COL_ACTIONS_W, Qt.AlignRight)):
             lb = QLabel(text)
             lb.setProperty("role", "section")
             lb.setAlignment(align | Qt.AlignVCenter)
@@ -170,11 +170,12 @@ class Flyout(QWidget):
         foot.setObjectName("footerBar")
         foot.setAttribute(Qt.WA_StyledBackground, True)
         fl = QHBoxLayout(foot)
-        fl.setContentsMargins(10, 9, 10, 9)
+        fl.setContentsMargins(*theme.FOOT_PAD)
         fl.setSpacing(6)
-        for text, slot in (("↻  Refresh", self.refresh),
-                           ("▤  Services", self.open_services_mmc.emit),
-                           ("⚙  Manage", self._settings)):
+        for text, slot in ((f"{theme.GLYPH_REFRESH}  Refresh", self.refresh),
+                           (f"{theme.GLYPH_SERVICES}  Services",
+                            self.open_services_mmc.emit),
+                           (f"{theme.GLYPH_SETTINGS}  Manage", self._settings)):
             b = QPushButton(text)
             b.clicked.connect(slot)
             fl.addWidget(b, 1)
@@ -274,7 +275,7 @@ class Flyout(QWidget):
             bar.setObjectName("sectionBar")
             bar.setAttribute(Qt.WA_StyledBackground, True)
             bl = QHBoxLayout(bar)
-            bl.setContentsMargins(14, 5, 14, 5)
+            bl.setContentsMargins(*theme.BAR_PAD)
             head = QLabel("STACKS")
             head.setProperty("role", "section")
             bl.addWidget(head)

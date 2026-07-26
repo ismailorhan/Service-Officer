@@ -37,7 +37,8 @@ from core import control, history, version
 from core import state as st
 from . import icons, theme
 from .dashboard import DashboardPage
-from .widgets import (Duration, FlatEdit, FlatFactor, FlatSpin, Grip, PadSpin,
+from .widgets import (Chip, Duration, FlatEdit, FlatFactor, FlatSpin, Grip,
+                      PadSpin,
                       ReorderList, SearchableList, Spin, button as _button,
                       label as _label)
 
@@ -100,9 +101,7 @@ class _ListRow(QWidget):
         col.addWidget(s)
         lay.addLayout(col, 1)
         if tag:
-            chip = _label(tag)
-            chip.setStyleSheet(theme.chip_style(tag_category))
-            lay.addWidget(chip)
+            lay.addWidget(Chip(tag, tag_category))
         lay.addWidget(_label("›", "hint"))
 
 
@@ -121,7 +120,7 @@ class ServicePicker(QDialog):
         self._machine = machine
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setContentsMargins(*theme.PAGE_PAD)
         lay.setSpacing(9)
         lay.addWidget(_label("Pick the services to monitor", "h2"))
         lay.addWidget(_label("Search by display name or service name. "
@@ -193,7 +192,7 @@ class _Page(QWidget):
     def __init__(self, title: str, desc: str, scroll: bool = False):
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 24, 28, 20)
+        outer.setContentsMargins(*theme.PANEL_PAD)
         outer.setSpacing(0)
         self.head = QVBoxLayout()
         self.head.setSpacing(4)
@@ -290,7 +289,7 @@ class ServicesPage(QWidget):
         widget.setObjectName("sectionBar")
         widget.setAttribute(Qt.WA_StyledBackground, True)
         row = QHBoxLayout(widget)
-        row.setContentsMargins(10, 4, 8, 4)
+        row.setContentsMargins(theme.SP_10, theme.SP_4, theme.SP_8, theme.SP_4)
         row.setSpacing(4)
         row.addWidget(_label(title.upper(), "section"), 1)
         row.addWidget(_label("empty — drag a service here" if not count

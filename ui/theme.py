@@ -16,6 +16,39 @@ MODE_SYSTEM, MODE_DARK, MODE_LIGHT = "system", "dark", "light"
 FONT = "Segoe UI"
 MONO = "Consolas"
 
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+# One place for spacing, type and the handful of fixed sizes. These were literals
+# repeated across five files, which is how a 14 becomes a 12 in one row and
+# nowhere else. Name them and the drift has nowhere to start.
+SP_2, SP_4, SP_6, SP_8, SP_10, SP_12, SP_14, SP_16 = 2, 4, 6, 8, 10, 12, 14, 16
+
+#: (left, top, right, bottom) for the recurring containers
+ROW_PAD = (SP_14, SP_8, SP_14, SP_8)        # a service or stack row
+BAR_PAD = (SP_12, 5, SP_14, 5)              # a section heading bar
+PAGE_PAD = (SP_16, SP_14, SP_16, SP_14)     # dialog bodies
+FOOT_PAD = (SP_10, 9, SP_10, 9)             # the footer, and the bulk bar
+PANEL_PAD = (28, 24, 28, 20)                # a page inside the main panel
+
+#: Type, in points. Roles live in sheet(); these are the sizes those roles use,
+#: so there is one ladder rather than eight literals scattered through the QSS.
+T_TITLE, T_H2, T_BODY = 13, 11.5, 10
+T_MONO, T_HINT, T_SECTION = 8.5, 9, 8
+
+#: Fixed sizes that two or more places have to agree on
+ACTION_BTN = (26, 24)                       # the per-row action buttons
+FLYOUT_WIDTH = 466                          # anchored above the tray icon
+COL_STATUS_W, COL_ACTIONS_W = 74, 96        # list column headers
+CHIP_MIN_W = 70                             # so chips line up down a column
+
+#: Glyphs. All in the Basic Multilingual Plane, deliberately: anything above
+#: U+FFFF pulls in Windows' colour-emoji font and costs ~600 ms per process.
+GLYPH_START, GLYPH_STOP, GLYPH_RESTART = "▶", "■", "↻"
+GLYPH_KILL, GLYPH_REFRESH, GLYPH_SERVICES = "✕", "↻", "▤"
+GLYPH_FOLD, GLYPH_FOLDED, GLYPH_GRIP = "▾", "▸", "⁝"
+GLYPH_SETTINGS, GLYPH_CRUMB, GLYPH_CHEVRON = "⚙", "›", "▾"
+
 _DARK = dict(
     # Surfaces, and the order they stack in. There used to be six near-blacks
     # doing this with three names for one job, and they drifted apart: the column
@@ -131,13 +164,39 @@ def chip(category: str):
     return table.get(category, table["none"])
 
 
+CHIP_CATEGORIES = ("running", "stopped", "pending", "paused", "none")
+
+
+def chip_rules() -> str:
+    """QSS for every chip state, keyed on a `cat` property.
+
+    Generated rather than applied per widget: a chip used to be a bare QLabel with
+    an inline stylesheet at each of seven call sites, so a theme change needed each
+    one rebuilt by hand. Now the sheet carries the colours and the widget carries
+    only which state it is in.
+
+    In light mode the pale fill needs the status colour as its border to stay
+    legible — a grey border on near-white washed it out.
+    """
+    common = (f"border-radius:9px; padding:2px 9px; "
+              f"font-size:{T_SECTION}pt; font-weight:600;")
+    out = [f'QLabel[chip="true"] {{ {common} }}']
+    for category in CHIP_CATEGORIES:
+        dot, bg, fg = chip(category)
+        border = dot if is_light() else LINE2
+        out.append(f'QLabel[chip="true"][cat="{category}"] {{ background:{bg}; '
+                   f'color:{fg}; border:1px solid {border}; }}')
+    return "\n    ".join(out)
+
+
 def chip_style(category: str) -> str:
-    """A status chip. In light mode the pale fill needs the status colour as its
-    border to stay legible — a grey border on near-white washed it out."""
+    """The same thing as an inline string, for the one case that cannot use the
+    sheet: a chip inside a widget that is itself styled inline."""
     dot, bg, fg = chip(category)
     border = dot if is_light() else LINE2
     return (f"background:{bg}; color:{fg}; border:1px solid {border};"
-            f"border-radius:9px; padding:2px 9px; font-size:8pt; font-weight:600;")
+            f"border-radius:9px; padding:2px 9px; font-size:{T_SECTION}pt;"
+            f" font-weight:600;")
 
 
 def dot_colour(category: str) -> str:
@@ -193,21 +252,22 @@ def sheet() -> str:
     TICK_URL = _glyph("tick", "#ffffff")
     DASH_URL = _glyph("dash", RUN)
     CHEVRON_URL = _glyph("chevron", FG2)
+    CHIP_RULES = chip_rules()
     return f"""
     QWidget {{
         background: {BG};
         color: {FG2};
         font-family: "{FONT}";
-        font-size: 10pt;
+        font-size: {T_BODY}pt;
     }}
     QLabel {{ background: transparent; }}
-    QLabel[role="title"]    {{ color: {FG}; font-size: 13pt; font-weight: 600; }}
-    QLabel[role="h2"]       {{ color: {FG}; font-size: 11.5pt; font-weight: 600; }}
+    QLabel[role="title"]    {{ color: {FG}; font-size: {T_TITLE}pt; font-weight: 600; }}
+    QLabel[role="h2"]       {{ color: {FG}; font-size: {T_H2}pt; font-weight: 600; }}
     QLabel[role="section"]  {{
-        color: {FG3}; font-size: 8pt; font-weight: 600; letter-spacing: 1.4px;
+        color: {FG3}; font-size: {T_SECTION}pt; font-weight: 600; letter-spacing: 1.4px;
     }}
-    QLabel[role="hint"]     {{ color: {FG3}; font-size: 9pt; }}
-    QLabel[role="mono"]     {{ color: {FG3}; font-family: "{MONO}"; font-size: 8.5pt; }}
+    QLabel[role="hint"]     {{ color: {FG3}; font-size: {T_HINT}pt; }}
+    QLabel[role="mono"]     {{ color: {FG3}; font-family: "{MONO}"; font-size: {T_MONO}pt; }}
     QLabel[role="strong"]   {{ color: {FG}; }}
 
     QPushButton {{
@@ -232,14 +292,16 @@ def sheet() -> str:
     QPushButton[kind="danger"]:hover {{ color: {STOP_FG}; border-color: {STOP}; }}
     QPushButton[kind="action"] {{
         border: 1px solid {LINE2}; border-radius: 5px; padding: 2px;
-        min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
+        min-width: {ACTION_BTN[0]}px; max-width: {ACTION_BTN[0]}px;
+        min-height: {ACTION_BTN[1]}px; max-height: {ACTION_BTN[1]}px;
         background: {BG_RAISE};
     }}
     /* Only the glyph is red. A red border as well made every running service
        look like it was in trouble, when the button is just an option. */
     QPushButton[kind="kill"] {{
         border: 1px solid {LINE2}; border-radius: 5px; padding: 2px;
-        min-width: 26px; max-width: 26px; min-height: 24px; max-height: 24px;
+        min-width: {ACTION_BTN[0]}px; max-width: {ACTION_BTN[0]}px;
+        min-height: {ACTION_BTN[1]}px; max-height: {ACTION_BTN[1]}px;
         background: {BG_RAISE}; color: {STOP}; font-weight: 700;
     }}
     QPushButton[kind="kill"]:hover {{
@@ -329,7 +391,7 @@ def sheet() -> str:
     QHeaderView::section {{
         background: {BG_BAND}; color: {FG3}; border: none;
         border-bottom: 1px solid {LINE}; padding: 6px 8px;
-        font-size: 8pt; font-weight: 600; letter-spacing: 1px;
+        font-size: {T_SECTION}pt; font-weight: 600; letter-spacing: 1px;
     }}
     QTableCornerButton::section {{ background: {BG_BAND}; border: none; }}
 
@@ -360,6 +422,8 @@ def sheet() -> str:
     }}
     QMessageBox {{ background: {BG}; }}
 
+    {CHIP_RULES}
+
     /* named surfaces, so a mode change is one setStyleSheet call */
     #shell, #card {{ background: {BG}; border: 1px solid {BORDER}; }}
     #row:hover, #steprow:hover {{ background: {BG_HOVER}; }}
@@ -367,7 +431,7 @@ def sheet() -> str:
     #footerBar {{ background: {BG_BAND}; border-top: 1px solid {LINE}; }}
     #columnHeader {{ background: {BG_BAND}; }}
     #hline {{ background: {LINE}; border: none; }}
-    #flyoutTitle {{ color: {FG}; font-size: 11.5pt; font-weight: 600; }}
+    #flyoutTitle {{ color: {FG}; font-size: {T_H2}pt; font-weight: 600; }}
     #sectionBar {{ background: {BG_BAND}; }}
     /* The health schedule: a quiet panel, because it is a statement of fact
        rather than something to act on. */

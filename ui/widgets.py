@@ -29,6 +29,35 @@ def button(text, kind=None, slot=None) -> QPushButton:
     return b
 
 
+class Chip(QLabel):
+    """A status pill: a word, on a fill that says what kind of state it is.
+
+    A word rather than a coloured dot, deliberately — colour alone fails for
+    colour-blind readers and photographs badly into a ticket.
+
+    The colours live in theme.sheet() under a `cat` property, so a theme change
+    repaints every chip in one pass. Before this there were seven bare QLabels
+    with inline stylesheets, each of which had to be found and rebuilt by hand.
+    """
+
+    def __init__(self, text: str = "", category: str = "none",
+                 min_width: int = None, parent=None):
+        super().__init__(text, parent)
+        self.setProperty("chip", "true")
+        self.setAlignment(Qt.AlignCenter)
+        if min_width is not None:
+            self.setMinimumWidth(min_width)
+        self.set_state(text, category)
+
+    def set_state(self, text: str, category: str) -> None:
+        self.setText(text)
+        if self.property("cat") != category:
+            self.setProperty("cat", category)
+            # Qt only re-evaluates property selectors when told to.
+            self.style().unpolish(self)
+            self.style().polish(self)
+
+
 class Elide(QLabel):
     """A label that shortens its text instead of widening its row.
 
@@ -135,7 +164,7 @@ class Grip(QLabel):
     THRESHOLD = 4                     # px before a click counts as a drag
 
     def __init__(self, index: int, rows, parent=None):
-        super().__init__("⁝", parent)     # tricolon: a grip, and BMP-safe
+        super().__init__(theme.GLYPH_GRIP, parent)     # tricolon: a grip, and BMP-safe
         self.index = index
         self._rows = rows                      # callable returning the row widgets
         self.setFixedWidth(14)
