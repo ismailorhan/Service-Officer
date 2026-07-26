@@ -29,6 +29,7 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from . import applog
 from . import config as cfg_mod
@@ -343,6 +344,17 @@ class Monitor:
         watch.failures = 0
         watch.verdict = UNKNOWN
         watch.detail = ""
+        # Say when the first check will be, so a restart doesn't look like the
+        # watching having stopped.
+        publish = getattr(self._store, "set_health_timing", None)
+        service = next((s for s in self._config().services
+                        if s.name == name and (s.machine or "") == (machine or "")),
+                       None)
+        if publish and service is not None:
+            publish(name, machine, last=None, failures=0, passed=None,
+                    detail="waiting for it to settle",
+                    next=datetime.now() + timedelta(
+                        seconds=service.health.grace_seconds))
 
     def note_stopped(self, name: str, machine: str = "") -> None:
         """A stopped service is not unhealthy — it is stopped. Saying otherwise
@@ -389,19 +401,58 @@ class Monitor:
             if watch.failures >= service.health.failures_before_acting:
                 watch.verdict = UNHEALTHY
 
+        # After the bookkeeping, not before: published first, the panel showed
+        # "failed (0 in a row)" on the first failure.
+        self._publish_timing(service, watch, ok)
+
         if watch.verdict != before:
             log.info("%s is %s: %s", service.name, watch.verdict, watch.detail)
             self._on_verdict(service, watch.verdict, watch.detail, results)
 
-        if (watch.verdict == UNHEALTHY
-                and service.health.action == "restart"
-                and not self._in_maintenance()
-                and self._now() - watch.acted_at >= self.COOLDOWN_SECONDS):
-            watch.acted_at = self._now()
-            log.info("%s failed %d checks in a row; restarting it",
-                     service.name, watch.failures)
-            self._on_action(service, "restart", watch.detail)
+        if watch.verdict == UNHEALTHY and service.health.action == "restart":
+            self._maybe_act(service, watch)
         return ok, results
+
+    def _publish_timing(self, service, watch, ok: bool) -> None:
+        """Put the schedule where the panel can read it.
+
+        Wall-clock times, because these are for a person to read; the monitor's own
+        arithmetic stays on the monotonic clock, which is the only one that cannot
+        jump when the machine's time is corrected.
+        """
+        publish = getattr(self._store, "set_health_timing", None)
+        if publish is None:
+            return
+        now = datetime.now()
+        publish(service.name, service.machine,
+                last=now,
+                next=now + timedelta(seconds=service.health.interval_seconds),
+                failures=watch.failures,
+                passed=ok,
+                detail=watch.detail)
+
+    def _maybe_act(self, service, watch) -> None:
+        """Restart it, or say plainly why not.
+
+        Every branch logs. A restart that silently did not happen for five minutes
+        looked like the checks themselves being unreliable, and there was no way to
+        tell from the log which rule had held it back.
+        """
+        if self._in_maintenance():
+            log.info("%s is unhealthy but a maintenance window is open; "
+                     "leaving it alone", service.name)
+            return
+        cooldown = max(0, service.health.min_restart_interval_seconds)
+        waited = self._now() - watch.acted_at
+        if watch.acted_at and waited < cooldown:
+            log.info("%s is still unhealthy; not restarting for another %ds "
+                     "(no more than one restart every %ds)",
+                     service.name, int(cooldown - waited), cooldown)
+            return
+        watch.acted_at = self._now()
+        log.info("%s failed %d checks in a row; restarting it",
+                 service.name, watch.failures)
+        self._on_action(service, "restart", watch.detail)
 
     # -- the loop ----------------------------------------------------------
     def start(self, tick_seconds: float = 5.0) -> None:

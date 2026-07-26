@@ -177,6 +177,11 @@ class Health:
     #: one bad answer is a blip; this many in a row is a problem
     failures_before_acting: int = 3
     action: str = "notify"                         # notify | restart
+    #: Don't restart more often than this. A service a restart cannot fix must not
+    #: be restarted every minute for ever — but this was a hidden constant, and it
+    #: made a five-minute delay look like the checks were unreliable. Visible and
+    #: adjustable now.
+    min_restart_interval_seconds: int = 300
 
     @property
     def active(self) -> bool:
@@ -533,6 +538,8 @@ def _health_from(raw) -> Health:
         failures_before_acting=max(1, _as_int(
             raw.get("failures_before_acting"), 3)),
         action=action if action in ("notify", "restart") else "notify",
+        min_restart_interval_seconds=max(0, _as_int(
+            raw.get("min_restart_interval_seconds"), 300)),
     )
 
 

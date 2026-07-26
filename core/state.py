@@ -105,6 +105,7 @@ class Store:
         #: SCM notification, so it is filled in by our own queries.
         self._start_types: dict = {}
         self._health: dict = {}        # key -> (verdict, detail)
+        self._health_timing: dict = {}  # key -> {last, next, failures, …}
 
     # -- subscription ------------------------------------------------------
     def subscribe(self, fn) -> None:
@@ -209,6 +210,19 @@ class Store:
     def health_detail(self, name: str, machine: str = "") -> str:
         with self._lock:
             return self._health.get((machine or "", name), ("unknown", ""))[1]
+
+    def set_health_timing(self, name: str, machine: str = "", **facts) -> None:
+        """When it was last asked, when it will be asked next, how many failures
+        in a row. Kept here so the panel can show it without reaching into the
+        monitor's private bookkeeping."""
+        with self._lock:
+            current = dict(self._health_timing.get((machine or "", name), {}))
+            current.update(facts)
+            self._health_timing[(machine or "", name)] = current
+
+    def health_timing(self, name: str, machine: str = "") -> dict:
+        with self._lock:
+            return dict(self._health_timing.get((machine or "", name), {}))
 
     # -- intent ------------------------------------------------------------
     def expect_stop(self, name: str, machine: str = "") -> None:

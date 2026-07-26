@@ -20,7 +20,9 @@ from __future__ import annotations
 import copy
 import os
 
-from PySide6.QtCore import QSize, Qt, Signal
+from datetime import datetime
+
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView,
@@ -221,7 +223,7 @@ class ServicesPage(QWidget):
 
     changed = Signal()
 
-    def __init__(self, cfg_ref):
+    def __init__(self, cfg_ref, store=None):
         super().__init__()
         self.cfg = cfg_ref
         self.stack = QStackedWidget()
@@ -253,7 +255,7 @@ class ServicesPage(QWidget):
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
 
-        self.detail = ServiceDetail()
+        self.detail = ServiceDetail(store)
         self.detail.back.connect(self._show_list)
         self.detail.changed.connect(self._refresh_and_signal)
 
@@ -482,9 +484,10 @@ class ServiceDetail(_Page):
     back = Signal()
     changed = Signal()
 
-    def __init__(self):
+    def __init__(self, store=None):
         super().__init__("", "")
         self.svc = None
+        self._store = store
         self._open_checks = set()
         self._summaries = {}
 
@@ -523,7 +526,6 @@ class ServiceDetail(_Page):
         recovery = self._tab("Recovery")
         health_tab = self._tab("Health")
         self.tabs.addStretch(1)          # tabs sit left, like a tab strip should
-        self._select_tab("General")
 
         body = general
         body.addWidget(_label("DISPLAY", "section"))
@@ -608,6 +610,19 @@ class ServiceDetail(_Page):
             "whether anyone can actually use it — the “running but dead” case "
             "that a service list cannot show. Every check has to pass.",
             "hint", wrap=True))
+        body.addSpacing(12)
+
+        # What has actually happened, in plain times. Without this the schedule is
+        # something you infer from the settings and then have to trust.
+        self.h_status = _label("", "hint", wrap=True)
+        self.h_status.setObjectName("healthStatus")
+        self.h_status.setContentsMargins(10, 8, 10, 8)
+        self.h_status.setAttribute(Qt.WA_StyledBackground, True)
+        body.addWidget(self.h_status)
+        #: while the Health tab is showing, keep the times honest
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(2000)
+        self._status_timer.timeout.connect(self._refresh_health_status)
         body.addSpacing(14)
 
         # The rules come first and the list last, so nothing sits below a list
@@ -650,6 +665,17 @@ class ServiceDetail(_Page):
         self.h_action.setFixedWidth(220)
         self.h_action.currentIndexChanged.connect(self._save_health)
         hl.addWidget(_sentence("Then:", self.h_action))
+
+        # This was a hidden five-minute constant, and it made a delayed restart
+        # look like the checks were unreliable. It belongs on screen.
+        self.h_cooldown = Duration(300)
+        self.h_cooldown.setToolTip("A service a restart cannot fix must not be "
+                                   "restarted every minute for ever. Zero means "
+                                   "restart on every verdict.")
+        self.h_cooldown.changed.connect(self._save_health)
+        self.h_restart_rule = _sentence("…but no more often than every",
+                                        self.h_cooldown)
+        hl.addWidget(self.h_restart_rule)
         body.addWidget(self.health_rules)
         body.addSpacing(20)
 
@@ -686,6 +712,9 @@ class ServiceDetail(_Page):
         self.checks_lay.setSpacing(6)
         body.addWidget(self.checks_host)
         body.addStretch(1)
+
+        # Last, once every tab's contents exist: selecting a tab touches them.
+        self._select_tab("General")
 
     # -- tabs --------------------------------------------------------------
     @staticmethod
@@ -729,6 +758,13 @@ class ServiceDetail(_Page):
             self.pages.setCurrentWidget(page)
         for tab_name, button in self._tab_buttons.items():
             button.setChecked(tab_name == name)
+        # Only tick while the times are on screen; a timer running behind a hidden
+        # tab is work nobody asked for.
+        if name == "Health":
+            self._refresh_health_status()
+            self._status_timer.start()
+        else:
+            self._status_timer.stop()
 
     def load(self, svc, categories=()):
         self.svc = None                     # suppress signals while populating
@@ -761,6 +797,7 @@ class ServiceDetail(_Page):
                               (self.h_grace, h.grace_seconds)):
             widget.set_seconds(value)
         self.h_failures.setValue(h.failures_before_acting)
+        self.h_cooldown.set_seconds(h.min_restart_interval_seconds)
         self.h_action.blockSignals(True)
         wanted = self.h_action.findData(h.action)
         self.h_action.setCurrentIndex(wanted if wanted >= 0 else 0)
@@ -772,6 +809,7 @@ class ServiceDetail(_Page):
         self._rebuild_checks()
         self._sync_enabled()
         self._sync_health_enabled()
+        self._refresh_health_status()
 
     def _sync_enabled(self):
         on = self.keep.isChecked()
@@ -933,6 +971,53 @@ class ServiceDetail(_Page):
         outer.addLayout(fields)
         return row
 
+    def _refresh_health_status(self):
+        """Last check, next check, and what is holding anything back."""
+        if self.svc is None or self._store is None:
+            self.h_status.setText("")
+            return
+        svc, health_cfg = self.svc, self.svc.health
+        if not health_cfg.checks:
+            self.h_status.setText("Nothing is being checked yet.")
+            return
+        if not health_cfg.enabled:
+            self.h_status.setText("Watching is switched off — the checks below are "
+                                  "kept but never run.")
+            return
+
+        status = self._store.status_of(svc.name, svc.machine)
+        if status != st.RUNNING:
+            self.h_status.setText(
+                f"{svc.display()} is {status.lower()}. Checks only run while it is "
+                f"running — a stopped service isn't unhealthy, it is stopped.")
+            return
+
+        facts = self._store.health_timing(svc.name, svc.machine)
+        verdict = self._store.health_of(svc.name, svc.machine)
+        lines = []
+        last = facts.get("last")
+        if last is None:
+            lines.append("Not checked yet — "
+                         + (facts.get("detail") or "waiting for it to settle"))
+        else:
+            outcome = ("passed" if facts.get("passed") else
+                       f"failed ({facts.get('failures', 0)} in a row)")
+            lines.append(f"Last checked {last.strftime('%H:%M:%S')} — {outcome}")
+        nxt = facts.get("next")
+        if nxt is not None:
+            seconds = int((nxt - datetime.now()).total_seconds())
+            when = nxt.strftime("%H:%M:%S")
+            lines.append(f"Next check {when}"
+                         + (f", in {max(0, seconds)}s" if seconds < 600 else ""))
+        said = {"unhealthy": "Currently: not responding",
+                "healthy": "Currently: responding",
+                "unknown": "Currently: no verdict yet"}
+        lines.append(said.get(verdict, verdict))
+        if verdict == "unhealthy" and health_cfg.action == "restart":
+            gap = health_cfg.min_restart_interval_seconds
+            lines.append(f"Restarts are limited to one every {gap}s.")
+        self.h_status.setText("   ·   ".join(lines))
+
     def _health_switched(self, on: bool):
         if self.svc is not None:
             self.svc.health.enabled = on
@@ -1005,7 +1090,11 @@ class ServiceDetail(_Page):
         h.grace_seconds = self.h_grace.seconds()
         h.failures_before_acting = max(1, self.h_failures.value())
         h.action = self.h_action.currentData() or "notify"
+        h.min_restart_interval_seconds = self.h_cooldown.seconds()
+        # The restart limit only means anything when restarting is the action.
+        self.h_restart_rule.setVisible(h.action == "restart")
         self.changed.emit()
+        self._refresh_health_status()
 
     def _check_now(self):
         """Run the checks as they are on screen, not as last saved — otherwise
@@ -2475,7 +2564,7 @@ class MainPanel(QDialog):
         self.dashboard.refresh_requested.connect(self.refresh_requested)
         self.dashboard.open_services_mmc.connect(self.open_services_mmc)
 
-        self.services_page = ServicesPage(get)
+        self.services_page = ServicesPage(get, self._store)
         self.categories_page = CategoriesPage(get)
         self.stacks_page = StacksPage(get)
         self.schedule_page = SchedulePage(get)

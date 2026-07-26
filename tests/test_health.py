@@ -469,12 +469,84 @@ def test_restart_is_opt_in_and_rate_limited():
     assert actions == [(svc.name, "restart")]
 
     # Not again straight away: a service a restart cannot fix must not be
-    # restarted every round for ever.
+    # restarted every round for ever. The limit is a setting, not a constant.
     mon.check_now(svc)
     assert len(actions) == 1
-    clock.tick(health.Monitor.COOLDOWN_SECONDS + 1)
+    clock.tick(svc.health.min_restart_interval_seconds + 1)
     mon.check_now(svc)
     assert len(actions) == 2
+
+
+def test_the_first_restart_is_never_held_back_by_the_limit():
+    """The limit was "now minus the last action", and the last action started at
+    zero — so on a machine whose uptime was under five minutes, the first health
+    restart was silently skipped. Which is exactly when it matters: just after a
+    reboot."""
+    for uptime in (20, 120, 299, 400, 100000):
+        svc = service(failing_check(), grace_seconds=0, interval_seconds=0,
+                      failures_before_acting=1, action="restart")
+        cfg = cfg_mod.Config(services=[svc])
+        clock = Clock()
+        clock.t = float(uptime)                # as time.monotonic() would report
+        actions = []
+        mon = health.Monitor(lambda: cfg, FakeStore(), control=None,
+                             on_action=lambda s, a, d: actions.append(a),
+                             now=clock)
+        mon.note_running(svc.name)
+        mon.check_now(svc)
+        assert actions == ["restart"], f"not restarted at uptime {uptime}s"
+
+
+def test_the_restart_limit_is_configurable():
+    svc = service(failing_check(), grace_seconds=0, interval_seconds=0,
+                  failures_before_acting=1, action="restart")
+    svc.health.min_restart_interval_seconds = 30
+    mon, clock, _v, actions = monitor(svc)
+    mon.note_running(svc.name)
+    mon.check_now(svc)
+    assert len(actions) == 1
+    clock.tick(29)
+    mon.check_now(svc)
+    assert len(actions) == 1, "still inside the limit"
+    clock.tick(2)
+    mon.check_now(svc)
+    assert len(actions) == 2
+
+    # Zero means restart on every verdict.
+    svc.health.min_restart_interval_seconds = 0
+    mon.check_now(svc)
+    assert len(actions) == 3
+
+
+def test_the_schedule_is_published_for_the_panel_to_show():
+    """Otherwise the schedule is something you infer from the settings and then
+    have to trust."""
+    class Recording(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.timing = {}
+
+        def set_health_timing(self, name, machine="", **facts):
+            self.timing.setdefault((machine, name), {}).update(facts)
+
+    svc = service(failing_check(), grace_seconds=45, interval_seconds=90,
+                  failures_before_acting=2)
+    cfg = cfg_mod.Config(services=[svc])
+    store = Recording()
+    mon = health.Monitor(lambda: cfg, store, control=None, now=Clock())
+
+    mon.note_running(svc.name)
+    said = store.timing[("", "Svc")]
+    assert said["last"] is None                     # not checked yet
+    assert said["next"] is not None                 # …but we say when
+    assert "settle" in said["detail"]
+
+    mon.check_now(svc)
+    said = store.timing[("", "Svc")]
+    assert said["last"] is not None
+    assert said["passed"] is False and said["failures"] == 1
+    # The next check is an interval after the last one.
+    assert 80 <= (said["next"] - said["last"]).total_seconds() <= 100
 
 
 def test_maintenance_means_leave_it_alone():

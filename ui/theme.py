@@ -369,6 +369,12 @@ def sheet() -> str:
     #hline {{ background: {LINE}; border: none; }}
     #flyoutTitle {{ color: {FG}; font-size: 11.5pt; font-weight: 600; }}
     #sectionBar {{ background: {BG_BAND}; }}
+    /* The health schedule: a quiet panel, because it is a statement of fact
+       rather than something to act on. */
+    #healthStatus {{
+        background: {BG_BAND}; border: 1px solid {LINE}; border-radius: 5px;
+        color: {FG2};
+    }}
     /* The bulk bar carries the same controls as the footer, so its background is
        the only thing saying it acts on a selection rather than on everything. */
     #bulkBar {{ background: {RUN_DIM}; }}
