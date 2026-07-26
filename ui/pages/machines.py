@@ -1,19 +1,27 @@
-"""Machines: the servers whose services this panel can reach."""
+"""Machines: the servers whose services this panel can reach.
+
+A machine now carries *how* it is reached — the SCM for a Windows box, systemd
+over SSH for a Linux one — so it has enough settings to need a page of its own
+rather than a name in a list. Same shape as Services: a list, and a detail behind
+each row.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (QHBoxLayout, QListWidget, QListWidgetItem,
-                               QMessageBox)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLineEdit,
+                               QListWidget, QListWidgetItem, QMessageBox,
+                               QStackedWidget, QVBoxLayout, QWidget)
 
 from core import config as cfg_mod
-from core import control
+from core import connectors, control
 
+from .. import theme
 from ..widgets import button as _button, label as _label
-from .base import _ListRow, _Page
+from .base import _ListRow, _Page, _sentence, _spin
 
 
-class MachinesPage(_Page):
+class MachinesPage(QWidget):
     """Every service belongs to a machine; this computer is always one of them."""
 
     changed = Signal()
@@ -21,37 +29,51 @@ class MachinesPage(_Page):
     address_found = Signal()
 
     def __init__(self, cfg_ref):
-        super().__init__("Machines",
-                         "Where your services live, by name and address. This "
-                         "computer is always here; adding another lets its "
-                         "services appear in the same panel.")
+        super().__init__()
         self.cfg = cfg_ref
         self.address_found.connect(self.refresh)
 
+        self.stack = QStackedWidget()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.stack)
+
+        self.list_page = _Page(
+            "Machines",
+            "Where your services live. This computer is always here; add another "
+            "and its services appear in the same panel. Open one to set how it is "
+            "reached — Windows through its service manager, Linux over SSH.")
         self.list = QListWidget()
-        self.root.addWidget(self.list, 1)
+        self.list.itemDoubleClicked.connect(lambda _i: self._open())
+        self.list_page.root.addWidget(self.list, 1)
+
         bar = QHBoxLayout()
+        bar.setSpacing(6)
         bar.addWidget(_button("Add machine…", "primary", self._add))
+        bar.addWidget(_button("Open", None, self._open))
         bar.addWidget(_button("Remove", "danger", self._remove))
         bar.addStretch(1)
-        self.root.addSpacing(14)
-        self.root.addLayout(bar)
-        self.root.addSpacing(10)
-        self.root.addWidget(_label(
-            "Managing another machine needs administrator rights on it and the "
-            "usual Windows service ports reachable. Its services are added on "
-            "the Services page, where each one names the machine it belongs to.",
-            "hint", wrap=True))
+        self.list_page.root.addSpacing(14)
+        self.list_page.root.addLayout(bar)
+
+        self.detail = MachineDetail()
+        self.detail.back.connect(self._show_list)
+        self.detail.changed.connect(self._refresh_and_signal)
+
+        self.stack.addWidget(self.list_page)
+        self.stack.addWidget(self.detail)
         self.refresh()
 
+    # -- list --------------------------------------------------------------
     def refresh(self):
+        keep = self.list.currentRow()
         self.list.clear()
         cfg = self.cfg()
         for machine in cfg.machines:
-            count = sum(1 for s in cfg.services if (s.machine or "") == machine.name)
+            count = sum(1 for s in cfg.services
+                        if (s.machine or "") == machine.name)
             item = QListWidgetItem()
-            widget = _ListRow(self._title(machine),
-                              f"{count} service{'s' if count != 1 else ''}",
+            widget = _ListRow(self._title(machine), self._summary(machine, count),
                               tag="This PC" if machine.is_local else "",
                               tag_category="running")
             item.setSizeHint(widget.sizeHint())
@@ -63,23 +85,62 @@ class MachinesPage(_Page):
             if control.cached_address(machine.name) is None:
                 control.resolve_address(machine.name,
                                         lambda *_a: self.address_found.emit())
+        if 0 <= keep < self.list.count():
+            self.list.setCurrentRow(keep)
 
     def _title(self, machine) -> str:
         """CTL052 (10.77.3.50) — the name alone isn't enough when someone has to
         RDP to the box, and an IP alone isn't enough to know which box it is."""
         name = control.host_name() if machine.is_local else machine.name
         name = name or machine.display()
-        address = control.cached_address(machine.name)
-        if address:
+        address = machine.address or control.cached_address(machine.name)
+        if address and address != name:
             return f"{name}  ({address})"
         if machine.label and machine.label != name:
             return f"{name}  ·  {machine.label}"
         return name
 
+    def _summary(self, machine, count: int) -> str:
+        """What it is and how it is reached, in one line."""
+        parts = [f"{count} service{'s' if count != 1 else ''}"]
+        if machine.is_local:
+            parts.append("Windows service manager")
+        elif machine.is_linux:
+            who = machine.username or "no account set"
+            parts.append(f"systemd over SSH · {who}")
+            if not machine.host_fingerprint:
+                parts.append("host key not confirmed")
+        else:
+            parts.append("Windows service manager")
+        return "  ·  ".join(parts)
+
+    def _selected(self):
+        row = self.list.currentRow()
+        machines = self.cfg().machines
+        return machines[row] if 0 <= row < len(machines) else None
+
+    def _open(self):
+        machine = self._selected()
+        if machine is None:
+            return
+        self.detail.load(machine)
+        self.stack.setCurrentWidget(self.detail)
+
+    def _show_list(self):
+        self.stack.setCurrentWidget(self.list_page)
+        self.refresh()
+
+    def _refresh_and_signal(self):
+        # A machine's transport may have changed, so anything holding a connection
+        # to it has to be let go of.
+        connectors.forget()
+        self.refresh()
+        self.changed.emit()
+
     def _add(self):
         from PySide6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "Add machine",
-                                        "Computer name (as Windows knows it):")
+                                        "Computer name or host name:")
         name = (name or "").strip().lstrip("\\")
         if not ok or not name:
             return
@@ -87,21 +148,20 @@ class MachinesPage(_Page):
             QMessageBox.information(self, "Service Officer",
                                     "That machine is already listed.")
             return
-        if not control.reachable(name):
-            if QMessageBox.question(
-                    self, "Service Officer",
-                    f"Could not reach {name} — its service manager did not "
-                    "answer.\n\nAdd it anyway?") != QMessageBox.Yes:
-                return
+        # No reachability check here any more: we do not yet know whether this is
+        # a Windows box or a Linux one, and probing the wrong way would report a
+        # perfectly good machine as unreachable. That is what the detail page's
+        # Test button is for, once the transport is set.
         self.cfg().machines.append(cfg_mod.Machine(name=name, label=name))
         self.refresh()
+        self.list.setCurrentRow(self.list.count() - 1)
         self.changed.emit()
+        self._open()
 
     def _remove(self):
-        row = self.list.currentRow()
-        if row < 0:
+        machine = self._selected()
+        if machine is None:
             return
-        machine = self.cfg().machines[row]
         if machine.is_local:
             QMessageBox.information(self, "Service Officer",
                                     "This computer can't be removed.")
@@ -114,6 +174,261 @@ class MachinesPage(_Page):
                 f"{machine.display()} still has {len(using)} service(s) here. "
                 "Remove them first:\n\n" + "\n".join(using[:8]))
             return
-        del self.cfg().machines[row]
+        self.cfg().machines.remove(machine)
+        connectors.forget(machine.name)
         self.refresh()
         self.changed.emit()
+
+
+class MachineDetail(_Page):
+    """One machine: what it is called, and how to reach it."""
+
+    back = Signal()
+    changed = Signal()
+
+    KINDS = (("Windows — service manager", "windows"),
+             ("Linux — systemd over SSH", "linux"))
+    AUTHS = (("Private key file", "key"),
+             ("Password (stored on this machine)", "password"))
+
+    def __init__(self):
+        super().__init__("", "", scroll=True)
+        self.machine = None
+
+        crumb = QHBoxLayout()
+        crumb.setSpacing(6)
+        crumb.addWidget(_button("Machines", "quiet", self.back.emit))
+        crumb.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
+        self.crumb_name = _label("", "strong")
+        crumb.addWidget(self.crumb_name)
+        crumb.addStretch(1)
+        self.root.insertLayout(0, crumb)
+        self.root.insertSpacing(1, 10)
+
+        self.label = QLineEdit()
+        self.label.setMinimumWidth(240)
+        self.label.setPlaceholderText("What you call this machine")
+        self.label.editingFinished.connect(self._save)
+        self.root.addWidget(_sentence("Called", self.label))
+        self.root.addSpacing(10)
+
+        self.kind = QComboBox()
+        for text, _value in self.KINDS:
+            self.kind.addItem(text)
+        self.kind.currentIndexChanged.connect(self._kind_changed)
+        self.root.addWidget(_sentence("Reached as", self.kind))
+        self.root.addSpacing(10)
+
+        # -- where it is ---------------------------------------------------
+        self.address = QLineEdit()
+        self.address.setMinimumWidth(240)
+        self.address.setPlaceholderText("host name or IP — blank uses the name above")
+        self.address.editingFinished.connect(self._save)
+        self.port = _spin(0, 0, 65535, width=72)
+        self.port.valueChanged.connect(lambda _v: self._save())
+        self.root.addWidget(_sentence("At", self.address, "port", self.port,
+                                      "(0 = the default)"))
+        self.root.addSpacing(10)
+
+        # -- who we are ----------------------------------------------------
+        self.ssh_box = QWidget()
+        ssh = QVBoxLayout(self.ssh_box)
+        ssh.setContentsMargins(0, 0, 0, 0)
+        ssh.setSpacing(10)
+
+        self.username = QLineEdit()
+        self.username.setMinimumWidth(160)
+        self.username.setPlaceholderText("account on that machine")
+        self.username.editingFinished.connect(self._save)
+        self.auth = QComboBox()
+        for text, _value in self.AUTHS:
+            self.auth.addItem(text)
+        self.auth.currentIndexChanged.connect(lambda _i: self._save())
+        ssh.addWidget(_sentence("As", self.username, "using", self.auth))
+
+        self.key_path = QLineEdit()
+        self.key_path.setMinimumWidth(340)
+        self.key_path.setPlaceholderText(r"C:\Users\you\.ssh\id_ed25519")
+        self.key_path.editingFinished.connect(self._save)
+        ssh.addWidget(_sentence("Key file", self.key_path,
+                                _button("Browse…", "quiet", self._browse)))
+
+        # The fingerprint is the whole of SSH's security on a first connection, so
+        # it is a field a person fills in deliberately — never something the app
+        # accepts because it was offered.
+        self.fingerprint = QLineEdit()
+        # 50 characters of base64. Showing the tail of it tells you nothing.
+        self.fingerprint.setMinimumWidth(400)
+        self.fingerprint.setPlaceholderText("SHA256:… — confirm this on the machine "
+                                            "itself")
+        self.fingerprint.editingFinished.connect(self._save)
+        ssh.addWidget(_sentence("Host key", self.fingerprint))
+
+        self.sudo_note = _label("", "hint", wrap=True)
+        ssh.addWidget(self.sudo_note)
+        self.root.addWidget(self.ssh_box)
+        self.root.addSpacing(10)
+
+        self.poll = _spin(5, 2, 300, width=64)
+        self.poll.valueChanged.connect(lambda _v: self._save())
+        self.poll_row = _sentence("Ask for status every", self.poll, "seconds")
+        self.root.addWidget(self.poll_row)
+        self.root.addSpacing(14)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        bar.addWidget(_button("Test connection", "primary", self._test))
+        self.setup_button = _button("Copy the setup commands", None, self._setup)
+        bar.addWidget(self.setup_button)
+        bar.addStretch(1)
+        self.root.addLayout(bar)
+        self.root.addSpacing(10)
+
+        self.result = _label("", "hint", wrap=True)
+        self.root.addWidget(self.result)
+        self.root.addStretch(1)
+
+    # -- loading and saving ------------------------------------------------
+    def load(self, machine):
+        self.machine = None            # so setting the widgets doesn't save
+        self.crumb_name.setText(machine.display())
+        self.label.setText(machine.label)
+        self.kind.setCurrentIndex(
+            next((i for i, (_t, v) in enumerate(self.KINDS)
+                  if v == machine.kind), 0))
+        self.address.setText(machine.address)
+        self.port.setValue(machine.port)
+        self.username.setText(machine.username)
+        self.auth.setCurrentIndex(
+            next((i for i, (_t, v) in enumerate(self.AUTHS)
+                  if v == machine.auth), 0))
+        self.key_path.setText(machine.key_path)
+        self.fingerprint.setText(machine.host_fingerprint)
+        for field in (self.label, self.address, self.username, self.key_path,
+                      self.fingerprint):
+            field.setCursorPosition(0)
+        self.poll.setValue(machine.poll_seconds)
+        self.result.setText("")
+        self.machine = machine
+        self._apply_visibility()
+
+    def _save(self):
+        machine = self.machine
+        if machine is None:
+            return
+        machine.label = self.label.text().strip() or machine.name
+        machine.kind = self.KINDS[self.kind.currentIndex()][1]
+        machine.address = self.address.text().strip()
+        machine.port = int(self.port.value())
+        machine.auth = (self.AUTHS[self.auth.currentIndex()][1]
+                        if machine.kind == "linux" else "current_user")
+        machine.username = self.username.text().strip()
+        machine.key_path = self.key_path.text().strip()
+        machine.host_fingerprint = self.fingerprint.text().strip()
+        machine.poll_seconds = int(self.poll.value())
+        self.crumb_name.setText(machine.display())
+        self._apply_visibility()
+        self.changed.emit()
+
+    def _kind_changed(self, _index):
+        self._save()
+
+    def _apply_visibility(self):
+        """This computer has nothing to configure — it is reached by being here."""
+        machine = self.machine
+        local = machine is None or machine.is_local
+        linux = bool(machine and machine.is_linux)
+        self.kind.setEnabled(not local)
+        self.address.setEnabled(not local)
+        self.port.setEnabled(not local)
+        self.ssh_box.setVisible(linux)
+        self.key_path.setEnabled(not linux or machine.auth == "key")
+        self.poll_row.setVisible(not local)
+        self.setup_button.setVisible(linux)
+        if local:
+            self.result.setText("This computer is reached by being it — the "
+                                "service manager is right here.")
+        elif linux:
+            self.sudo_note.setText(
+                "Reading a status needs no privilege. Starting and stopping needs "
+                "sudo without a password, and instant updates need the account in "
+                "the systemd-journal group — the button below writes out exactly "
+                "what to run for the services you have chosen.")
+
+    def _browse(self):
+        from PySide6.QtWidgets import QFileDialog
+        found, _filter = QFileDialog.getOpenFileName(self, "Private key file")
+        if found:
+            self.key_path.setText(found)
+            self._save()
+
+    # -- helping the user get it working -----------------------------------
+    def _test(self):
+        """Say what happened, in the words the transport used.
+
+        A test that only says "failed" moves the problem rather than solving it:
+        "no authentication methods available" and "host key not confirmed" need
+        entirely different fixes.
+        """
+        machine = self.machine
+        if machine is None:
+            return
+        if machine.is_local:
+            self.result.setText("This computer answers — it is the one running "
+                                "Service Officer.")
+            return
+        connectors.forget(machine.name)
+        conn = connectors.for_machine(machine.name, record=machine)
+        try:
+            if not conn.reachable():
+                self.result.setText(f"{machine.where()} did not answer.")
+                return
+            can = conn.abilities()
+        except Exception as exc:
+            self.result.setText(f"{type(exc).__name__}: {exc}")
+            return
+        said = [f"{machine.where()} answered."]
+        said.append("Services can be started and stopped." if can.control
+                    else "Watching only — no control.")
+        said.append("Changes arrive as they happen." if can.push
+                    else f"Status is asked for every {machine.poll_seconds}s.")
+        if can.why:
+            said.append(can.why)
+        self.result.setText("  ".join(said))
+
+    def _setup(self):
+        """The exact commands this machine needs, for the services chosen.
+
+        No unit name is hard-coded anywhere in the app: they come from what the
+        user picked. This turns "which privilege do I grant?" from a support
+        question into a copyable block.
+        """
+        machine = self.machine
+        if machine is None:
+            return
+        page = self.parent()
+        services = []
+        while page is not None and not hasattr(page, "cfg"):
+            page = page.parent()
+        if page is not None:
+            services = sorted(s.name for s in page.cfg().services
+                              if (s.machine or "") == machine.name)
+        account = machine.username or "svcofficer"
+        verbs = ("start", "stop", "restart")
+        if services:
+            allowed = ", \\\n    ".join(
+                f"/usr/bin/systemctl {verb} {unit}"
+                for unit in services for verb in verbs)
+        else:
+            allowed = ("# add services for this machine on the Services page "
+                       "first,\n    # and this list will name them")
+        text = (
+            f"# On {machine.where()}, as root:\n"
+            f"usermod -aG systemd-journal {account}\n\n"
+            f"# /etc/sudoers.d/service-officer — only these units, only these "
+            f"verbs:\n"
+            f"{account} ALL=(root) NOPASSWD: {allowed}\n")
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text)
+        self.result.setText(f"Copied. {len(services)} service(s) covered — paste "
+                            f"it into a root shell on {machine.where()}.")

@@ -1278,3 +1278,125 @@ def test_state_bridge_forwards_events(qapp):
     store.update("AppEngine", st.RUNNING)
     qapp.processEvents()
     assert [e.status for e in seen] == [st.RUNNING]
+
+
+# -- machines: how a target is reached --------------------------------------
+def _machines_config():
+    return cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="CTL052", label="app server"),
+                  cfg_mod.Machine(name="hanadev", label="SUSE dev", kind="linux",
+                                  address="192.168.230.2", username="svcofficer")],
+        services=[cfg_mod.Service(name="AppEngine"),
+                  cfg_mod.Service(name="b1s50000.service", machine="hanadev"),
+                  cfg_mod.Service(name="sapb1servertools.service",
+                                  machine="hanadev")])
+
+
+def test_a_linux_machine_shows_its_ssh_settings_and_a_windows_one_does_not(qapp):
+    cfg = _machines_config()
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+
+    page.list.setCurrentRow(2)                       # hanadev
+    page._open()
+    assert page.detail.ssh_box.isVisibleTo(page.detail)
+
+    page.list.setCurrentRow(1)                       # CTL052, Windows
+    page._open()
+    assert not page.detail.ssh_box.isVisibleTo(page.detail)
+
+
+def test_this_computer_has_nothing_to_configure(qapp):
+    """It is reached by being it. Offering an address and an account for the local
+    machine would only invite someone to break it."""
+    cfg = _machines_config()
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+
+    page.list.setCurrentRow(0)
+    page._open()
+
+    assert not page.detail.kind.isEnabled()
+    assert not page.detail.address.isEnabled()
+    assert not page.detail.poll_row.isVisibleTo(page.detail)
+
+
+def test_editing_a_machine_writes_through_to_the_config(qapp):
+    cfg = _machines_config()
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(2)
+    page._open()
+
+    page.detail.address.setText("10.0.0.9")
+    page.detail.username.setText("svcofficer2")
+    page.detail.fingerprint.setText("SHA256:abc")
+    page.detail.poll.setValue(20)
+    page.detail._save()
+
+    edited = win.config().machine("hanadev")
+    assert edited.address == "10.0.0.9"
+    assert edited.username == "svcofficer2"
+    assert edited.host_fingerprint == "SHA256:abc"
+    assert edited.poll_seconds == 20
+
+
+def test_switching_a_machine_to_linux_stops_using_the_windows_token(qapp):
+    """The account this app runs as means nothing on a Linux box."""
+    cfg = _machines_config()
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)                       # CTL052, Windows
+    page._open()
+
+    page.detail.kind.setCurrentIndex(1)              # → Linux
+
+    edited = win.config().machine("CTL052")
+    assert edited.kind == "linux"
+    assert edited.auth == "key"
+
+
+def test_an_unconfirmed_host_key_is_said_out_loud_in_the_list(qapp):
+    """Not a silent failure at connect time: the row says the machine is not
+    usable yet, and why."""
+    cfg = _machines_config()
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+
+    summary = page._summary(cfg.machine("hanadev"), 2)
+
+    assert "host key not confirmed" in summary
+    assert "svcofficer" in summary
+
+
+def test_the_setup_commands_name_only_the_services_that_were_chosen(qapp):
+    """No unit name is hard-coded anywhere in the app — they come from the user's
+    own list, which is the whole point of generating this."""
+    cfg = _machines_config()
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(2)
+    page._open()
+
+    page.detail._setup()
+    text = qapp.clipboard().text()
+
+    assert "usermod -aG systemd-journal svcofficer" in text
+    assert "systemctl start b1s50000.service" in text
+    assert "systemctl restart sapb1servertools.service" in text
+    assert "AppEngine" not in text, "a service from another machine leaked in"
+    assert "NOPASSWD" in text and "ALL=(root)" in text
+
+
+def test_the_setup_commands_say_what_to_do_when_nothing_is_chosen_yet(qapp):
+    cfg = cfg_mod.Config(machines=[cfg_mod.Machine(),
+                                   cfg_mod.Machine(name="hanadev", kind="linux")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+
+    page.detail._setup()
+
+    assert "Services page" in qapp.clipboard().text()
