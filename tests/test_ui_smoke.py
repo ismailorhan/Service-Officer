@@ -302,19 +302,21 @@ def test_dragging_a_service_onto_a_heading_files_it_there(qapp, sample):
     win = panel_mod.MainPanel(sample)
     page = win.services_page
 
-    # Nothing is filed yet: No category holds all three, then the two empty
-    # categories, which is where they have to be to be reachable.
+    # Nothing is filed yet: the two empty categories come first so they are
+    # somewhere to drop onto, and No category is last — it is where things are
+    # when they have not been filed, not a category among the others.
     kinds = [(k, v if k == "group" else v.name) for k, v in page._entries]
-    assert kinds == [("group", ""), ("service", "AppEngine"),
-                     ("service", "WMSServer"), ("service", "MSSQLSERVER"),
-                     ("group", "SAP"), ("group", "Printing")]
+    assert kinds == [("group", "SAP"), ("group", "Printing"),
+                     ("group", ""), ("service", "AppEngine"),
+                     ("service", "WMSServer"), ("service", "MSSQLSERVER")]
 
     sap_heading = kinds.index(("group", "SAP"))
     page._dropped(_row_of(page, "AppEngine"), sap_heading + 1)
     assert win.config().service("AppEngine").category == "SAP"
-    # And the stored order follows what is now on screen.
+    # And the stored order follows what is now on screen: SAP is the first
+    # heading, so a service filed there sits above the unfiled ones.
     assert [s.name for s in win.config().services] == [
-        "WMSServer", "MSSQLSERVER", "AppEngine"]
+        "AppEngine", "WMSServer", "MSSQLSERVER"]
 
     # Dropped just below the SAP heading it stays in SAP — the insertion line
     # was inside that group.
@@ -1437,8 +1439,12 @@ def test_a_typed_password_goes_to_the_store_and_not_into_a_widget(qapp, tmp_path
     page.detail.password.setText("CorrectHorse42")
     page.detail._save_password()
 
-    assert page.detail.password.text() == "", "the password stayed on screen"
-    assert page.detail.password_state.text() == "saved"
+    # The field looks filled, because an empty field after saving reads as "it was
+    # lost" — but what it holds is stand-in characters, not the password.
+    shown = page.detail.password.text()
+    assert shown and shown != "CorrectHorse42", "the real password is in the widget"
+    assert page.detail.password.typed() == "", "it would be saved again as-is"
+    assert "saved" in page.detail.password_state.text()
     edited = win.config().machine("hanadev")
     assert edited.secret_ref == "machine/hanadev"
     assert secrets.get(edited.secret_ref) == "CorrectHorse42"
@@ -1460,8 +1466,11 @@ def test_reopening_a_machine_never_shows_the_stored_password(qapp, tmp_path,
     page.list.setCurrentRow(1)
     page._open()
 
-    assert page.detail.password.text() == ""
-    assert page.detail.password_state.text() == "saved"      # said, not shown
+    shown = page.detail.password.text()
+    assert shown, "a stored password must look stored"
+    assert shown != "hunter2", "the stored password was rendered into the field"
+    assert page.detail.password.typed() == ""
+    assert "saved" in page.detail.password_state.text()
 
 
 def test_signing_in_as_root_says_no_setup_is_needed(qapp):
@@ -1592,3 +1601,89 @@ def test_a_machine_that_does_not_answer_is_explained_not_quoted(qapp,
     # A Linux target gets the advice that applies to it, not firewall rules.
     assert "over SSH" in linux_text
     assert "Remote Service Management" not in linux_text
+
+
+def test_typing_replaces_the_stand_in_rather_than_appending_to_it(qapp, tmp_path,
+                                                                 monkeypatch):
+    """Ten asterisks are not a password. Editing has to start from nothing, or a
+    new one would be appended to them."""
+    from core import secrets
+    monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "secrets.dat"))
+    secrets.put("machine/hanadev", "old-one")
+
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="hanadev", kind="linux", auth="password",
+                        username="root", secret_ref="machine/hanadev")])
+    win = panel_mod.MainPanel(cfg)
+    win.show()                             # Qt only delivers focus to what is shown
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+    qapp.processEvents()
+    field = page.detail.password
+    assert field.text() == field.STAND_IN
+
+    field.setFocus()                       # as clicking into it does
+    qapp.processEvents()
+    assert field.text() == "", "the stand-in was left for the new value to join"
+
+    field.setText("new-one")
+    page.detail._save_password()
+
+    assert secrets.get("machine/hanadev") == "new-one"
+
+
+def test_root_is_not_offered_a_setup_button_at_all(qapp):
+    """Its only answer would be "nothing to do", which is a question the user has
+    to ask before they can learn the answer."""
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="hanadev", kind="linux", username="root"),
+        cfg_mod.Machine(name="other", kind="linux", username="svcofficer")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+
+    page.list.setCurrentRow(1)
+    page._open()
+    assert not page.detail.setup_button.isVisibleTo(page.detail)
+
+    page.list.setCurrentRow(2)
+    page._open()
+    assert page.detail.setup_button.isVisibleTo(page.detail)
+
+
+def test_no_category_is_always_the_last_heading():
+    """It is not a category among the others — it is where things are when they
+    have not been filed."""
+    cfg = cfg_mod.Config(
+        categories=[cfg_mod.Category(name="Filled"),
+                    cfg_mod.Category(name="Empty on purpose")],
+        services=[cfg_mod.Service(name="A", category="Filled"),
+                  cfg_mod.Service(name="B")])
+
+    editor = [name for name, _t, _m in cfg.grouped_services(include_empty=True)]
+    reading = [name for name, _t, _m in cfg.grouped_services()]
+
+    assert editor[-1] == cfg_mod.NO_CATEGORY, editor
+    assert editor == ["Filled", "Empty on purpose", cfg_mod.NO_CATEGORY]
+    assert reading[-1] == cfg_mod.NO_CATEGORY, reading
+
+
+def test_every_detail_page_offers_a_way_back(qapp, sample):
+    """A breadcrumb reads as a path, not as a button."""
+    from PySide6.QtWidgets import QPushButton
+    from ui import theme
+
+    win = panel_mod.MainPanel(sample)
+    win.machines_page.list.setCurrentRow(0)
+    win.machines_page._open()
+    pages = {"services": win.services_page.detail,
+             "stacks": win.stacks_page.detail,
+             "schedule": win.schedule_page.detail,
+             "machines": win.machines_page.detail}
+
+    for name, page in pages.items():
+        backs = [b for b in page.findChildren(QPushButton)
+                 if b.text().startswith(theme.GLYPH_BACK)]
+        assert backs, f"{name} detail has no back button"

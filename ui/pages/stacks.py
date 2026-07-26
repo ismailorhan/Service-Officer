@@ -115,7 +115,7 @@ class StackDetail(_Page):
 
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
-        crumb.addWidget(_button("Stacks", "quiet", self.back.emit))
+        crumb.addWidget(_button(f"{theme.GLYPH_BACK}  Stacks", "quiet", self.back.emit))
         crumb.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
         self.crumb_name = _label("", "hint")
         crumb.addWidget(self.crumb_name)

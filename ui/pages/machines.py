@@ -193,6 +193,39 @@ class MachinesPage(QWidget):
         self.changed.emit()
 
 
+class _SecretEdit(QLineEdit):
+    """A password field that looks filled when a password is stored.
+
+    Clearing it after saving was technically tidy and read as "it was lost", which
+    is worse: nobody can tell a saved password from a forgotten one. So it shows a
+    row of dots — placeholder characters, never the real value, which is not held
+    anywhere in the UI — and empties itself the moment you start typing a new one.
+    """
+
+    STAND_IN = "**********"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEchoMode(QLineEdit.Password)
+        self._standing_in = False
+
+    def show_stored(self, stored: bool) -> None:
+        self._standing_in = stored
+        super().setText(self.STAND_IN if stored else "")
+
+    def typed(self) -> str:
+        """What the user actually entered, or "" if these are only the dots."""
+        return "" if self._standing_in else self.text()
+
+    def focusInEvent(self, event):
+        # Editing must start from nothing, or a new password would be appended to
+        # ten asterisks that were never a password.
+        if self._standing_in:
+            self._standing_in = False
+            self.clear()
+        super().focusInEvent(event)
+
+
 class MachineDetail(_Page):
     """One machine: what it is called, and how to reach it."""
 
@@ -210,7 +243,7 @@ class MachineDetail(_Page):
 
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
-        crumb.addWidget(_button("Machines", "quiet", self.back.emit))
+        crumb.addWidget(_button(f"{theme.GLYPH_BACK}  Machines", "quiet", self.back.emit))
         crumb.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
         self.crumb_name = _label("", "strong")
         crumb.addWidget(self.crumb_name)
@@ -300,8 +333,7 @@ class MachineDetail(_Page):
 
         # A password is never read back out of the store to show it. The field
         # holds what you are typing now; once saved it says so and goes blank.
-        self.password = QLineEdit()
-        self.password.setEchoMode(QLineEdit.Password)
+        self.password = _SecretEdit()
         self.password.setPlaceholderText("type to set a password")
         self.password.editingFinished.connect(self._save_password)
         pw = QHBoxLayout()
@@ -359,7 +391,10 @@ class MachineDetail(_Page):
         bar = QHBoxLayout()
         bar.setSpacing(6)
         bar.addWidget(_button("Test connection", "primary", self._test))
-        self.setup_button = _button("Copy the setup commands", None, self._setup)
+        # Named for what it hands you, since it was asked what it meant: the
+        # commands to run *on that machine* so this account may control services.
+        self.setup_button = _button("Copy what to run on that machine", None,
+                                    self._setup)
         bar.addWidget(self.setup_button)
         bar.addStretch(1)
         self.root.addLayout(bar)
@@ -389,9 +424,9 @@ class MachineDetail(_Page):
                       self.fingerprint):
             field.setCursorPosition(0)
         self.poll.setValue(machine.poll_seconds)
-        self.password.clear()
-        self.password_state.setText(
-            "saved" if secrets.has(machine.secret_ref) else "not set")
+        held = secrets.has(machine.secret_ref)
+        self.password.show_stored(held)
+        self.password_state.setText("saved on this computer" if held else "not set")
         self.result.setText("")
         self.machine = machine
         self._apply_visibility()
@@ -431,10 +466,14 @@ class MachineDetail(_Page):
         self._hide_row("password", by_password)
         self._hide_row("key_path", linux and not by_password)
         self._hide_row("poll", not local)
-        self.setup_button.setVisible(linux)
+        # Nothing to set up as root, so the button is not offered — a button whose
+        # only answer is "nothing to do" is a question the user has to ask first.
+        self.setup_button.setVisible(linux and machine.username != "root")
         if by_password:
+            held = secrets.has(machine.secret_ref)
+            self.password.show_stored(held)
             self.password_state.setText(
-                "saved" if secrets.has(machine.secret_ref) else "not set")
+                "saved on this computer" if held else "not set")
         if local:
             self.result.setText("This computer is reached by being it — the "
                                 "service manager is right here.")
@@ -464,14 +503,15 @@ class MachineDetail(_Page):
         it in a screenshot, a crash dump, and anything that walks the widget tree.
         """
         machine = self.machine
-        typed = self.password.text()
+        typed = self.password.typed()
         if machine is None or not typed:
             return
         machine.secret_ref = secrets.ref_for_machine(machine.name)
         stored = secrets.put(machine.secret_ref, typed)
-        self.password.clear()
+        # Dots, not the value: it is set and it looks set.
+        self.password.show_stored(stored)
         if stored:
-            self.password_state.setText("saved")
+            self.password_state.setText("saved on this computer")
             self.result.setText("")
         else:
             self.password_state.setText("not saved")
@@ -485,7 +525,7 @@ class MachineDetail(_Page):
         if machine is None:
             return
         secrets.forget(machine.secret_ref or secrets.ref_for_machine(machine.name))
-        self.password.clear()
+        self.password.show_stored(False)
         self.password_state.setText("not set")
         self.result.setText("Forgotten. That machine cannot be reached with a "
                             "password until a new one is set.")

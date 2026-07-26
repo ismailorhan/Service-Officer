@@ -38,7 +38,7 @@ class ServiceDetail(_Page):
 
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
-        b = _button("Services", "quiet", self.back.emit)
+        b = _button(f"{theme.GLYPH_BACK}  Services", "quiet", self.back.emit)
         crumb.addWidget(b)
         crumb.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
         self.crumb_name = _label("", "hint")

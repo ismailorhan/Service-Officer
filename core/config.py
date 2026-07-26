@@ -456,24 +456,28 @@ class Config:
         heading rather than being hidden.
 
         include_empty is for the editor, where a category with nothing in it is
-        somewhere to drag a service *to*; those come last, after everything that
-        has contents, and "No category" is always offered so a service can be
-        dragged back out. In the lists you only read, an empty heading is noise.
+        somewhere to drag a service *to*, and "No category" is always offered so a
+        service can be dragged back out. In the lists you only read, an empty
+        heading is noise.
+
+        "No category" is always the last heading, empty or not. It is not a
+        category among the others — it is where things are when they have not been
+        filed — so it belongs at the end, not sorted in among real ones.
         """
         groups = []
         for cat in self.categories:
             members = [s for s in self.services if (s.category or "") == cat.name]
             if members:
                 groups.append((cat.name, cat.display(), members))
+        if include_empty:
+            filed = {name for name, _t, _m in groups}
+            groups.extend((cat.name, cat.display(), [])
+                          for cat in self.categories if cat.name not in filed)
         loose = [s for s in self.services
                  if (s.category or "") == NO_CATEGORY
                  or not self.category(s.category)]
         if loose or include_empty:
             groups.append((NO_CATEGORY, NO_CATEGORY_TITLE, loose))
-        if include_empty:
-            filed = {name for name, _t, _m in groups}
-            groups.extend((cat.name, cat.display(), [])
-                          for cat in self.categories if cat.name not in filed)
         return groups
 
 

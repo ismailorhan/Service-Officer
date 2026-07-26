@@ -50,7 +50,10 @@ GLYPH_START, GLYPH_STOP, GLYPH_RESTART = "▶", "■", "↻"
 GLYPH_KILL, GLYPH_REFRESH, GLYPH_SERVICES = "✕", "↻", "▤"
 GLYPH_FOLD, GLYPH_FOLDED, GLYPH_GRIP = "▾", "▸", "⁝"
 GLYPH_SETTINGS, GLYPH_CRUMB, GLYPH_CHEVRON = "⚙", "›", "▾"
-GLYPH_UP, GLYPH_DOWN = "▲", "▼"              # reordering, where drag is awkward
+GLYPH_UP, GLYPH_DOWN = "▲", "▼"     # reordering, where drag is awkward
+# A breadcrumb reads as a path, which is not obviously something you can press.
+# An arrow says "this goes back".
+GLYPH_BACK = "←"
 
 _DARK = dict(
     # Surfaces, and the order they stack in. There used to be six near-blacks
