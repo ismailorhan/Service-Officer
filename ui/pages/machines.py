@@ -9,16 +9,17 @@ each row.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLineEdit,
-                               QListWidget, QListWidgetItem, QMessageBox,
-                               QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout,
+                               QLineEdit, QListWidget, QListWidgetItem,
+                               QMessageBox, QStackedWidget, QVBoxLayout,
+                               QWidget)
 
 from core import config as cfg_mod
 from core import connectors, control
 
 from .. import theme
 from ..widgets import button as _button, label as _label
-from .base import _ListRow, _Page, _sentence, _spin
+from .base import _ListRow, _Page, _spin
 
 
 class MachinesPage(QWidget):
@@ -205,75 +206,123 @@ class MachineDetail(_Page):
         self.root.insertLayout(0, crumb)
         self.root.insertSpacing(1, 10)
 
+        # A form, not sentences: eight settings with a ragged left edge are
+        # harder to scan than a column of labels, and this is the one page where
+        # every row is a different kind of thing. Labels left, values right, and
+        # the ones whose meaning is not obvious carry a note beside them.
+        form = QGridLayout()
+        form.setHorizontalSpacing(theme.SP_12)
+        form.setVerticalSpacing(theme.SP_10)
+        form.setColumnMinimumWidth(0, 108)
+        form.setColumnStretch(1, 1)
+        self.form = form
+        self._rows: dict = {}
+
+        def field(key: str, text: str, widget, note: str = ""):
+            """One row: label, the thing, and why it is there."""
+            row = form.rowCount()
+            caption = _label(text, "hint")
+            caption.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            form.addWidget(caption, row, 0)
+            if isinstance(widget, QWidget):
+                form.addWidget(widget, row, 1)
+            else:
+                form.addLayout(widget, row, 1)
+            hint = _label(note, "hint", wrap=True) if note else None
+            if hint is not None:
+                form.addWidget(hint, row, 2)
+            self._rows[key] = [w for w in (caption, widget, hint) if w is not None]
+            return row
+
+        def hide(key: str, shown: bool):
+            for part in self._rows.get(key, ()):
+                if isinstance(part, QWidget):
+                    part.setVisible(shown)
+                else:                          # a layout of widgets
+                    for i in range(part.count()):
+                        item = part.itemAt(i).widget()
+                        if item is not None:
+                            item.setVisible(shown)
+
+        self._hide_row = hide
+
         self.label = QLineEdit()
-        self.label.setMinimumWidth(240)
         self.label.setPlaceholderText("What you call this machine")
         self.label.editingFinished.connect(self._save)
-        self.root.addWidget(_sentence("Called", self.label))
-        self.root.addSpacing(10)
+        field("label", "Called", self.label,
+              "Your name for it. Shown instead of the host name.")
 
         self.kind = QComboBox()
         for text, _value in self.KINDS:
             self.kind.addItem(text)
         self.kind.currentIndexChanged.connect(self._kind_changed)
-        self.root.addWidget(_sentence("Reached as", self.kind))
-        self.root.addSpacing(10)
+        field("kind", "Reached as", self.kind,
+              "Everything else here follows from this.")
 
-        # -- where it is ---------------------------------------------------
         self.address = QLineEdit()
-        self.address.setMinimumWidth(240)
-        self.address.setPlaceholderText("host name or IP — blank uses the name above")
+        self.address.setPlaceholderText("host name or IP — blank uses the name")
         self.address.editingFinished.connect(self._save)
+        where = QHBoxLayout()
+        where.setSpacing(theme.SP_8)
+        where.addWidget(self.address, 1)
+        where.addWidget(_label("port", "hint"))
         self.port = _spin(0, 0, 65535, width=72)
         self.port.valueChanged.connect(lambda _v: self._save())
-        self.root.addWidget(_sentence("At", self.address, "port", self.port,
-                                      "(0 = the default)"))
-        self.root.addSpacing(10)
-
-        # -- who we are ----------------------------------------------------
-        self.ssh_box = QWidget()
-        ssh = QVBoxLayout(self.ssh_box)
-        ssh.setContentsMargins(0, 0, 0, 0)
-        ssh.setSpacing(10)
+        where.addWidget(self.port)
+        field("address", "Address", where,
+              "Port 0 means the usual one — 22 for SSH.")
 
         self.username = QLineEdit()
-        self.username.setMinimumWidth(160)
         self.username.setPlaceholderText("account on that machine")
         self.username.editingFinished.connect(self._save)
+        field("username", "Account", self.username,
+              "Who we log in as. Reading needs no privilege;\n"
+              "acting needs sudo without a password.")
+
         self.auth = QComboBox()
         for text, _value in self.AUTHS:
             self.auth.addItem(text)
         self.auth.currentIndexChanged.connect(lambda _i: self._save())
-        ssh.addWidget(_sentence("As", self.username, "using", self.auth))
+        field("auth", "Sign in with", self.auth,
+              "A key is preferred: no secret to keep.")
 
         self.key_path = QLineEdit()
-        self.key_path.setMinimumWidth(340)
         self.key_path.setPlaceholderText(r"C:\Users\you\.ssh\id_ed25519")
         self.key_path.editingFinished.connect(self._save)
-        ssh.addWidget(_sentence("Key file", self.key_path,
-                                _button("Browse…", "quiet", self._browse)))
+        keys = QHBoxLayout()
+        keys.setSpacing(theme.SP_8)
+        keys.addWidget(self.key_path, 1)
+        keys.addWidget(_button("Browse…", "quiet", self._browse))
+        field("key_path", "Key file", keys,
+              "The private key here. Its public half goes\n"
+              "in that account's ~/.ssh/authorized_keys.")
 
         # The fingerprint is the whole of SSH's security on a first connection, so
         # it is a field a person fills in deliberately — never something the app
         # accepts because it was offered.
         self.fingerprint = QLineEdit()
-        # 50 characters of base64. Showing the tail of it tells you nothing.
-        self.fingerprint.setMinimumWidth(400)
-        self.fingerprint.setPlaceholderText("SHA256:… — confirm this on the machine "
-                                            "itself")
+        self.fingerprint.setPlaceholderText("SHA256:… — confirm it on the machine")
         self.fingerprint.editingFinished.connect(self._save)
-        ssh.addWidget(_sentence("Host key", self.fingerprint))
-
-        self.sudo_note = _label("", "hint", wrap=True)
-        ssh.addWidget(self.sudo_note)
-        self.root.addWidget(self.ssh_box)
-        self.root.addSpacing(10)
+        field("fingerprint", "Host key", self.fingerprint,
+              "Proves the machine is the one you meant.\n"
+              "A different key later is refused.")
 
         self.poll = _spin(5, 2, 300, width=64)
         self.poll.valueChanged.connect(lambda _v: self._save())
-        self.poll_row = _sentence("Ask for status every", self.poll, "seconds")
-        self.root.addWidget(self.poll_row)
-        self.root.addSpacing(14)
+        seconds = QHBoxLayout()
+        seconds.setSpacing(theme.SP_8)
+        seconds.addWidget(self.poll)
+        seconds.addWidget(_label("seconds", "hint"))
+        seconds.addStretch(1)
+        field("poll", "Check every", seconds,
+              "A remote machine cannot tell us on its own.\n"
+              "With journal access this is only a safety net.")
+
+        self.root.addLayout(form)
+        self.root.addSpacing(theme.SP_12)
+        self.sudo_note = _label("", "hint", wrap=True)
+        self.root.addWidget(self.sudo_note)
+        self.root.addSpacing(theme.SP_12)
 
         bar = QHBoxLayout()
         bar.setSpacing(6)
@@ -334,26 +383,37 @@ class MachineDetail(_Page):
         self._save()
 
     def _apply_visibility(self):
-        """This computer has nothing to configure — it is reached by being here."""
+        """This computer has nothing to configure — it is reached by being it."""
         machine = self.machine
         local = machine is None or machine.is_local
         linux = bool(machine and machine.is_linux)
         self.kind.setEnabled(not local)
-        self.address.setEnabled(not local)
-        self.port.setEnabled(not local)
-        self.ssh_box.setVisible(linux)
+        for key in ("address",):
+            self._hide_row(key, not local)
+        for key in ("username", "auth", "key_path", "fingerprint"):
+            self._hide_row(key, linux)
+        self._hide_row("poll", not local)
         self.key_path.setEnabled(not linux or machine.auth == "key")
-        self.poll_row.setVisible(not local)
         self.setup_button.setVisible(linux)
         if local:
             self.result.setText("This computer is reached by being it — the "
                                 "service manager is right here.")
+            self.sudo_note.setText("")
+        elif linux and machine.auth == "password":
+            # Say so rather than failing later: the model has the field, but the
+            # place to keep a password safely is not built yet, so a password
+            # target cannot actually connect.
+            self.sudo_note.setText(
+                "Password sign-in is not wired up yet — there is nowhere to keep "
+                "the password safely, so it is not kept. Use a key file for now.")
         elif linux:
             self.sudo_note.setText(
                 "Reading a status needs no privilege. Starting and stopping needs "
                 "sudo without a password, and instant updates need the account in "
                 "the systemd-journal group — the button below writes out exactly "
                 "what to run for the services you have chosen.")
+        else:
+            self.sudo_note.setText("")
 
     def _browse(self):
         from PySide6.QtWidgets import QFileDialog

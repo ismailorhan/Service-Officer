@@ -1300,11 +1300,13 @@ def test_a_linux_machine_shows_its_ssh_settings_and_a_windows_one_does_not(qapp)
 
     page.list.setCurrentRow(2)                       # hanadev
     page._open()
-    assert page.detail.ssh_box.isVisibleTo(page.detail)
+    assert page.detail.username.isVisibleTo(page.detail)
+    assert page.detail.fingerprint.isVisibleTo(page.detail)
 
     page.list.setCurrentRow(1)                       # CTL052, Windows
     page._open()
-    assert not page.detail.ssh_box.isVisibleTo(page.detail)
+    assert not page.detail.username.isVisibleTo(page.detail)
+    assert not page.detail.fingerprint.isVisibleTo(page.detail)
 
 
 def test_this_computer_has_nothing_to_configure(qapp):
@@ -1318,8 +1320,10 @@ def test_this_computer_has_nothing_to_configure(qapp):
     page._open()
 
     assert not page.detail.kind.isEnabled()
-    assert not page.detail.address.isEnabled()
-    assert not page.detail.poll_row.isVisibleTo(page.detail)
+    # Address and interval are not merely greyed: there is nothing to say about
+    # reaching the machine you are already on, so the rows are not there.
+    assert not page.detail.address.isVisibleTo(page.detail)
+    assert not page.detail.poll.isVisibleTo(page.detail)
 
 
 def test_editing_a_machine_writes_through_to_the_config(qapp):
