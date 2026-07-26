@@ -346,4 +346,14 @@ Two consequences already built:
   still coming up, and it would never finish.
 - The grace window asks the question and ignores only the *answer*, so a service
   ready in nine seconds shows as ready in nine seconds instead of sitting at
-  "Starting…" until the window expires.
+  "Starting…" until the window expires. While it is starting the question is asked
+  every five seconds whatever the service's own interval is — at "every 60s" the
+  row would have sat at "Starting…" for the full minute regardless, which is the
+  same wrong answer arrived at more slowly.
+
+Verified through the interface rather than in a unit test, because the unit tests
+all passed while the screen was wrong: the whole application restarting Server
+Tools for real, photographed every two seconds. The row said "Starting…" from the
+tenth second to the thirty-fourth and Running from the thirty-sixth — twenty-six
+seconds of warm-up against 24.1 seconds of measured downtime — with the dot amber
+and the tray gear turning in every one of those frames.
