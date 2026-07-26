@@ -103,14 +103,18 @@ class MachinesPage(QWidget):
 
     def _title(self, machine) -> str:
         """CTL052 (10.77.3.50) — the name alone isn't enough when someone has to
-        RDP to the box, and an IP alone isn't enough to know which box it is."""
-        name = control.host_name() if machine.is_local else machine.name
-        name = name or machine.display()
+        RDP to the box, and an IP alone isn't enough to know which box it is.
+
+        What is shown is what the user called it. This used to show `machine.name`,
+        which is not a name anybody chose to see: it is the key the services point
+        at, fixed when the machine was added. So a machine added as "sd" and then
+        called "hanadev" went on reading "sd (hanadev)", and the Called field looked
+        like it did nothing.
+        """
+        name = (control.host_name() if machine.is_local else "") or machine.display()
         address = machine.address or control.cached_address(machine.name)
         if address and address != name:
             return f"{name}  ({address})"
-        if machine.label and machine.label != name:
-            return f"{name}  ·  {machine.label}"
         return name
 
     def _summary(self, machine, count: int) -> str:
@@ -152,8 +156,14 @@ class MachinesPage(QWidget):
 
     def _add(self):
         from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "Add machine",
-                                        "Computer name or host name:")
+        # What is typed here becomes the machine's id as well as its first
+        # description and, until a Host is set, the name we connect to — which is
+        # why it asks for the host name. The id itself is never shown again: it is
+        # plumbing, and the one field on a machine that cannot be edited later.
+        name, ok = QInputDialog.getText(
+            self, "Add machine",
+            "Host name or IP of the machine.\n"
+            "Its description, account and the rest are on the next page.")
         name = (name or "").strip().lstrip("\\")
         if not ok or not name:
             return
@@ -292,20 +302,20 @@ class MachineDetail(_Page):
         self._hide_row = hide
 
         self.label = QLineEdit()
-        self.label.setPlaceholderText("What you call this machine")
+        self.label.setPlaceholderText("what this machine is")
         self.label.editingFinished.connect(self._save)
-        field("label", "Called", self.label,
-              "Your name for it. Shown instead of the host name.")
+        field("label", "Description", self.label,
+              "Shown everywhere this machine appears.")
 
         self.kind = QComboBox()
         for text, _value in self.KINDS:
             self.kind.addItem(text)
         self.kind.currentIndexChanged.connect(self._kind_changed)
-        field("kind", "Reached as", self.kind,
+        field("kind", "Target type", self.kind,
               "Everything else here follows from this.")
 
         self.address = QLineEdit()
-        self.address.setPlaceholderText("host name or IP — blank uses the name")
+        self.address.setPlaceholderText("host name or IP address")
         self.address.editingFinished.connect(self._save)
         where = QHBoxLayout()
         where.setSpacing(theme.SP_8)
@@ -314,13 +324,13 @@ class MachineDetail(_Page):
         self.port = _spin(0, 0, 65535, width=72)
         self.port.valueChanged.connect(lambda _v: self._save())
         where.addWidget(self.port)
-        field("address", "Address", where,
+        field("address", "Host", where,
               "Port 0 means the usual one — 22 for SSH.")
 
         self.username = QLineEdit()
         self.username.setPlaceholderText("account on that machine")
         self.username.editingFinished.connect(self._save)
-        field("username", "Account", self.username,
+        field("username", "User", self.username,
               "Who we log in as. Reading needs no privilege;\n"
               "acting needs sudo without a password.")
 
@@ -328,7 +338,7 @@ class MachineDetail(_Page):
         for text, _value in self.AUTHS:
             self.auth.addItem(text)
         self.auth.currentIndexChanged.connect(lambda _i: self._save())
-        field("auth", "Sign in with", self.auth,
+        field("auth", "Sign in method", self.auth,
               "A key is preferred: no secret to keep.")
 
         # A password is never read back out of the store to show it. The field

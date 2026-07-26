@@ -561,6 +561,39 @@ def test_machines_are_named_with_their_address_and_this_pc_is_marked(qapp, sampl
     win.deleteLater()
 
 
+def test_a_renamed_machine_is_listed_under_the_name_it_was_given(qapp):
+    """It was listed under its id instead. A machine added as "sd" and then called
+    "hanadev" kept reading "sd  (hanadev)", so the Called field looked broken and
+    there was nothing anywhere to say what "sd" was."""
+    cfg = cfg_mod.Config(machines=[cfg_mod.Machine(),
+                                   cfg_mod.Machine(name="sd", label="hanadev",
+                                                   kind="linux",
+                                                   address="hanadev")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+
+    assert page._title(cfg.machines[1]) == "hanadev"
+    # The id stays out of sight: it is plumbing the services point at, and showing
+    # it only raised the question of which of the two names mattered.
+    page.list.setCurrentRow(1)
+    page._open()
+    assert page.detail.label.text() == "hanadev"
+    assert "sd" not in [lb.text() for lb in page.detail.findChildren(QLabel)]
+    win.deleteLater()
+
+
+def test_a_machine_still_shows_its_address_when_that_differs(qapp):
+    """Whoever has to RDP or SSH to the box needs the address, and a friendly name
+    on its own does not give it."""
+    cfg = cfg_mod.Config(machines=[cfg_mod.Machine(),
+                                   cfg_mod.Machine(name="sd", label="SUSE dev",
+                                                   kind="linux",
+                                                   address="hanadev")])
+    win = panel_mod.MainPanel(cfg)
+    assert win.machines_page._title(cfg.machines[1]) == "SUSE dev  (hanadev)"
+    win.deleteLater()
+
+
 def test_bulk_selection_drives_one_action_for_many_services(qapp, sample):
     """Stopping a five-service SAP stack should be one confirmation, not five
     clicks in the right order."""
