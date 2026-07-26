@@ -1,2 +1,9 @@
 PySide6-Essentials>=6.7
 pywin32>=306
+# Linux targets, over SSH. The >=3 is not a preference: the box we manage runs
+# OpenSSH 9.6, and OpenSSH has refused RSA/SHA-1 signatures since 8.8 — paramiko
+# only learned rsa-sha2 in 2.9. An older one fails with "no authentication
+# methods available", which sends you looking in entirely the wrong place.
+# LGPL-2.1, the same footing as PySide6. Imported lazily, so a Windows-only
+# install runs without it.
+paramiko>=3
