@@ -1,8 +1,13 @@
 """Service control — query, start, stop, restart, enumerate.
 
-Every call takes an optional machine, because pywin32 accepts one throughout and
-that is what makes managing another server (roadmap #4) a UI problem rather than
-a plumbing one. An empty machine means this computer.
+The public face of every transport. Everything in the app calls these functions
+and none of them knows what is on the other end: the Windows SCM today, a Linux
+box over SSH next, an agent later. `core/connectors.py` defines the vocabulary and
+picks the transport; `core/scm_windows.py` is the one that exists.
+
+Every call still takes an optional machine, and an empty machine still means this
+computer — the signatures did not change when the routing appeared underneath
+them, which is the point of putting the seam here.
 """
 
 from __future__ import annotations
@@ -11,73 +16,42 @@ import os
 import socket
 import threading
 
-import win32service
-import win32serviceutil
-import pywintypes
-
-from . import state as st
-
-_STATUS_MAP = {
-    win32service.SERVICE_STOPPED:          st.STOPPED,
-    win32service.SERVICE_START_PENDING:    "Starting",
-    win32service.SERVICE_STOP_PENDING:     "Stopping",
-    win32service.SERVICE_RUNNING:          st.RUNNING,
-    win32service.SERVICE_CONTINUE_PENDING: "Resuming",
-    win32service.SERVICE_PAUSE_PENDING:    "Pausing",
-    win32service.SERVICE_PAUSED:           st.PAUSED,
-}
+from . import connectors
 
 
-def _m(machine: str):
-    """pywin32 wants None for the local machine, not an empty string."""
-    return machine or None
+def _for(machine: str = ""):
+    return connectors.for_machine(machine)
 
 
+# -- the seven verbs --------------------------------------------------------
 def query_status(service_name: str, machine: str = "") -> str:
-    try:
-        status = win32serviceutil.QueryServiceStatus(service_name, _m(machine))
-        return _STATUS_MAP.get(status[1], st.UNKNOWN)
-    except pywintypes.error:
-        return st.NOT_FOUND
+    return _for(machine).status(service_name).state
+
+
+def status_of(service_name: str, machine: str = "") -> connectors.Status:
+    """Everything the transport knows, for callers that want more than a word:
+    the start type, the pid, whether the service is even installable."""
+    return _for(machine).status(service_name)
 
 
 def start_service(service_name: str, machine: str = "") -> None:
-    win32serviceutil.StartService(service_name, machine=_m(machine))
+    _for(machine).start(service_name)
 
 
 def stop_service(service_name: str, machine: str = "") -> None:
-    win32serviceutil.StopService(service_name, _m(machine))
+    _for(machine).stop(service_name)
 
 
 def restart_service(service_name: str, machine: str = "") -> None:
-    win32serviceutil.RestartService(service_name, machine=_m(machine))
+    _for(machine).restart(service_name)
 
 
 def list_all_services(machine: str = "") -> list:
-    """Every installed Win32 service as {"name", "display", "status"}, sorted by
-    display name — what the settings picker offers."""
-    scm = win32service.OpenSCManager(_m(machine), None,
-                                     win32service.SC_MANAGER_ENUMERATE_SERVICE)
-    try:
-        raw = win32service.EnumServicesStatus(
-            scm, win32service.SERVICE_WIN32, win32service.SERVICE_STATE_ALL)
-    finally:
-        win32service.CloseServiceHandle(scm)
-
-    services = [{"name": name, "display": display,
-                 "status": _STATUS_MAP.get(status[1], st.UNKNOWN)}
-                for name, display, status in raw]
-    services.sort(key=lambda s: s["display"].lower())
-    return services
-
-
-_START_TYPES = {
-    win32service.SERVICE_BOOT_START:   "Boot",
-    win32service.SERVICE_SYSTEM_START: "System",
-    win32service.SERVICE_AUTO_START:   "Automatic",
-    win32service.SERVICE_DEMAND_START: "Manual",
-    win32service.SERVICE_DISABLED:     "Disabled",
-}
+    """Every service on that machine as {"name", "display", "status"}, sorted by
+    display name — what the picker offers. A dict, not the dataclass, because
+    that is the shape the picker has always been handed."""
+    return [{"name": s.name, "display": s.display, "status": s.status}
+            for s in _for(machine).list_services()]
 
 
 def start_type(service_name: str, machine: str = "") -> str:
@@ -85,50 +59,15 @@ def start_type(service_name: str, machine: str = "") -> str:
 
     Worth knowing because a disabled service cannot be started at all — Windows
     refuses with "the service cannot be started because it is disabled", and
-    offering a Start button for it is a lie.
+    offering a Start button for it is a lie. systemd's `disabled` means the same
+    thing for the same reason.
     """
-    try:
-        scm = win32service.OpenSCManager(_m(machine), None,
-                                         win32service.SC_MANAGER_CONNECT)
-    except pywintypes.error:
-        return ""
-    try:
-        handle = win32service.OpenService(scm, service_name,
-                                         win32service.SERVICE_QUERY_CONFIG)
-        try:
-            config = win32service.QueryServiceConfig(handle)
-            return _START_TYPES.get(config[1], "")
-        finally:
-            win32service.CloseServiceHandle(handle)
-    except pywintypes.error:
-        return ""
-    finally:
-        win32service.CloseServiceHandle(scm)
+    return _for(machine).status(service_name).start_type
 
 
 def process_id(service_name: str, machine: str = "") -> int:
-    """The service's process, or 0 if it isn't running.
-
-    Needed for the last resort below, and worth having anyway: it identifies the
-    process for resource figures later.
-    """
-    try:
-        scm = win32service.OpenSCManager(_m(machine), None,
-                                         win32service.SC_MANAGER_CONNECT)
-    except pywintypes.error:
-        return 0
-    try:
-        handle = win32service.OpenService(scm, service_name,
-                                         win32service.SERVICE_QUERY_STATUS)
-        try:
-            info = win32service.QueryServiceStatusEx(handle)
-            return int(info.get("ProcessId", 0) or 0)
-        finally:
-            win32service.CloseServiceHandle(handle)
-    except pywintypes.error:
-        return 0
-    finally:
-        win32service.CloseServiceHandle(scm)
+    """The service's process, or 0 if it isn't running."""
+    return _for(machine).status(service_name).pid
 
 
 def kill_process(service_name: str, machine: str = "") -> int:
@@ -138,44 +77,37 @@ def kill_process(service_name: str, machine: str = "") -> int:
     "Stopping" for ever because the process never acknowledges the control
     request. Terminating it is abrupt by definition — the service gets no chance
     to flush anything — so the UI asks before calling this.
-
-    Only local services: terminating a process on another machine needs a
-    different mechanism entirely.
     """
-    if machine:
-        raise RuntimeError("Killing a process is only possible on this computer.")
-    pid = process_id(service_name)
-    if not pid:
-        raise RuntimeError("That service has no running process.")
-
-    import win32api
-    import win32con
-    handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
-    try:
-        win32api.TerminateProcess(handle, 1)
-    finally:
-        win32api.CloseHandle(handle)
-    return pid
+    return _for(machine).kill(service_name)
 
 
-#: Windows refusing because the service is already where you asked it to be.
-#: Not failures — there was nothing to do. 1056 ERROR_SERVICE_ALREADY_RUNNING,
-#: 1062 ERROR_SERVICE_NOT_ACTIVE, 1058 ERROR_SERVICE_DISABLED.
-NOTHING_TO_DO = {1056: "it is already running",
-                 1062: "it is already stopped",
-                 1058: "it is disabled in Windows"}
+def abilities(machine: str = ""):
+    """What can actually be done to this target. The UI disables what cannot,
+    rather than offering a button that fails."""
+    return _for(machine).abilities()
+
+
+def reachable(machine: str) -> bool:
+    """Can we talk to this machine at all? Used to show a machine as offline
+    instead of every service on it as 'Not Found'."""
+    return _for(machine).reachable()
 
 
 def nothing_to_do(exc) -> str:
     """A plain reason if this exception only means "no change needed", else "".
 
     Stopping a stopped service raises "The service has not been started", which
-    is not a problem and must not be reported as one.
+    is not a problem and must not be reported as one. Transport-specific by
+    nature: `systemctl start` on a started unit simply exits 0, so there is
+    nothing to translate there.
     """
-    code = getattr(exc, "winerror", None)
-    return NOTHING_TO_DO.get(code, "")
+    from . import scm_windows
+    return scm_windows.nothing_to_do(exc)
 
 
+# -- naming and addresses ---------------------------------------------------
+# Not transport-specific: a machine's name and address are the same questions
+# whatever runs on it.
 def host_name() -> str:
     """This computer's name as Windows knows it, so the local machine can be
     named rather than called "this computer"."""
@@ -245,15 +177,3 @@ def address_of(machine: str = "") -> str:
             pass
     _addresses[key] = found
     return found
-
-
-def reachable(machine: str) -> bool:
-    """Can we talk to this machine's SCM at all? Used to show a machine as
-    offline instead of every service on it as 'Not Found'."""
-    try:
-        scm = win32service.OpenSCManager(_m(machine), None,
-                                         win32service.SC_MANAGER_CONNECT)
-        win32service.CloseServiceHandle(scm)
-        return True
-    except pywintypes.error:
-        return False
