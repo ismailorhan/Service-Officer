@@ -10,11 +10,29 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
                                QHeaderView, QMessageBox, QTableWidget,
                                QTableWidgetItem)
 
-from core import history
+from core import clock, history
 
 from .. import theme
 from ..widgets import button as _button, label as _label
 from .base import _Page, _spin
+
+
+class _TimeCell(QTableWidgetItem):
+    """A time column that sorts by the moment, not by the text it shows.
+
+    The header is clickable, and comparing local strings puts the two 02:30s of a
+    daylight-saving night in the wrong order — as it does for any row still
+    carrying an older local offset. The moment is kept beside the text.
+    """
+
+    def __init__(self, text: str, stored: str):
+        super().__init__(text)
+        self._when = clock.sort_key(stored)
+
+    def __lt__(self, other):
+        if isinstance(other, _TimeCell):
+            return self._when < other._when
+        return super().__lt__(other)
 
 
 class HistoryPage(_Page):
@@ -278,12 +296,12 @@ class HistoryPage(_Page):
         for r in rows:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            ts = str(r.get("ts", ""))
-            day, _, clock = ts.partition("T")
-            cells = [f"{day}  {clock[:8]}", r.get("label") or r.get("service", ""),
+            stored = r.get("ts", "")
+            cells = [clock.local_text(stored), r.get("label") or r.get("service", ""),
                      r.get("event", ""), r.get("detail", ""), r.get("source", "")]
             for col, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+                item = (_TimeCell(text, stored) if col == 0
+                        else QTableWidgetItem(text))
                 if col == 0:
                     item.setFont(QFont(theme.MONO, 8))
                 if r.get("level") == "Error":

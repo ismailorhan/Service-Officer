@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+from core import clock
 from core import config as cfg_mod
 from core import history
 from core import state as st
@@ -91,8 +92,9 @@ def test_export_matches_what_is_on_screen(tmp_path):
     # one column. The hint line is honoured in any locale.
     text = open(dest, encoding="utf-8-sig").read().splitlines()
     assert text[0] == "sep=\t"
-    assert text[1].split("\t") == ["Time", "Service", "Kind", "Event", "Detail",
-                                   "Level", "Source"]
+    # The time column names the zone once, because the times in it are local.
+    assert text[1].split("\t") == [f"Time ({clock.offset_label()})", "Service",
+                                   "Kind", "Event", "Detail", "Level", "Source"]
     assert "A" in text[2] and "B" not in text[2]
 
 
@@ -103,7 +105,8 @@ def test_plain_export_stays_parseable_by_other_tools(tmp_path):
     dest = str(tmp_path / "plain.csv")
     history.export_csv(dest, rows=rows, for_excel=False)
     text = open(dest, encoding="utf-8-sig").read().splitlines()
-    assert text[0].split(",")[:2] == ["Time", "Service"]     # no hint line
+    assert text[0].split(",")[:2] == [f"Time ({clock.offset_label()})",
+                                      "Service"]           # no hint line
 
 
 def test_windows_events_are_merged_when_asked_for(tmp_path, monkeypatch):

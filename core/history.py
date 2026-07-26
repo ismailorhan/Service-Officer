@@ -17,6 +17,7 @@ import os
 import threading
 from datetime import datetime, timedelta, timezone
 
+from . import clock
 from . import config as cfg_mod
 from . import state as st
 
@@ -65,7 +66,8 @@ def path() -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    """UTC — see core/clock.py for why, and what happens to older rows."""
+    return clock.now_iso()
 
 
 def record(event: st.Event, path: str = None, note: str = "") -> None:
@@ -230,10 +232,11 @@ def trim(retention_days: int, path: str = None) -> int:
                     continue
                 try:
                     rec = json.loads(raw)
-                    ts = datetime.fromisoformat(rec["ts"])
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                except (json.JSONDecodeError, KeyError, ValueError):
+                except json.JSONDecodeError:
+                    dropped += 1
+                    continue
+                ts = clock.parse(rec.get("ts"))
+                if ts is None:
                     dropped += 1
                     continue
                 if ts >= cutoff:
@@ -282,13 +285,10 @@ ACTION_TEXT = {"start": "start requested", "stop": "stop requested",
 def _within(ts: str, since) -> bool:
     if since is None:
         return True
-    try:
-        when = datetime.fromisoformat(ts)
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        return when >= since
-    except (TypeError, ValueError):
-        return True
+    when = clock.parse(ts)
+    # A row we cannot date is kept: it is better seen and questioned than
+    # silently dropped from a timeline someone is using as evidence.
+    return True if when is None else when >= since
 
 
 #: Transitional states. Every one is written to the log, but a restart producing
@@ -395,7 +395,10 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
                 "source": f"Windows event log · {rec['source']}",
             })
 
-    rows.sort(key=lambda r: r["ts"], reverse=True)
+    # By the moment, not by the string. Our rows and the Windows event log's are
+    # both UTC now, but a file written before this change carries local offsets,
+    # and text order across two different offsets is not time order.
+    rows.sort(key=lambda r: clock.sort_key(r["ts"]), reverse=True)
     return rows[:limit]
 
 
@@ -409,6 +412,11 @@ def export_csv(dest: str, rows=None, path: str = None, service: str = None,
     arrived as one fat column. Two things fix that for good: tabs, and Excel's own
     `sep=` first line, which it honours in any locale. Pass for_excel=False for a
     plain comma file that other tools will parse.
+
+    Times go out in *local* time, formatted so Excel reads the cell as a date
+    rather than text. The offset is named once in the column header instead of on
+    every row: this is evidence for a ticket, read by someone who was there, and
+    a thousand cells each ending in "+03:00" would only be in the way.
     """
     import csv
     if rows is None:
@@ -419,9 +427,11 @@ def export_csv(dest: str, rows=None, path: str = None, service: str = None,
         if for_excel:
             f.write(f"sep={delimiter}\n")
         w = csv.writer(f, delimiter=delimiter)
-        w.writerow(["Time", "Service", "Kind", "Event", "Detail", "Level", "Source"])
+        w.writerow([f"Time ({clock.offset_label()})", "Service", "Kind", "Event",
+                    "Detail", "Level", "Source"])
         for r in rows:
-            w.writerow([r.get("ts", ""), r.get("label") or r.get("service", ""),
+            w.writerow([clock.local_text(r.get("ts", ""), clock.EXPORT),
+                        r.get("label") or r.get("service", ""),
                         r.get("kind", ""), r.get("event", ""), r.get("detail", ""),
                         r.get("level", ""), r.get("source", "")])
     return len(rows)

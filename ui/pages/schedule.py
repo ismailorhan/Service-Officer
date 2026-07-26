@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
                                QStackedWidget, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
+from core import clock
 from core import config as cfg_mod
 from core import history
 
@@ -89,10 +90,9 @@ class SchedulePage(QWidget):
         for rec in rows:
             row = self.executions.rowCount()
             self.executions.insertRow(row)
-            ts = str(rec.get("ts", ""))
-            day, _, clock = ts.partition("T")
             took = rec.get("seconds") or 0
-            cells = [f"{day} {clock[:8]}", rec.get("run", ""), rec.get("name", ""),
+            cells = [clock.local_text(rec.get("ts", "")), rec.get("run", ""),
+                     rec.get("name", ""),
                      rec.get("outcome", ""), f"{took:g}s" if took else ""]
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(str(text))

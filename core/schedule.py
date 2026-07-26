@@ -17,16 +17,22 @@ from __future__ import annotations
 import threading
 from datetime import date, datetime, timedelta
 
+from . import clock
+
 CATCH_UP_MINUTES = 30      # how late a missed time trigger may still fire
 
 
 def _parse_ts(text) -> datetime | None:
-    """History timestamps carry an offset; comparisons here are naive local."""
-    try:
-        parsed = datetime.fromisoformat(str(text))
-    except (TypeError, ValueError):
-        return None
-    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    """A history timestamp on this machine's clock, naive.
+
+    It has to be local wall clock, because that is what it gets compared against:
+    a trigger's `time_of_day` is "07:15" in the operator's own day. Converting
+    rather than merely dropping the offset is the whole point — history is stored
+    in UTC now, so a 07:15 run recorded as 04:15Z would otherwise read as 04:15,
+    look as though the trigger's time had not come, and fire it a second time
+    after a restart.
+    """
+    return clock.to_local(text)
 
 
 class Scheduler:

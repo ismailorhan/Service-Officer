@@ -117,7 +117,9 @@ def read(service_names, labels=None, hours: int = 24, levels=None,
                     except Exception:
                         message = " ".join(str(s) for s in (record.StringInserts or ()))
                     out.append({
-                        "ts": when.astimezone().isoformat(timespec="seconds"),
+                        # UTC — `when` already is, via _as_utc — so these rows
+                        # interleave with ours by moment rather than by text.
+                        "ts": when.isoformat(timespec="seconds"),
                         "service": _guess_service(record, service_names, labels),
                         "level": level,
                         "source": record.SourceName or log_name,
