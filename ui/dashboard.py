@@ -151,6 +151,10 @@ class DashboardPage(ServiceListMixin, QWidget):
                    if self._store.health_of(s.name, s.machine) == "unhealthy")
         if sick:
             parts.append(f"{sick} not responding")
+        warming = sum(1 for s in cfg.services
+                      if self._store.health_of(s.name, s.machine) == "starting")
+        if warming:
+            parts.append(f"{warming} starting")
         self.summary.setText("  ·  ".join(parts))
 
     # Grouping, visibility, selection and bulk actions come from

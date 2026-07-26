@@ -38,6 +38,12 @@ log = applog.get("health")
 
 #: what we know about a service's health
 UNKNOWN, HEALTHY, UNHEALTHY = "unknown", "healthy", "unhealthy"
+#: Running, checks configured, and still inside the grace period — so nothing has
+#: been asked yet and "Running" would be a claim we cannot support. Measured on a
+#: real SAP web client: systemd reported Running one second after the start, the
+#: static page answered nine seconds later, and its own API returned 500 for a
+#: while after that. Green for all of it would have been a lie three times over.
+STARTING = "starting"
 
 
 @dataclass
@@ -153,8 +159,20 @@ def _http(check, machine: str) -> Result:
                 # log would otherwise be downloaded in full.
                 body = answer.read(65536).decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        status, body = exc.code, ""
+        status = exc.code
+        # Read the body even on an error status. Expecting one is legitimate — a
+        # 401 from an API means "up, and correctly refusing an anonymous caller",
+        # which is exactly how to tell a ready application from one still starting
+        # and answering 500. Not reading it meant `expect_text` was silently
+        # ignored whenever the expected status was an error.
+        try:
+            body = exc.read(65536).decode("utf-8", "replace") if check.expect_text                 else ""
+        except Exception:
+            body = ""
         if check.expect_status and status == check.expect_status:
+            if check.expect_text and check.expect_text not in body:
+                return Result(False, f"HTTP {status} as expected, but "
+                                     f"“{check.expect_text}” was not in it")
             return Result(True, f"HTTP {status} as expected")
         return Result(False, f"HTTP {status}")
     except Exception as exc:
@@ -342,14 +360,23 @@ class Monitor:
         watch = self._watch((machine or "", name))
         watch.running_since = self._now()
         watch.failures = 0
-        watch.verdict = UNKNOWN
         watch.detail = ""
-        # Say when the first check will be, so a restart doesn't look like the
-        # watching having stopped.
-        publish = getattr(self._store, "set_health_timing", None)
         service = next((s for s in self._config().services
                         if s.name == name and (s.machine or "") == (machine or "")),
                        None)
+        # Only say "starting" when something is actually going to be checked. A
+        # service with no health checks is simply running, and inventing a
+        # warm-up state for it would be noise.
+        warming = (service is not None and service.health.active
+                   and service.health.grace_seconds > 0)
+        watch.verdict = STARTING if warming else UNKNOWN
+        if warming:
+            watch.detail = (f"started just now; its checks begin in "
+                            f"{service.health.grace_seconds}s")
+            self._on_verdict(service, watch.verdict, watch.detail, [])
+        # Say when the first check will be, so a restart doesn't look like the
+        # watching having stopped.
+        publish = getattr(self._store, "set_health_timing", None)
         if publish and service is not None:
             publish(name, machine, last=None, failures=0, passed=None,
                     detail="waiting for it to settle",
@@ -400,6 +427,12 @@ class Monitor:
             # then the verdict stands, so one blip doesn't paint the row red.
             if watch.failures >= service.health.failures_before_acting:
                 watch.verdict = UNHEALTHY
+            elif watch.verdict == STARTING:
+                # A check has now run, so the warm-up window is over — it just
+                # was not conclusive. Leaving it at "Starting…" would have a
+                # service that has been up for hours read as newly started after
+                # a single blip.
+                watch.verdict = UNKNOWN
 
         # After the bookkeeping, not before: published first, the panel showed
         # "failed (0 in a row)" on the first failure.

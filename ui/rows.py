@@ -100,6 +100,15 @@ class ServiceRow(QWidget):
             self.setToolTip("This service is disabled in Windows — enable it in "
                             "services.msc before it can start.")
             return
+        # Started, but nothing has vouched for it yet. Neither "Running" nor "Not
+        # responding" is true in that window, and it is a long window: a service
+        # whose start script returns in a second can take half a minute to answer.
+        if health == "starting" and not busy_label and cat == "running":
+            self.chip.set_state("Starting…", "pending")
+            self.setToolTip(health_detail or "It has started; its health checks "
+                                             "have not passed yet.")
+            self._set_buttons(cat, busy_label)
+            return
         # Running but not answering is the failure the service list cannot show.
         # It gets the chip, because "Running" next to a dead service is a lie —
         # and the reason goes in the tooltip, where the next question is answered.

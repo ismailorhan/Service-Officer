@@ -304,7 +304,10 @@ class Application(QObject):
     def _on_health_verdict(self, name, machine, verdict, detail):
         """GUI thread: a service changed between answering and not."""
         self.store.set_health(name, verdict, detail, machine=machine)
-        if self.cfg.history.enabled:
+        # "starting" is not something that happened to a service, it is us saying
+        # we do not know yet. Writing it down would put a row in the timeline
+        # after every restart, next to the restart that already explains it.
+        if self.cfg.history.enabled and verdict != health.STARTING:
             history.record_health(name, verdict, detail, machine=machine)
         self._refresh_lists()
         label = next((s.display() for s in self.cfg.services

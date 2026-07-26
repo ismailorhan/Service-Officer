@@ -657,3 +657,122 @@ def test_nonsense_health_values_are_repaired(tmp_path):
     assert h.interval_seconds >= 5 and h.grace_seconds == 0
     assert h.failures_before_acting == 1 and h.action == "notify"
     assert h.checks[0].port == 65535 and h.checks[0].timeout_seconds == 120
+
+
+# -- the window between started and ready -----------------------------------
+def _store():
+    from core import state
+    return state.Store()
+
+
+def test_a_service_that_has_just_started_says_so_rather_than_running(tmp_path):
+    """Measured on a real SAP web client: systemd reported Running one second
+    after the start, the static page answered nine seconds later, and its own API
+    returned 500 for a while after that. Green for all of it is a lie three times
+    over, and red is a lie too — it is starting."""
+    from core import health
+
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(
+        name="webclient.service", machine="hanadev",
+        health=cfg_mod.Health(enabled=True, grace_seconds=40, checks=[
+            cfg_mod.HealthCheck(kind="http", url="https://hanadev/")]))])
+    said = []
+    monitor = health.Monitor(lambda: cfg, _store(), control=None,
+                             on_verdict=lambda svc, verdict, detail, _r:
+                                 said.append((svc.name, verdict, detail)))
+
+    monitor.note_running("webclient.service", "hanadev")
+
+    assert monitor.verdict("webclient.service", "hanadev") == health.STARTING
+    assert said and said[0][1] == health.STARTING
+    assert "40s" in said[0][2], said
+
+
+def test_a_service_with_no_checks_is_simply_running(tmp_path):
+    """Inventing a warm-up state for something nobody is going to check would be
+    noise: there is nothing to wait for."""
+    from core import health
+
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(name="Plain")])
+    said = []
+    monitor = health.Monitor(lambda: cfg, _store(), control=None,
+                             on_verdict=lambda *a: said.append(a))
+
+    monitor.note_running("Plain")
+
+    assert monitor.verdict("Plain") == health.UNKNOWN
+    assert said == []
+
+
+def test_the_grace_period_still_holds_off_the_first_check(tmp_path):
+    """Saying "starting" must not also start asking early."""
+    from core import health
+
+    clock = [1000.0]
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(
+        name="webclient.service",
+        health=cfg_mod.Health(enabled=True, grace_seconds=40,
+                              interval_seconds=5, checks=[
+                                  cfg_mod.HealthCheck(kind="tcp", host="h",
+                                                      port=1)]))])
+    store = _store()
+    store.update("webclient.service", "Running")
+    monitor = health.Monitor(lambda: cfg, store, control=None,
+                             now=lambda: clock[0])
+    service = cfg.services[0]
+
+    monitor.note_running("webclient.service")
+    assert monitor.due(service) is False
+    clock[0] += 39
+    assert monitor.due(service) is False, "asked before the grace was up"
+    clock[0] += 2
+    assert monitor.due(service) is True
+
+
+def test_an_expected_401_is_how_you_tell_ready_from_still_starting(tmp_path):
+    """Measured on a real SAP web client: /tcli/dbtype/get.svc answers 500 while
+    the application is warming up and 401 once it is ready. Expecting the 401 is
+    therefore a readiness probe that needs no credentials at all — and it is the
+    only one of three candidate URLs that told the two states apart."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        status = 500
+
+        def do_GET(self):
+            self.send_response(self.status)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"unauthorized" if self.status == 401 else b"boom")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+        check = cfg_mod.HealthCheck(kind="http", expect_status=401,
+                                    url=f"http://127.0.0.1:{port}/get.svc")
+
+        Handler.status = 500                      # still starting
+        assert health.run_check(check).ok is False
+
+        Handler.status = 401                      # ready, and refusing anonymous
+        result = health.run_check(check)
+        assert result.ok is True
+        assert "401 as expected" in result.detail
+
+        # And a marker is still honoured on an expected error status, instead of
+        # being silently ignored.
+        picky = cfg_mod.HealthCheck(kind="http", expect_status=401,
+                                    expect_text="unauthorized",
+                                    url=f"http://127.0.0.1:{port}/get.svc")
+        assert health.run_check(picky).ok is True
+        wrong = cfg_mod.HealthCheck(kind="http", expect_status=401,
+                                    expect_text="not in the body",
+                                    url=f"http://127.0.0.1:{port}/get.svc")
+        assert health.run_check(wrong).ok is False
+    finally:
+        server.shutdown()
