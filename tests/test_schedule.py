@@ -241,3 +241,81 @@ def test_nonsense_trigger_values_are_repaired(tmp_path):
     t = cfg_mod.load(str(path)).trigger("odd")
     assert (t.when, t.time_of_day, t.days) == ("startup", "03:00", [2])
     assert (t.action, t.service_action, t.delay_seconds) == ("stack", "start", 0)
+
+
+# -- "when Windows starts" has to mean that ---------------------------------
+def _startup_config(name="test2"):
+    return cfg_mod.Config(
+        stacks=[cfg_mod.Stack(name="test", steps=[
+            cfg_mod.Step(service="AppEngine", action="restart")])],
+        triggers=[cfg_mod.Trigger(name=name, when="startup", action="stack",
+                                  stack="test", delay_seconds=30)])
+
+
+def _at(hour, minute=0):
+    from datetime import datetime
+    return datetime(2026, 7, 26, hour, minute)
+
+
+def test_a_startup_trigger_does_not_run_again_when_the_app_restarts():
+    """The label says "when Windows starts", and the app may be launched several
+    times in one boot — an update, a crash, someone reopening it. Installing three
+    builds in an afternoon ran a stack that restarts services three times."""
+    cfg = _startup_config()
+    boot = _at(9, 0)
+    sched = Scheduler(lambda: cfg, lambda _t: None,
+                                boot_time=lambda: boot)
+
+    # First launch of this boot: nothing has run yet.
+    assert [t.name for t in sched.due_at_startup()] == ["test2"]
+
+    # It ran at 09:01, and the app is relaunched at 14:00.
+    sched.seed_from([{"run": "trigger", "name": "test2", "outcome": "success",
+                      "ts": _at(9, 1).astimezone().isoformat()}])
+
+    assert sched.due_at_startup() == []
+
+
+def test_a_run_from_before_this_boot_does_not_count():
+    """Yesterday's run must not suppress today's."""
+    cfg = _startup_config()
+    sched = Scheduler(lambda: cfg, lambda _t: None,
+                                boot_time=lambda: _at(9, 0))
+
+    sched.seed_from([{"run": "trigger", "name": "test2", "outcome": "success",
+                      "ts": _at(8, 30).astimezone().isoformat()}])
+
+    assert [t.name for t in sched.due_at_startup()] == ["test2"]
+
+
+def test_it_fires_when_the_boot_time_cannot_be_read():
+    """A startup action that never runs is a worse failure than one that runs
+    twice, and the label promises it will run."""
+    cfg = _startup_config()
+    sched = Scheduler(lambda: cfg, lambda _t: None,
+                                boot_time=lambda: None)
+    sched.seed_from([{"run": "trigger", "name": "test2", "outcome": "success",
+                      "ts": _at(9, 1).astimezone().isoformat()}])
+
+    assert [t.name for t in sched.due_at_startup()] == ["test2"]
+
+
+def test_a_disabled_startup_trigger_is_never_due():
+    cfg = _startup_config()
+    cfg.triggers[0].enabled = False
+    sched = Scheduler(lambda: cfg, lambda _t: None,
+                                boot_time=lambda: _at(9, 0))
+
+    assert sched.due_at_startup() == []
+
+
+def test_scheduling_a_startup_trigger_remembers_it_ran():
+    """So the same process cannot queue it twice."""
+    cfg = _startup_config()
+    sched = Scheduler(lambda: cfg, lambda _t: None,
+                                boot_time=lambda: _at(9, 0))
+    cfg.triggers[0].delay_seconds = 0
+
+    sched.run_startup_triggers()
+
+    assert sched.due_at_startup() == []

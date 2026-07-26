@@ -37,7 +37,7 @@ def _parse_ts(text) -> datetime | None:
 
 class Scheduler:
     def __init__(self, config_getter, on_fire, tick_seconds: float = 20.0,
-                 now=None, log=None):
+                 now=None, log=None, boot_time=None):
         """on_fire(trigger) does the work. now() is injectable for tests."""
         self._config = config_getter
         self._on_fire = on_fire
@@ -47,6 +47,10 @@ class Scheduler:
         self._stop = threading.Event()
         self._thread = None
         self._last_run: dict = {}      # trigger name -> date it last fired
+        #: startup trigger name -> when it last fired, so "when Windows starts"
+        #: survives the app being restarted during the same boot
+        self._last_startup: dict = {}
+        self._boot_time = boot_time or clock.boot_time
         self._started_at = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -89,8 +93,28 @@ class Scheduler:
         return signature == self.signature(trigger) and when == occurrence
 
     def due_at_startup(self) -> list:
-        return [t for t in self._config().triggers
-                if t.enabled and t.when == "startup"]
+        """Startup triggers that have not yet run since Windows started.
+
+        Not "since this app started": the app may be relaunched several times in
+        one day — an update, a crash, someone quitting and reopening it — and a
+        trigger that restarts a stack must not run again each time.
+
+        If the boot time cannot be read, this fires. A startup action that never
+        runs is a worse failure than one that runs twice, and the label promises
+        it will run.
+        """
+        boot = self._boot_time()
+        out = []
+        for trigger in self._config().triggers:
+            if not (trigger.enabled and trigger.when == "startup"):
+                continue
+            ran = self._last_startup.get(trigger.name)
+            if boot is not None and ran is not None and ran >= boot:
+                self._log(f"trigger \u201c{trigger.name}\u201d already ran since "
+                          f"Windows started, at {ran:%H:%M:%S}")
+                continue
+            out.append(trigger)
+        return out
 
     def _time_due(self, trigger, now: datetime) -> bool:
         if not trigger.enabled or trigger.when != "time":
@@ -145,7 +169,16 @@ class Scheduler:
         for rec in records:
             name = rec.get("name")
             trigger = by_name.pop(name, None)
-            if trigger is None or trigger.when != "time":
+            if trigger is None:
+                continue
+            if trigger.when == "startup":
+                # Remembered separately: what matters for these is not "did it run
+                # today" but "did it run since the machine came up".
+                when = _parse_ts(rec.get("ts"))
+                if when is not None:
+                    self._last_startup[trigger.name] = when
+                continue
+            if trigger.when != "time":
                 continue
             when = _parse_ts(rec.get("ts"))
             if when is None:
@@ -210,6 +243,8 @@ class Scheduler:
         for trigger in self.due_at_startup():
             delay = max(0, trigger.delay_seconds)
             self._log(f"trigger “{trigger.name}” scheduled {delay}s after startup")
+
+            self._last_startup[trigger.name] = datetime.now()
 
             def fire(t=trigger):
                 if not self._stop.is_set():

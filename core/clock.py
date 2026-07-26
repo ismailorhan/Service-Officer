@@ -26,7 +26,7 @@ mixed files are correct, because nothing compares the strings any more.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 #: How a moment is shown to a person: no offset, because it is their own clock.
 DISPLAY = "%Y-%m-%d  %H:%M:%S"
@@ -80,6 +80,24 @@ def sort_key(text) -> float:
     """
     moment = parse(text)
     return moment.timestamp() if moment is not None else float("-inf")
+
+
+def boot_time():
+    """When Windows last started, as a naive local datetime, or None.
+
+    A "when Windows starts" trigger has to mean that, not "when this app starts".
+    They are the same thing only while the app launches once per boot — install
+    three builds in an afternoon and the difference is three unwanted stack runs,
+    which is exactly what happened.
+
+    GetTickCount64 is what Task Manager's uptime shows, and needs no dependency.
+    """
+    try:
+        import ctypes
+        uptime_ms = ctypes.windll.kernel32.GetTickCount64()
+    except Exception:
+        return None
+    return datetime.now() - timedelta(milliseconds=int(uptime_ms))
 
 
 def offset_label(moment: datetime | None = None) -> str:
