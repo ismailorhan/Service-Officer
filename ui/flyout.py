@@ -11,12 +11,13 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
-                               QLineEdit, QMenu, QPushButton, QScrollArea,
-                               QSizePolicy, QVBoxLayout, QWidget)
+                               QLineEdit, QPushButton, QScrollArea,
+                               QVBoxLayout, QWidget)
 
 from core import state as st
 from . import icons, theme
-from .rows import BulkBar, SectionBar, ServiceRow, StackRow, is_collapsed
+from .rows import BulkBar, ServiceRow
+from .servicelist import ServiceListMixin
 from .widgets import Chip
 
 WIDTH = theme.FLYOUT_WIDTH          # kept as a name others import
@@ -25,8 +26,13 @@ MARGIN = 12
 
 
 
-class Flyout(QWidget):
-    """Anchored above the tray icon, closes when the user clicks elsewhere."""
+class Flyout(ServiceListMixin, QWidget):
+    """Anchored above the tray icon, closes when the user clicks elsewhere.
+
+    The rows, the grouping and what a tick means come from ServiceListMixin,
+    shared with the dashboard. What is specific here is the geometry: it grows
+    upwards from a fixed bottom edge, so nothing shifts under the pointer.
+    """
 
     action_requested = Signal(str, str, str)   # action, service, machine
     bulk_requested = Signal(str, list)         # action, [(service, machine), …]
@@ -238,27 +244,7 @@ class Flyout(QWidget):
         def add(widget):
             self.list_lay.insertWidget(self.list_lay.count() - 1, widget)
 
-        # Grouped by category, with a heading only when there is more than one
-        # group: a single "No category" bar above every service says nothing.
-        groups = cfg.grouped_services()
-        self._sections = []
-        show_headings = len(groups) > 1 or bool(cfg.categories)
-        for name, title, members in groups:
-            if show_headings:
-                bar = SectionBar(name, title, len(members),
-                                 sum(1 for s in members
-                                     if self._store.status_of(s.name, s.machine)
-                                     == st.RUNNING))
-                bar.toggled.connect(self._section_toggled)
-                self._sections.append(bar)
-                add(bar)
-            for svc in members:
-                row = ServiceRow(svc)
-                row.act.connect(self.action_requested)
-                row.picked.connect(self._selection_changed)
-                row.category = name
-                self._rows[svc.key] = row
-                add(row)
+        self._sections = self._add_service_groups(cfg, add)
 
         if not cfg.services:
             empty = QLabel("No services configured.\nAdd some from Settings.")
@@ -268,28 +254,10 @@ class Flyout(QWidget):
             self._rows[("", "__empty__")] = empty
             add(empty)
 
-        # Stacks live in the same scrolling list, under their own heading, so a
-        # whole sequence is one click away from where you read the statuses.
-        if shown_stacks:
-            bar = QWidget()
-            bar.setObjectName("sectionBar")
-            bar.setAttribute(Qt.WA_StyledBackground, True)
-            bl = QHBoxLayout(bar)
-            bl.setContentsMargins(*theme.BAR_PAD)
-            head = QLabel("STACKS")
-            head.setProperty("role", "section")
-            bl.addWidget(head)
-            bl.addStretch(1)
-            self._stack_widgets.append(bar)
-            add(bar)
+        self._stack_widgets = self._add_stack_section(shown_stacks, cfg.services,
+                                                     add)
 
-            for stack in shown_stacks:
-                row = StackRow(stack, cfg.services)
-                row.run.connect(self.run_stack)
-                self._stack_widgets.append(row)
-                add(row)
-
-        self._apply_collapse()
+        self._apply_visibility()
         self._resize_to_content()
         self.apply_states()
 
@@ -320,89 +288,17 @@ class Flyout(QWidget):
             parts.append(f"{other} other")
         self.summary.setText("  ·  ".join(parts))
 
-    # -- grouping ----------------------------------------------------------
-    def _section_toggled(self, _category: str, _folded: bool) -> None:
-        self._apply_collapse()
-        # Folding changes which rows exist, so the height has to be measured
-        # again after Qt has laid them out — one pass reads the old numbers and
-        # left the panel the wrong size.
-        self._selection_changed(settled=False)
+    def _selection_settled(self, settled: bool) -> None:
+        """The window is only as tall as its rows, so any change to which rows
+        exist changes its height.
 
-    def _apply_collapse(self) -> None:
-        """Hide the rows of folded groups. Search wins: a matched row shows even
-        if its group is shut, otherwise searching looks broken."""
-        query = (self.search.text() or "").strip().lower()
-        for row in self._rows.values():
-            if not isinstance(row, ServiceRow):
-                continue
-            matches = (query in row.service.display().lower()
-                       or query in row.service.name.lower())
-            folded = is_collapsed(getattr(row, "category", ""))
-            row.setVisible(matches and (not folded or bool(query)))
-            if row.isHidden() and row.tick.isChecked():
-                row.tick.blockSignals(True)
-                row.tick.setChecked(False)
-                row.tick.blockSignals(False)
-
-    # -- bulk actions ------------------------------------------------------
-    def _service_rows(self, visible_only: bool = True) -> list:
-        # isHidden(), not isVisible(): a row in a window that hasn't been shown
-        # yet is invisible without having been filtered out, and asking the wrong
-        # question there makes the selection silently empty.
-        return [r for r in self._rows.values() if isinstance(r, ServiceRow)
-                and (not r.isHidden() or not visible_only)]
-
-    def selected(self) -> list:
-        """The ticked rows, in the order they are shown."""
-        return [r for r in self._service_rows() if r.tick.isChecked()]
-
-    def _set_all(self, on: bool) -> None:
-        for row in self._service_rows():
-            row.tick.blockSignals(True)
-            row.tick.setChecked(on)
-            row.tick.blockSignals(False)
-        self._selection_changed()
-
-    def _toggle_all(self) -> None:
-        # A tristate box clicks through to Partial, which as a *command* means
-        # nothing — so treat any click as "select all unless all are selected".
-        rows = self._service_rows()
-        self._set_all(not (rows and all(r.tick.isChecked() for r in rows)))
-
-    def _selection_changed(self, settled: bool = True) -> None:
-        """settled: ticking a box doesn't change which rows exist, so the second
-        measuring pass has nothing to find — skip it rather than resize twice."""
-        rows = self._service_rows()
-        chosen = [r for r in rows if r.tick.isChecked()]
-        self.bulk.set_count(len(chosen))
-        self.tick_all.blockSignals(True)
-        if not chosen:
-            self.tick_all.setCheckState(Qt.Unchecked)
-        elif len(chosen) == len(rows):
-            self.tick_all.setCheckState(Qt.Checked)
-        else:
-            self.tick_all.setCheckState(Qt.PartiallyChecked)
-        self.tick_all.blockSignals(False)
+        `settled` is false when rows appeared or vanished: Qt hasn't laid them out
+        yet, so the height has to be measured a second time once it has. Ticking a
+        box doesn't change which rows exist, so that pass has nothing to find and
+        is skipped rather than resizing twice — two window operations in one click
+        read as a blink.
+        """
         self._resize_to_content(settled)
-
-    def _bulk(self, action: str) -> None:
-        targets = [(r.service.name, r.service.machine) for r in self.selected()]
-        if not targets:
-            return
-        self.bulk_requested.emit(action, targets)
-        self._set_all(False)
-
-    def mark_busy(self, name: str, machine: str, label: str) -> None:
-        row = self._rows.get((machine or "", name))
-        if isinstance(row, ServiceRow):
-            row.set_status(row.status, busy_label=label)
-
-    def _filter(self, _text: str = "") -> None:
-        # Visibility has two inputs now — the search box and folded groups — so
-        # one place decides it. A tick you can't see is a bulk action you didn't
-        # mean, and _apply_collapse drops those too.
-        self._apply_collapse()
-        self._selection_changed(settled=False)      # rows appeared or vanished
 
     def _resize_to_content(self, settled: bool = False) -> None:
         """Grow to fit the rows, up to what the screen allows.

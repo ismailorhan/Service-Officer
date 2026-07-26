@@ -13,17 +13,23 @@ would be a lie about what happened.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
-                               QLineEdit, QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLineEdit,
+                               QScrollArea, QVBoxLayout, QWidget)
 
 from core import state as st
 from . import theme
-from .rows import (BulkBar, SectionBar, ServiceRow, StackRow, is_collapsed)
+from .rows import BulkBar, ServiceRow
+from .servicelist import ServiceListMixin
 from .widgets import Chip, button as _button, label as _label
 
 
-class DashboardPage(QWidget):
-    """Live status and controls for every monitored service."""
+class DashboardPage(ServiceListMixin, QWidget):
+    """Live status and controls for every monitored service.
+
+    The rows, the grouping and what a tick means are shared with the tray flyout
+    through ServiceListMixin. What differs is the room: this window is sized by
+    the user, so nothing here resizes itself.
+    """
 
     action_requested = Signal(str, str, str)     # action, service, machine
     bulk_requested = Signal(str, list)           # action, [(service, machine), …]
@@ -119,26 +125,7 @@ class DashboardPage(QWidget):
         def add(widget):
             self.list_lay.insertWidget(self.list_lay.count() - 1, widget)
 
-        groups = cfg.grouped_services()
-        # A lone "No category" bar above every service says nothing; once there
-        # is real grouping the headings and their tallies carry their weight.
-        show_headings = len(groups) > 1 or bool(cfg.categories)
-        for name, group_title, members in groups:
-            if show_headings:
-                running = sum(1 for s in members
-                              if self._store.status_of(s.name, s.machine)
-                              == st.RUNNING)
-                bar = SectionBar(name, group_title, len(members), running)
-                bar.toggled.connect(lambda *_a: self._filter())
-                self._extras.append(bar)
-                add(bar)
-            for svc in members:
-                row = ServiceRow(svc)
-                row.category = name
-                row.act.connect(self.action_requested)
-                row.picked.connect(self._selection_changed)
-                self._rows[svc.key] = row
-                add(row)
+        self._extras.extend(self._add_service_groups(cfg, add))
 
         if not cfg.services:
             empty = _label("Nothing is being monitored yet — add services on the "
@@ -148,21 +135,7 @@ class DashboardPage(QWidget):
             self._extras.append(empty)
             add(empty)
 
-        if cfg.stacks:
-            bar = QWidget()
-            bar.setObjectName("sectionBar")
-            bar.setAttribute(Qt.WA_StyledBackground, True)
-            bl = QHBoxLayout(bar)
-            bl.setContentsMargins(*theme.BAR_PAD)
-            bl.addWidget(_label("STACKS", "section"))
-            bl.addStretch(1)
-            self._extras.append(bar)
-            add(bar)
-            for stack in cfg.stacks:
-                row = StackRow(stack, cfg.services)
-                row.run.connect(self.run_stack)
-                self._extras.append(row)
-                add(row)
+        self._extras.extend(self._add_stack_section(cfg.stacks, cfg.services, add))
 
         self._filter()
         self.apply_states()
@@ -207,58 +180,5 @@ class DashboardPage(QWidget):
             parts.append(f"{sick} not responding")
         self.summary.setText("  ·  ".join(parts))
 
-    def mark_busy(self, name: str, machine: str, label: str) -> None:
-        row = self._rows.get((machine or "", name))
-        if isinstance(row, ServiceRow):
-            row.set_status(row.status, busy_label=label)
-
-    # -- visibility and selection ------------------------------------------
-    def _filter(self, _text: str = "") -> None:
-        query = (self.search.text() or "").strip().lower()
-        for row in self._rows.values():
-            matches = (query in row.service.display().lower()
-                       or query in row.service.name.lower())
-            folded = is_collapsed(getattr(row, "category", ""))
-            row.setVisible(matches and (not folded or bool(query)))
-            if row.isHidden() and row.tick.isChecked():
-                row.tick.blockSignals(True)
-                row.tick.setChecked(False)
-                row.tick.blockSignals(False)
-        self._selection_changed()
-
-    def _service_rows(self) -> list:
-        return [r for r in self._rows.values() if not r.isHidden()]
-
-    def selected(self) -> list:
-        return [r for r in self._service_rows() if r.tick.isChecked()]
-
-    def _set_all(self, on: bool) -> None:
-        for row in self._service_rows():
-            row.tick.blockSignals(True)
-            row.tick.setChecked(on)
-            row.tick.blockSignals(False)
-        self._selection_changed()
-
-    def _toggle_all(self) -> None:
-        rows = self._service_rows()
-        self._set_all(not (rows and all(r.tick.isChecked() for r in rows)))
-
-    def _selection_changed(self) -> None:
-        rows = self._service_rows()
-        chosen = [r for r in rows if r.tick.isChecked()]
-        self.bulk.set_count(len(chosen))
-        self.tick_all.blockSignals(True)
-        if not chosen:
-            self.tick_all.setCheckState(Qt.Unchecked)
-        elif len(chosen) == len(rows):
-            self.tick_all.setCheckState(Qt.Checked)
-        else:
-            self.tick_all.setCheckState(Qt.PartiallyChecked)
-        self.tick_all.blockSignals(False)
-
-    def _bulk(self, action: str) -> None:
-        targets = [(r.service.name, r.service.machine) for r in self.selected()]
-        if not targets:
-            return
-        self.bulk_requested.emit(action, targets)
-        self._set_all(False)
+    # Grouping, visibility, selection and bulk actions come from
+    # ServiceListMixin, shared with the tray flyout.
