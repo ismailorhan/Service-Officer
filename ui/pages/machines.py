@@ -331,7 +331,11 @@ class MachineDetail(_Page):
         self.fingerprint = QLineEdit()
         self.fingerprint.setPlaceholderText("SHA256:… — confirm it on the machine")
         self.fingerprint.editingFinished.connect(self._save)
-        field("fingerprint", "Host key", self.fingerprint,
+        keyrow = QHBoxLayout()
+        keyrow.setSpacing(theme.SP_8)
+        keyrow.addWidget(self.fingerprint, 1)
+        keyrow.addWidget(_button("Get it", "quiet", self._fetch_fingerprint))
+        field("fingerprint", "Host key", keyrow,
               "Proves the machine is the one you meant.\n"
               "A different key later is refused.")
 
@@ -486,6 +490,49 @@ class MachineDetail(_Page):
         self.result.setText("Forgotten. That machine cannot be reached with a "
                             "password until a new one is set.")
         self.changed.emit()
+
+    def _fetch_fingerprint(self):
+        """Ask the machine for its host key and fill the field in.
+
+        The same thing `ssh` does on a first connection, and with the same caveat,
+        which is said out loud rather than glossed over: a key read over the
+        network is what an attacker in the middle would also hand us. It saves
+        running ssh-keygen on the box; it does not replace checking it there when
+        the network between you and the machine is not trusted.
+
+        No credentials are used — a server offers its key before authentication.
+        """
+        machine = self.machine
+        if machine is None or not machine.is_linux:
+            return
+        host = machine.address or machine.name
+        try:
+            from core import ssh_linux
+            found = ssh_linux.fingerprint_of(host, machine.port or 22)
+        except Exception as exc:
+            self.result.setText(f"{host} did not offer a key — "
+                                f"{type(exc).__name__}: {exc}")
+            return
+        if not found:
+            self.result.setText(f"{host} did not offer a key.")
+            return
+        was = self.fingerprint.text().strip()
+        self.fingerprint.setText(found)
+        self.fingerprint.setCursorPosition(0)
+        self._save()
+        if was and was != found:
+            # Worth shouting about: either the machine was rebuilt, or this is not
+            # the same machine.
+            self.result.setText(
+                f"The key changed. It was {was} and is now {found}. Either that "
+                f"machine was rebuilt, or it is not the same machine — check "
+                f"before you keep this.")
+        else:
+            self.result.setText(
+                f"{host} offers {found}. Read over the network, so it proves "
+                f"nothing on its own: confirm it on the machine with "
+                f"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub if the network "
+                f"between here and there is not trusted.")
 
     def _browse(self):
         from PySide6.QtWidgets import QFileDialog

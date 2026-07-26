@@ -295,3 +295,42 @@ def test_it_satisfies_the_connector_protocol():
     for verb in ("abilities", "reachable", "list_services", "status", "start",
                  "stop", "restart", "kill", "logs", "run", "stat"):
         assert callable(getattr(conn, verb)), verb
+
+
+def test_fetching_a_fingerprint_needs_no_credentials(monkeypatch):
+    """A server offers its host key before authentication, which is why this can
+    fill the field in without a password — and why it is discovery, not proof."""
+    import base64
+    import hashlib
+
+    class Key:
+        def asbytes(self):
+            return b"the host key bytes"
+
+    class Transport:
+        def __init__(self, sock):
+            self.closed = False
+
+        def start_client(self, timeout=None):
+            pass
+
+        def get_remote_server_key(self):
+            return Key()
+
+        def close(self):
+            self.closed = True
+
+    class Sock:
+        def close(self):
+            pass
+
+    fake = type("paramiko", (), {"Transport": Transport})
+    monkeypatch.setitem(__import__("sys").modules, "paramiko", fake)
+    monkeypatch.setattr("socket.create_connection", lambda *a, **k: Sock())
+
+    got = ssh_linux.fingerprint_of("192.168.230.2")
+
+    expected = "SHA256:" + base64.b64encode(
+        hashlib.sha256(b"the host key bytes").digest()).decode().rstrip("=")
+    assert got == expected
+    assert got.startswith("SHA256:") and "=" not in got   # ssh's own formatting

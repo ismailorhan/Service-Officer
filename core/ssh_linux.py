@@ -250,6 +250,37 @@ class SshRunner:
             raise ConnectionError(f"{type(exc).__name__}: {exc}") from exc
 
 
+def fingerprint_of(host: str, port: int = 22, timeout: float = 10.0) -> str:
+    """The host key `host` presents, as "SHA256:…", or "" if it did not answer.
+
+    This is what `ssh` shows the first time you connect, and it is *discovery, not
+    verification*: an attacker in the middle would hand us exactly this. It saves
+    someone running ssh-keygen on the box, and the UI has to say plainly that
+    confirming it against the machine itself is the part that makes it mean
+    anything.
+
+    No credentials involved — the key is offered before authentication.
+    """
+    import base64
+    import hashlib
+    import socket
+
+    import paramiko
+    sock = socket.create_connection((host, port or 22), timeout=timeout)
+    transport = paramiko.Transport(sock)
+    try:
+        transport.start_client(timeout=timeout)
+        key = transport.get_remote_server_key()
+    finally:
+        transport.close()
+        try:
+            sock.close()
+        except OSError:
+            pass
+    digest = hashlib.sha256(key.asbytes()).digest()
+    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
 class _PinnedHostKey:
     """Accept the host key the machine record names, and nothing else."""
 
