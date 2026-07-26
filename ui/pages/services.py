@@ -203,7 +203,10 @@ class ServicesPage(QWidget):
             machine = dlg.picked[0]
 
         taken = {s.name for s in cfg.services if (s.machine or "") == machine}
-        picker = ServicePicker(taken, self, machine=machine)
+        # The record travels with the name: this config is the panel's copy, and a
+        # machine added here is not in what the transport registry can see yet.
+        picker = ServicePicker(taken, self, machine=machine,
+                               record=cfg.machine(machine))
         if picker.exec() != QDialog.Accepted:
             return
         for s in picker.picked:

@@ -86,7 +86,7 @@ class ServicePicker(QDialog):
     """Choose one or more installed services. Multi-select is the point: adding
     a SAP stack means adding five services, not repeating a dialog five times."""
 
-    def __init__(self, taken, parent=None, machine=""):
+    def __init__(self, taken, parent=None, machine="", record=None):
         super().__init__(parent)
         self.setWindowTitle("Add services")
         self.resize(520, 560)
@@ -94,6 +94,11 @@ class ServicePicker(QDialog):
         self._all = []
         self._taken = set(taken)
         self._machine = machine
+        # The machine's own record, so a Linux target is enumerated with systemctl
+        # rather than through the Windows service manager. Without it a machine
+        # added in the panel but not yet saved — or any machine at all in the
+        # standalone panel — was asked the wrong way.
+        self._record = record
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*theme.PAGE_PAD)
@@ -125,12 +130,33 @@ class ServicePicker(QDialog):
 
     def _load(self):
         try:
-            self._all = control.list_all_services(self._machine)
+            self._all = control.list_all_services(self._machine, self._record)
         except Exception as exc:
-            QMessageBox.warning(self, "Service Officer",
-                                f"Could not list services:\n{exc}")
+            QMessageBox.warning(self, "Service Officer", self._why(exc))
             self._all = []
         self._populate()
+
+    def _why(self, exc) -> str:
+        """Say which machine and what to look at.
+
+        "(1722, \'OpenSCManager\', \'The RPC server is unavailable.\')" is what the
+        API said, not what happened. The raw text is kept at the end, because it is
+        what a search engine needs, but it comes after the sentence a person can
+        act on.
+        """
+        where = self._machine or "this computer"
+        linux = bool(self._record is not None
+                     and getattr(self._record, "is_linux", False))
+        if linux:
+            hint = (f"{where} did not answer over SSH. Check the account, the "
+                    f"password or key, and that the host key matches.")
+        elif self._machine:
+            hint = (f"{where} did not answer. It may be switched off, or its "
+                    f"firewall may be blocking Remote Service Management — the "
+                    f"rule Windows needs for another computer to list services.")
+        else:
+            hint = "This computer's service manager did not answer."
+        return f"Could not list the services on {where}.\n\n{hint}\n\n{exc}"
 
     def _populate(self):
         q = self.search.text().strip().lower()

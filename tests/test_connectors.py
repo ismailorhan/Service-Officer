@@ -232,3 +232,34 @@ def test_forgetting_a_machine_closes_what_it_had_open():
 
     assert closed == [True]
     assert "hanadev" not in connectors._cache
+
+
+def test_a_caller_that_knows_the_machine_can_say_so():
+    """The bug this closes: the panel edits a *copy* of the config, and the
+    standalone panel wires no registry at all — so a Linux machine chosen in the
+    service picker was reached through the Windows service manager and answered
+    "(1722, 'OpenSCManager', 'The RPC server is unavailable.')".
+    """
+    from core import config as cfg_mod
+    from core import control, ssh_linux
+
+    connectors.use_config(None)                  # as the standalone panel is
+    connectors.forget()
+    unsaved = cfg_mod.Machine(name="hanadev", kind="linux",
+                              address="192.168.230.2", username="root")
+    try:
+        # Without the record: nothing known about it, so the Windows default.
+        assert type(connectors.for_machine("hanadev")).__name__ == "WindowsConnector"
+        connectors.forget()
+        # With it: the right transport, before anything has been saved.
+        assert isinstance(connectors.for_machine("hanadev", unsaved),
+                          ssh_linux.LinuxConnector)
+        connectors.forget()
+        # And through the public API the picker actually calls.
+        listed = []
+        conn = connectors.for_machine("hanadev", unsaved)
+        conn._run = lambda cmd, timeout=15.0: (listed.append(cmd), (0, "[]"))[1]
+        control.list_all_services("hanadev", unsaved)
+        assert any("systemctl" in c for c in listed), listed
+    finally:
+        connectors.forget()

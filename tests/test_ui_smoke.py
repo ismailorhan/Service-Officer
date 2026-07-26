@@ -1537,3 +1537,58 @@ def test_with_no_services_chosen_the_block_still_runs(qapp):
     assert "/usr/sbin/usermod" in text
     assert "NOPASSWD" not in text, "granted nothing but wrote a rule anyway"
     assert "sudoers.d" not in text
+
+
+def test_the_picker_asks_a_linux_machine_with_systemctl(qapp, monkeypatch):
+    """What broke in the real panel: choosing hanadev in Add services… asked the
+    Windows service manager and reported "the RPC server is unavailable"."""
+    from core import connectors, control
+    from ui.pages.base import ServicePicker
+
+    asked = {}
+
+    def fake_list(machine="", record=None):
+        asked["machine"] = machine
+        asked["kind"] = getattr(record, "kind", None)
+        return [{"name": "b1s50000.service", "display": "B1 Service Layer",
+                 "status": "Running"}]
+
+    monkeypatch.setattr(control, "list_all_services", fake_list)
+    monkeypatch.setattr("ui.pages.base.control.list_all_services", fake_list)
+    machine = cfg_mod.Machine(name="hanadev", kind="linux")
+
+    picker = ServicePicker(set(), None, machine="hanadev", record=machine)
+
+    assert asked == {"machine": "hanadev", "kind": "linux"}
+    assert picker.list.count() == 1
+    picker.deleteLater()
+
+
+def test_a_machine_that_does_not_answer_is_explained_not_quoted(qapp,
+                                                               monkeypatch):
+    """"(1722, 'OpenSCManager', 'The RPC server is unavailable.')" is what the API
+    said, not what happened."""
+    from core import control
+    from ui.pages.base import ServicePicker
+
+    def boom(machine="", record=None):
+        raise RuntimeError("(1722, 'OpenSCManager', 'The RPC server is unavailable.')")
+
+    monkeypatch.setattr("ui.pages.base.control.list_all_services", boom)
+    warned = []
+    monkeypatch.setattr("ui.pages.base.QMessageBox.warning",
+                        lambda *args, **kw: warned.append(args[2]))
+
+    ServicePicker(set(), None, machine="CTL099")
+    windows_text = warned[-1]
+
+    ServicePicker(set(), None, machine="hanadev",
+                  record=cfg_mod.Machine(name="hanadev", kind="linux"))
+    linux_text = warned[-1]
+
+    assert "CTL099 did not answer" in windows_text
+    assert "Remote Service Management" in windows_text
+    assert "1722" in windows_text            # the raw text is still there
+    # A Linux target gets the advice that applies to it, not firewall rules.
+    assert "over SSH" in linux_text
+    assert "Remote Service Management" not in linux_text

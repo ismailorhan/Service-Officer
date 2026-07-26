@@ -19,8 +19,16 @@ import threading
 from . import connectors
 
 
-def _for(machine: str = ""):
-    return connectors.for_machine(machine)
+def _for(machine: str = "", record=None):
+    """The transport for a machine.
+
+    `record` exists because the caller sometimes knows more than the registry
+    does: the panel edits a *copy* of the config, so a machine just added there is
+    not yet in what the registry can see — and the standalone panel has no registry
+    wired at all. Without it, a Linux machine was reached through the Windows
+    service manager and answered "the RPC server is unavailable".
+    """
+    return connectors.for_machine(machine, record)
 
 
 # -- the seven verbs --------------------------------------------------------
@@ -46,12 +54,12 @@ def restart_service(service_name: str, machine: str = "") -> None:
     _for(machine).restart(service_name)
 
 
-def list_all_services(machine: str = "") -> list:
+def list_all_services(machine: str = "", record=None) -> list:
     """Every service on that machine as {"name", "display", "status"}, sorted by
     display name — what the picker offers. A dict, not the dataclass, because
     that is the shape the picker has always been handed."""
     return [{"name": s.name, "display": s.display, "status": s.status}
-            for s in _for(machine).list_services()]
+            for s in _for(machine, record).list_services()]
 
 
 def start_type(service_name: str, machine: str = "") -> str:
@@ -81,16 +89,16 @@ def kill_process(service_name: str, machine: str = "") -> int:
     return _for(machine).kill(service_name)
 
 
-def abilities(machine: str = ""):
+def abilities(machine: str = "", record=None):
     """What can actually be done to this target. The UI disables what cannot,
     rather than offering a button that fails."""
-    return _for(machine).abilities()
+    return _for(machine, record).abilities()
 
 
-def reachable(machine: str) -> bool:
+def reachable(machine: str, record=None) -> bool:
     """Can we talk to this machine at all? Used to show a machine as offline
     instead of every service on it as 'Not Found'."""
-    return _for(machine).reachable()
+    return _for(machine, record).reachable()
 
 
 def nothing_to_do(exc) -> str:
