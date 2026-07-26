@@ -228,27 +228,47 @@ class Flyout(ServiceListMixin, QWidget):
 
     def apply_states(self) -> None:
         cfg = self._config()
-        running = 0
+        # Counted by what the rows say, not by what the service manager says. One
+        # service showing "Starting..." above a green "1 of 1 running" is the same
+        # contradiction the effective state exists to remove — it just lived in the
+        # header instead of in a row.
+        running = starting = unwell = stopped = 0
         for svc in cfg.services:
             row = self._rows.get(svc.key)
             if not isinstance(row, ServiceRow):
                 continue
             status = self._store.status_of(svc.name, svc.machine)
+            health = self._store.health_of(svc.name, svc.machine)
             row.set_status(status,
                            disabled=self._store.is_disabled(svc.name, svc.machine),
-                           health=self._store.health_of(svc.name, svc.machine),
+                           health=health,
                            health_detail=self._store.health_detail(svc.name,
                                                                    svc.machine))
-            if status == st.RUNNING:
+            label, _cat = st.effective(status, health)
+            if label == st.LABEL_STARTING:
+                starting += 1
+            elif label == st.LABEL_UNHEALTHY:
+                unwell += 1
+            elif status == st.RUNNING:
                 running += 1
+            elif status == st.STOPPED:
+                stopped += 1
 
         total = len(cfg.services)
-        self.badge.setText(f"{running} of {total} running" if total else "no services")
+        # The badge takes the worst state in the list, so a green pill is never the
+        # summary of something that is starting or not answering.
+        worst = ("stopped" if unwell else
+                 "pending" if starting else
+                 "running" if total else "none")
+        self.badge.set_state(f"{running} of {total} running" if total
+                             else "no services", worst)
         parts = [f"{total} service{'s' if total != 1 else ''}", f"{running} running"]
-        stopped = sum(1 for s in cfg.services
-                      if self._store.status_of(s.name, s.machine) == st.STOPPED)
+        if starting:
+            parts.append(f"{starting} starting")
+        if unwell:
+            parts.append(f"{unwell} not responding")
         parts.append(f"{stopped} stopped")
-        other = total - running - stopped
+        other = total - running - starting - unwell - stopped
         if other > 0:
             parts.append(f"{other} other")
         self.summary.setText("  ·  ".join(parts))

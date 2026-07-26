@@ -121,17 +121,22 @@ class HoverCard(QWidget):
                 w.deleteLater()
 
         services = self._config().services
-        running = 0
+        running = unsettled = 0
         for svc in services:
             status = self._store.status_of(svc.name, svc.machine)
-            if status == st.RUNNING:
-                running += 1
             row = QWidget()
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
             rl.setSpacing(8)
             health = self._store.health_of(svc.name, svc.machine)
             label, shown = st.effective(status, health)
+            # Counted from the effective state for the same reason the dot is
+            # painted from it: the heading read "1/1 running" above a row that said
+            # "starting", which is the card contradicting itself in two lines.
+            if label == st.RUNNING:
+                running += 1
+            elif label in (st.LABEL_STARTING, st.LABEL_UNHEALTHY):
+                unsettled += 1
             dot = QLabel()
             # The same category as the words beside it. This was painted from the
             # raw status while the label came from st.effective, so a warming
@@ -158,8 +163,13 @@ class HoverCard(QWidget):
             empty.setProperty("role", "hint")
             self._rows.addWidget(empty)
 
-        self.title.setText(f"Service Officer  —  {running}/{len(services)} running"
-                           if services else "Service Officer")
+        if not services:
+            self.title.setText("Service Officer")
+        else:
+            count = f"{running}/{len(services)} running"
+            if unsettled:
+                count += f", {unsettled} to watch"
+            self.title.setText(f"Service Officer  —  {count}")
 
     def _anchor(self) -> QPoint:
         screen = self.screen().availableGeometry()

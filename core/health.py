@@ -38,12 +38,16 @@ log = applog.get("health")
 
 #: what we know about a service's health
 UNKNOWN, HEALTHY, UNHEALTHY = "unknown", "healthy", "unhealthy"
-#: Running, checks configured, and still inside the grace period — so nothing has
-#: been asked yet and "Running" would be a claim we cannot support. Measured on a
-#: real SAP web client: systemd reported Running one second after the start, the
-#: static page answered nine seconds later, and its own API returned 500 for a
-#: while after that. Green for all of it would have been a lie three times over.
+#: Running, checks configured, and not yet answering — so "Running" would be a
+#: claim we cannot support. Measured on a real SAP web client: systemd reported
+#: Running one second after the start, the static page answered nine seconds
+#: later, and its own API returned 500 for a while after that. Green for all of it
+#: would have been a lie three times over.
 STARTING = "starting"
+#: How often to ask while a service is starting, whatever its normal interval is.
+#: The interval is chosen for steady-state cost; a warm-up lasts seconds and the
+#: question is the only way to find out that it is over.
+WARMUP_INTERVAL = 5.0
 
 
 @dataclass
@@ -371,17 +375,18 @@ class Monitor:
                    and service.health.grace_seconds > 0)
         watch.verdict = STARTING if warming else UNKNOWN
         if warming:
-            watch.detail = (f"started just now; its checks begin in "
-                            f"{service.health.grace_seconds}s")
+            # Ask on the next tick rather than waiting out the rest of the normal
+            # interval, which could be most of a minute after the restart.
+            watch.last_checked = 0.0
+            watch.detail = ("started just now; waiting for it to answer")
             self._on_verdict(service, watch.verdict, watch.detail, [])
         # Say when the first check will be, so a restart doesn't look like the
         # watching having stopped.
         publish = getattr(self._store, "set_health_timing", None)
         if publish and service is not None:
             publish(name, machine, last=None, failures=0, passed=None,
-                    detail="waiting for it to settle",
-                    next=datetime.now() + timedelta(
-                        seconds=service.health.grace_seconds))
+                    detail="waiting for it to answer",
+                    next=datetime.now() + timedelta(seconds=WARMUP_INTERVAL))
 
     def note_stopped(self, name: str, machine: str = "") -> None:
         """A stopped service is not unhealthy — it is stopped. Saying otherwise
@@ -410,9 +415,18 @@ class Monitor:
         # "ignore the first N minutes after it starts", and what has to be ignored
         # is a failure, not the question: a service that is ready in nine seconds
         # should not sit at "Starting..." for the rest of a minute because nobody
-        # looked. During grace we ask on the same interval and simply do not hold
-        # the answer against it — see check_now.
-        return now - watch.last_checked >= health.interval_seconds
+        # looked. During grace the answer is simply not held against it — see
+        # check_now.
+        #
+        # And while it is starting, ask *often*. On the normal interval the
+        # question is useless for this purpose: Server Tools is measurably ready
+        # 24s after a restart, so at "every 60s" the row would sit at "Starting..."
+        # for the whole minute anyway. The extra requests only happen during a
+        # warm-up, and only until one of them succeeds.
+        gap = health.interval_seconds
+        if self.within_grace(service, now):
+            gap = min(gap, WARMUP_INTERVAL)
+        return now - watch.last_checked >= gap
 
     def within_grace(self, service, now: float = None) -> bool:
         """Still inside the window where a failure means "not ready yet" rather

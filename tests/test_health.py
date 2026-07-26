@@ -551,7 +551,11 @@ def test_the_schedule_is_published_for_the_panel_to_show():
     said = store.timing[("", "Svc")]
     assert said["last"] is None                     # not checked yet
     assert said["next"] is not None                 # …but we say when
-    assert "settle" in said["detail"]
+    assert "answer" in said["detail"]
+    # Seconds away, not a grace period away: while it is starting the question is
+    # asked on the tick, so promising the panel "in 45s" would be wrong.
+    from datetime import datetime as _dt
+    assert (said["next"] - _dt.now()).total_seconds() <= 10
 
     # Past the grace window, so a failure counts. Inside it, failures deliberately
     # do not — that is what makes a slow starter survive its own start.
@@ -700,7 +704,10 @@ def test_a_service_that_has_just_started_says_so_rather_than_running(tmp_path):
 
     assert monitor.verdict("webclient.service", "hanadev") == health.STARTING
     assert said and said[0][1] == health.STARTING
-    assert "40s" in said[0][2], said
+    # It used to say "its checks begin in 40s", which stopped being true when the
+    # grace window started asking. Promising a wait that isn't happening is worse
+    # than saying nothing.
+    assert said[0][2] == "started just now; waiting for it to answer", said
 
 
 def test_a_service_with_no_checks_is_simply_running(tmp_path):
@@ -815,6 +822,43 @@ def test_a_service_ready_early_stops_saying_starting_early(listener):
 
     assert mon.verdict(svc.name) == health.HEALTHY
     assert [v for _n, v, _d in verdicts][-1] == health.HEALTHY
+
+
+def test_a_starting_service_is_asked_often_whatever_its_interval_is():
+    """"Ask every minute" is a steady-state cost setting. Obeyed during a warm-up
+    it makes the question pointless: Server Tools is ready 24s after a restart, so
+    at one question a minute the row sits at "Starting..." for the whole minute
+    regardless. While starting, ask on the tick."""
+    svc = service(failing_check(), grace_seconds=60, interval_seconds=60)
+    mon, clock, _v, _a = monitor(svc)
+    mon.note_running(svc.name)
+
+    clock.tick(health.WARMUP_INTERVAL + 1)
+    assert mon.due(svc) is True, "waited out the whole interval while starting"
+    mon.check_now(svc)
+    clock.tick(health.WARMUP_INTERVAL + 1)
+    assert mon.due(svc) is True
+
+    # Once the window closes, the interval it was given is what it gets.
+    clock.tick(60)
+    mon.check_now(svc)
+    assert mon.within_grace(svc) is False
+    clock.tick(10)
+    assert mon.due(svc) is False, "kept asking every 5s after the warm-up"
+    clock.tick(51)
+    assert mon.due(svc) is True
+
+
+def test_the_first_question_after_a_start_does_not_wait_out_the_interval():
+    """A restart one second after a check would otherwise be followed by 59
+    seconds of nobody looking."""
+    svc = service(failing_check(), grace_seconds=60, interval_seconds=60)
+    mon, clock, _v, _a = monitor(svc)
+    mon.check_now(svc)                  # just asked
+    mon.note_running(svc.name)          # and now it restarted
+
+    clock.tick(health.WARMUP_INTERVAL + 1)
+    assert mon.due(svc) is True
 
 
 def test_a_failure_inside_the_grace_window_is_not_held_against_it():

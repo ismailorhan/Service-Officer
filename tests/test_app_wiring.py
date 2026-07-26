@@ -178,7 +178,27 @@ def test_reaching_running_shows_starting_all_the_way_to_the_store(application):
 
     assert application.store.health_of("webclient.service", "hanadev") == \
         health.STARTING
-    assert "60s" in application.store.health_detail("webclient.service", "hanadev")
+    assert "waiting for it to answer" in \
+        application.store.health_detail("webclient.service", "hanadev")
+
+
+def test_the_header_counts_a_starting_service_as_starting(application):
+    """The row said "Starting..." under a green "1 of 1 running", because the
+    header counted what the service manager reported and the row did not."""
+    application.cfg = cfg_mod.Config(services=[_watched()],
+                                     machines=[cfg_mod.Machine(),
+                                               cfg_mod.Machine(name="hanadev",
+                                                               kind="linux")])
+    application.flyout.rebuild()
+
+    application.store.update("webclient.service", st.RUNNING, machine="hanadev")
+    application.flyout.apply_states()
+
+    summary = application.flyout.summary.text()
+    assert "1 starting" in summary, summary
+    assert "1 running" not in summary, summary
+    assert application.flyout.badge.text().startswith("0 of 1")
+    assert application.flyout.badge.property("cat") == "pending"
 
 
 def test_the_row_says_starting_rather_than_running(application):
@@ -194,7 +214,8 @@ def test_the_row_says_starting_rather_than_running(application):
 
     row = application.flyout._rows[("hanadev", "webclient.service")]
     assert row.chip.text() == "Starting…"
-    assert "checks" in row.toolTip() or "check" in row.toolTip()
+    # And the reason travels with it, so hovering the row explains the amber.
+    assert row.toolTip() == "started just now; waiting for it to answer"
 
 
 def test_a_service_without_checks_still_goes_straight_to_running(application):
@@ -250,6 +271,13 @@ def test_every_surface_says_the_same_thing_about_a_warming_service(application):
     # the tray: not green, and turning
     assert application.tray._anything_unsettled() is True
     assert application.tray._should_spin() is True
+    # and the two headings above those rows, which is where the contradiction
+    # survived after the rows were fixed: a green "1 of 1 running" and a card
+    # titled "1/1 running", both about a service that was still starting.
+    assert "1 starting" in application.flyout.summary.text()
+    assert application.flyout.badge.property("cat") == "pending"
+    assert application.hover.title.text().endswith("0/1 running, 1 to watch"), \
+        application.hover.title.text()
 
 
 def test_the_tray_settles_once_the_service_has_answered(application):

@@ -50,6 +50,11 @@ def category(status: str) -> str:
 #: Health verdicts, named here because three separate surfaces have to agree on
 #: what they mean, and two of them once did not know one existed.
 HEALTHY, UNHEALTHY, STARTING = "healthy", "unhealthy", "starting"
+#: What those verdicts are called on screen. Named, because the flyout counts
+#: services by what the rows say, and a literal repeated in two files is a
+#: disagreement waiting to happen.
+LABEL_STARTING = "Starting…"
+LABEL_UNHEALTHY = "Not responding"
 
 
 def effective(status: str, health: str = "unknown") -> tuple:
@@ -67,9 +72,9 @@ def effective(status: str, health: str = "unknown") -> tuple:
     cat = category(status)
     if cat == "running":
         if health == UNHEALTHY:
-            return "Not responding", "stopped"
+            return LABEL_UNHEALTHY, "stopped"
         if health == STARTING:
-            return "Starting\u2026", "pending"
+            return LABEL_STARTING, "pending"
     return status, cat
 
 
