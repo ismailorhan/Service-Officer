@@ -594,6 +594,77 @@ def test_a_machine_still_shows_its_address_when_that_differs(qapp):
     win.deleteLater()
 
 
+def test_a_windows_machine_can_be_reached_as_a_named_account(qapp):
+    """Two options, not one: whoever is signed in here, or a user name and
+    password. Before this, a remote Windows machine was only manageable by someone
+    who was already an administrator on it."""
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="ctl053", label="SQL server", kind="windows",
+                        address="10.77.3.51")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+    detail = page.detail
+
+    choices = [detail.auth.itemText(i) for i in range(detail.auth.count())]
+    assert choices == ["This computer's signed-in account",
+                       "User name and password"]
+    # The signed-in account needs no account and no secret, so neither is asked for.
+    # win.config(), not cfg: the panel edits its own copy until Save.
+    assert win.config().machine("ctl053").auth == "current_user"
+    assert detail._rows["password"][0].isVisibleTo(detail) is False
+    assert detail._rows["username"][0].isVisibleTo(detail) is False
+    # SSH's own fields stay where they belong.
+    assert detail._rows["fingerprint"][0].isVisibleTo(detail) is False
+    assert detail._rows["key_path"][0].isVisibleTo(detail) is False
+
+    detail.auth.setCurrentIndex(1)                  # user name and password
+    assert win.config().machine("ctl053").auth == "password"
+    assert detail._rows["username"][0].isVisibleTo(detail) is True
+    assert detail._rows["password"][0].isVisibleTo(detail) is True
+    assert "DOMAIN\\account" in detail._hints["username"].text()
+    win.deleteLater()
+
+
+def test_switching_kind_keeps_a_password_and_swaps_the_other_choice(qapp):
+    """Both kinds can sign in with a password; only one of them has a key file and
+    only one has the local token. Switching must not silently reset the setting."""
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="ctl053", kind="windows", address="10.77.3.51",
+                        auth="password", username="CT\\svc")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+    detail = page.detail
+
+    edited = win.config().machine("ctl053")
+    detail.kind.setCurrentIndex(1)                  # Linux
+    assert edited.kind == "linux"
+    assert edited.auth == "password", "the password choice was thrown away"
+    assert [detail.auth.itemText(i) for i in range(detail.auth.count())] == \
+        ["Private key file", "Password (stored on this machine)"]
+
+    detail.kind.setCurrentIndex(0)                  # back to Windows
+    assert edited.auth == "password"
+    win.deleteLater()
+
+
+def test_the_machine_list_says_which_account_reaches_a_windows_box(qapp):
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="ctl053", kind="windows", address="10.77.3.51",
+                        auth="password", username="CT\\svc-officer"),
+        cfg_mod.Machine(name="ctl054", kind="windows", address="10.77.3.52")])
+    page = panel_mod.MainPanel(cfg).machines_page
+
+    assert "CT\\svc-officer" in page._summary(cfg.machines[1], 3)
+    assert "this computer's account" in page._summary(cfg.machines[2], 0)
+
+
 def test_bulk_selection_drives_one_action_for_many_services(qapp, sample):
     """Stopping a five-service SAP stack should be one confirmation, not five
     clicks in the right order."""

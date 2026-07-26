@@ -193,10 +193,46 @@ def reachable(machine: str) -> bool:
 class WindowsConnector:
     """The SCM as a connector. A thin wrapper: the functions above are the
     implementation, this gives them the shape everything above `control.py`
-    speaks."""
+    speaks.
 
-    def __init__(self, machine: str = ""):
+    It also owns *who* we are on the target. A remote machine can be reached either
+    as whoever is signed in here — nothing to configure, and the only option there
+    used to be — or as a named account, which needs a session established first.
+    See core/win_session.py for why that is how Windows does it.
+    """
+
+    def __init__(self, machine: str = "", record=None):
         self.machine = machine or ""
+        self.record = record
+        #: what to tell the SCM. The machine's id is a label, not necessarily a
+        #: host name: a machine described as "app server" with host 10.0.0.9 was
+        #: previously looked up by the label, which does not resolve.
+        self.host = (getattr(record, "address", "") or self.machine) if self.machine \
+            else ""
+
+    # -- who we are --------------------------------------------------------
+    def _sign_in(self) -> None:
+        """Before any call, be the account this machine is configured for.
+
+        Cheap to call repeatedly: it returns immediately once the session exists.
+        """
+        record = self.record
+        if not self.machine or record is None:
+            return
+        if getattr(record, "auth", "current_user") != "password":
+            return                      # this session's own token, as before
+        from . import secrets, win_session
+        password = secrets.get(getattr(record, "secret_ref", ""))
+        if not password:
+            raise RuntimeError("no password saved for this machine — set one in "
+                               "Machines")
+        win_session.ensure(self.host, record.username, password)
+
+    def forget(self) -> None:
+        """Drop the session, so edited credentials are actually used."""
+        if self.machine and getattr(self.record, "auth", "") == "password":
+            from . import win_session
+            win_session.forget(self.host)
 
     def abilities(self):
         from .connectors import Abilities
@@ -210,28 +246,40 @@ class WindowsConnector:
                                  "terminated from here, and status is polled.")
 
     def reachable(self) -> bool:
-        return reachable(self.machine)
+        try:
+            self._sign_in()
+        except RuntimeError:
+            # Cannot sign in, so cannot talk to it — which is what unreachable
+            # means here. The reason is reported by Test connection, not by a
+            # background poll that has nowhere to put it.
+            return False
+        return reachable(self.host)
 
     def list_services(self) -> list:
         from .connectors import ServiceInfo
+        self._sign_in()
         return [ServiceInfo(name=s["name"], display=s["display"],
                             status=s["status"])
-                for s in list_all_services(self.machine)]
+                for s in list_all_services(self.host)]
 
     def status(self, name: str):
         from .connectors import Status
-        return Status(state=query_status(name, self.machine),
-                      start_type=start_type(name, self.machine),
-                      pid=process_id(name, self.machine))
+        self._sign_in()
+        return Status(state=query_status(name, self.host),
+                      start_type=start_type(name, self.host),
+                      pid=process_id(name, self.host))
 
     def start(self, name: str) -> None:
-        start_service(name, self.machine)
+        self._sign_in()
+        start_service(name, self.host)
 
     def stop(self, name: str) -> None:
-        stop_service(name, self.machine)
+        self._sign_in()
+        stop_service(name, self.host)
 
     def restart(self, name: str) -> None:
-        restart_service(name, self.machine)
+        self._sign_in()
+        restart_service(name, self.host)
 
     def kill(self, name: str) -> int:
         return kill_process(name, self.machine)

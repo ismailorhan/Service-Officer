@@ -127,8 +127,11 @@ class MachinesPage(QWidget):
             parts.append(f"systemd over SSH · {who}")
             if not machine.host_fingerprint:
                 parts.append("host key not confirmed")
+        elif machine.auth == "password":
+            parts.append("Windows service manager · "
+                         f"{machine.username or 'no account set'}")
         else:
-            parts.append("Windows service manager")
+            parts.append("Windows service manager · this computer's account")
         return "  ·  ".join(parts)
 
     def _selected(self):
@@ -244,8 +247,14 @@ class MachineDetail(_Page):
 
     KINDS = (("Windows — service manager", "windows"),
              ("Linux — systemd over SSH", "linux"))
-    AUTHS = (("Private key file", "key"),
-             ("Password (stored on this machine)", "password"))
+    #: How to sign in, per target type. Different lists because they share nothing:
+    #: a Windows machine can be reached as whoever is signed in here, which needs
+    #: no account and no secret, and SSH has no equivalent of that.
+    AUTHS_LINUX = (("Private key file", "key"),
+                   ("Password (stored on this machine)", "password"))
+    AUTHS_WINDOWS = (("This computer's signed-in account", "current_user"),
+                     ("User name and password", "password"))
+    AUTHS = AUTHS_LINUX          # kept as a name; the list in use follows the kind
 
     def __init__(self):
         super().__init__("", "", scroll=True)
@@ -272,6 +281,9 @@ class MachineDetail(_Page):
         form.setColumnStretch(1, 1)
         self.form = form
         self._rows: dict = {}
+        #: the note beside a field, kept so it can be rewritten: what "User" means
+        #: on a Windows machine and on a Linux one are different sentences.
+        self._hints: dict = {}
 
         def field(key: str, text: str, widget, note: str = ""):
             """One row: label, the thing, and why it is there."""
@@ -286,6 +298,7 @@ class MachineDetail(_Page):
             hint = _label(note, "hint", wrap=True) if note else None
             if hint is not None:
                 form.addWidget(hint, row, 2)
+                self._hints[key] = hint
             self._rows[key] = [w for w in (caption, widget, hint) if w is not None]
             return row
 
@@ -335,8 +348,8 @@ class MachineDetail(_Page):
               "acting needs sudo without a password.")
 
         self.auth = QComboBox()
-        for text, _value in self.AUTHS:
-            self.auth.addItem(text)
+        self._auths = ()
+        self._set_auth_choices("linux")
         self.auth.currentIndexChanged.connect(lambda _i: self._save())
         field("auth", "Sign in method", self.auth,
               "A key is preferred: no secret to keep.")
@@ -425,8 +438,9 @@ class MachineDetail(_Page):
         self.address.setText(machine.address)
         self.port.setValue(machine.port)
         self.username.setText(machine.username)
+        self._set_auth_choices(machine.kind)
         self.auth.setCurrentIndex(
-            next((i for i, (_t, v) in enumerate(self.AUTHS)
+            next((i for i, (_t, v) in enumerate(self._auths)
                   if v == machine.auth), 0))
         self.key_path.setText(machine.key_path)
         self.fingerprint.setText(machine.host_fingerprint)
@@ -449,8 +463,11 @@ class MachineDetail(_Page):
         machine.kind = self.KINDS[self.kind.currentIndex()][1]
         machine.address = self.address.text().strip()
         machine.port = int(self.port.value())
-        machine.auth = (self.AUTHS[self.auth.currentIndex()][1]
-                        if machine.kind == "linux" else "current_user")
+        if machine.is_local:
+            machine.auth = "current_user"       # nothing to sign in to
+        else:
+            index = min(self.auth.currentIndex(), len(self._auths) - 1)
+            machine.auth = self._auths[max(index, 0)][1]
         machine.username = self.username.text().strip()
         machine.key_path = self.key_path.text().strip()
         machine.host_fingerprint = self.fingerprint.text().strip()
@@ -459,7 +476,34 @@ class MachineDetail(_Page):
         self._apply_visibility()
         self.changed.emit()
 
+    def _set_auth_choices(self, kind: str) -> None:
+        """The two lists share nothing, so switching kind rebuilds the box.
+
+        Rebuilt without emitting: repopulating a combo fires currentIndexChanged,
+        which is wired to _save, which would write the first entry of the new list
+        over the setting before load() had a chance to select the right one.
+        """
+        wanted = self.AUTHS_LINUX if kind == "linux" else self.AUTHS_WINDOWS
+        if wanted == self._auths:
+            return
+        self._auths = wanted
+        blocked = self.auth.blockSignals(True)
+        self.auth.clear()
+        for text, _value in wanted:
+            self.auth.addItem(text)
+        self.auth.blockSignals(blocked)
+
     def _kind_changed(self, _index):
+        kind = self.KINDS[self.kind.currentIndex()][1]
+        self._set_auth_choices(kind)
+        if self.machine is not None:
+            # Carry the intent across: both lists have "password", so a machine set
+            # up with a password keeps it when the kind changes; anything else falls
+            # back to that kind's first option.
+            wanted = self.machine.auth
+            index = next((i for i, (_t, v) in enumerate(self._auths)
+                          if v == wanted), 0)
+            self.auth.setCurrentIndex(index)
         self._save()
 
     def _apply_visibility(self):
@@ -467,18 +511,25 @@ class MachineDetail(_Page):
         machine = self.machine
         local = machine is None or machine.is_local
         linux = bool(machine and machine.is_linux)
+        remote_windows = bool(machine and not local and not linux)
         self.kind.setEnabled(not local)
         for key in ("address",):
             self._hide_row(key, not local)
-        for key in ("username", "auth", "fingerprint"):
-            self._hide_row(key, linux)
-        by_password = linux and machine.auth == "password"
+        # A remote Windows machine can also be reached as a named account, so it has
+        # the same two rows. Only the ones that are genuinely SSH — the host key and
+        # the key file — stay Linux-only.
+        for key in ("auth",):
+            self._hide_row(key, linux or remote_windows)
+        self._hide_row("fingerprint", linux)
+        by_password = bool(machine) and not local and machine.auth == "password"
+        self._hide_row("username", linux or (remote_windows and by_password))
         self._hide_row("password", by_password)
         self._hide_row("key_path", linux and not by_password)
         self._hide_row("poll", not local)
         # Nothing to set up as root, so the button is not offered — a button whose
         # only answer is "nothing to do" is a question the user has to ask first.
         self.setup_button.setVisible(linux and machine.username != "root")
+        self._describe_fields(linux, remote_windows)
         if by_password:
             held = secrets.has(machine.secret_ref)
             self.password.show_stored(held)
@@ -502,8 +553,46 @@ class MachineDetail(_Page):
                 "sudo without a password, and instant updates need the account in "
                 "the systemd-journal group — the button below writes out exactly "
                 "what to run for the services you have chosen.")
+        elif remote_windows and by_password:
+            self.sudo_note.setText(
+                "Windows allows one account per machine at a time: if this computer "
+                "already has a connection to it — a mapped drive, an open Explorer "
+                "window — as somebody else, that account is used and this one is "
+                "refused. The account must administer services on that machine, "
+                "which normally means its Administrators group.")
+        elif remote_windows:
+            self.sudo_note.setText(
+                "Reached as whoever is signed in to this computer. Nothing to set "
+                "up, as long as that account administers services on the other "
+                "machine — otherwise choose a user name and password above.")
         else:
             self.sudo_note.setText("")
+
+    def _describe_fields(self, linux: bool, remote_windows: bool) -> None:
+        """The same three rows mean different things on the two kinds of machine,
+        and a note about sudo beside a Windows account would be nonsense."""
+        if remote_windows:
+            notes = {
+                "username": "DOMAIN\\account, or .\\account for one local to that "
+                            "machine.",
+                "auth": "The signed-in account needs nothing set up. A user name "
+                        "and password is for when it is not an administrator "
+                        "there.",
+                "password": "Kept encrypted on this computer, not in\n"
+                            "services.json. Any administrator here can read it.",
+            }
+        else:
+            notes = {
+                "username": "Who we log in as. Reading needs no privilege;\n"
+                            "acting needs sudo without a password.",
+                "auth": "A key is preferred: no secret to keep.",
+                "password": "Kept encrypted on this computer, not in\n"
+                            "services.json. Any administrator here can read it.",
+            }
+        for key, text in notes.items():
+            hint = self._hints.get(key)
+            if hint is not None:
+                hint.setText(text)
 
     def _save_password(self):
         """Store what was typed, then clear the field.
@@ -609,14 +698,28 @@ class MachineDetail(_Page):
         connectors.forget(machine.name)
         conn = connectors.for_machine(machine.name, record=machine)
         try:
+            # Signing in explicitly, because reachable() cannot report why it
+            # failed — it answers a yes/no question for the poller. "The user name
+            # or password is wrong" and "the machine could not be found" need
+            # different things done about them.
+            sign_in = getattr(conn, "_sign_in", None)
+            if callable(sign_in):
+                sign_in()
             if not conn.reachable():
                 self.result.setText(f"{machine.where()} did not answer.")
                 return
             can = conn.abilities()
+        except RuntimeError as exc:
+            # Ours, and already a sentence — the transport's own words, not a
+            # class name in front of them.
+            self.result.setText(f"{machine.where()}: {exc}")
+            return
         except Exception as exc:
             self.result.setText(f"{type(exc).__name__}: {exc}")
             return
         said = [f"{machine.where()} answered."]
+        if machine.auth == "password" and not machine.is_linux:
+            said.append(f"Signed in as {machine.username}.")
         said.append("Services can be started and stopped." if can.control
                     else "Watching only — no control.")
         said.append("Changes arrive as they happen." if can.push

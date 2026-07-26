@@ -153,7 +153,7 @@ def for_machine(machine: str = "", record=None) -> Connector:
         found = ssh_linux.LinuxConnector(record)
     else:
         from . import scm_windows
-        found = scm_windows.WindowsConnector(key)
+        found = scm_windows.WindowsConnector(key, record)
     _cache[key] = found
     return found
 
@@ -171,5 +171,13 @@ def forget(machine: str = None) -> None:
         if callable(closer):
             try:
                 closer()
+            except Exception:
+                pass
+        # A Windows connector holds no socket, but Windows itself holds the session
+        # we established to the target — and that outlives this process's objects.
+        drop = getattr(conn, "forget", None)
+        if callable(drop):
+            try:
+                drop()
             except Exception:
                 pass
