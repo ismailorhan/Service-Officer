@@ -12,11 +12,16 @@ neither one knows the other exists.
 
 from __future__ import annotations
 
+import threading
+
 import win32service
 import win32serviceutil
 import pywintypes
 
+from . import applog
 from . import state as st
+
+log = applog.get("scm")
 
 
 _STATUS_MAP = {
@@ -178,9 +183,7 @@ def nothing_to_do(exc) -> str:
     return NOTHING_TO_DO.get(code, "")
 
 
-def reachable(machine: str) -> bool:
-    """Can we talk to this machine's SCM at all? Used to show a machine as
-    offline instead of every service on it as 'Not Found'."""
+def _ask_scm(machine: str) -> bool:
     try:
         scm = win32service.OpenSCManager(_m(machine), None,
                                          win32service.SC_MANAGER_CONNECT)
@@ -188,6 +191,40 @@ def reachable(machine: str) -> bool:
         return True
     except pywintypes.error:
         return False
+
+
+#: How long to wait for another machine's SCM before calling it unreachable.
+#: Measured against a box with RPC's dynamic ports firewalled: OpenSCManager took
+#: **42 seconds** to give up with "the RPC server is unavailable". That is a hang as
+#: far as anyone watching is concerned, and it blocked the poll of every other
+#: machine behind it.
+REMOTE_TIMEOUT = 8.0
+
+
+def reachable(machine: str, timeout: float = REMOTE_TIMEOUT) -> bool:
+    """Can we talk to this machine's SCM at all? Used to show a machine as
+    offline instead of every service on it as 'Not Found'.
+
+    The wait is bounded for another machine, and unbounded for this one — there is
+    no network in the way of the local SCM, and it answers in under a millisecond.
+
+    Bounded by abandoning rather than cancelling, because there is nothing to cancel:
+    the RPC call is inside Windows and has no timeout to set. The thread it is stuck
+    in is a daemon reading a status, so leaving it to finish on its own costs one
+    thread until the firewall finishes refusing it.
+    """
+    if not machine:
+        return _ask_scm(machine)
+    answer: list = []
+    thread = threading.Thread(target=lambda: answer.append(_ask_scm(machine)),
+                              daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if not answer:
+        log.info("%s: no answer from its service manager within %.0fs", machine,
+                 timeout)
+        return False
+    return answer[0]
 
 
 class WindowsConnector:

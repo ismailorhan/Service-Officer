@@ -625,6 +625,14 @@ def test_a_windows_machine_can_be_reached_as_a_named_account(qapp):
     assert detail._rows["username"][0].isVisibleTo(detail) is True
     assert detail._rows["password"][0].isVisibleTo(detail) is True
     assert "DOMAIN\\account" in detail._hints["username"].text()
+
+    # The method comes first, then what it asks for. The other way round put "User"
+    # above the choice that decides whether a user is wanted at all.
+    def row_of(key):
+        caption = detail._rows[key][0]
+        return detail.form.getItemPosition(detail.form.indexOf(caption))[0]
+
+    assert row_of("auth") < row_of("username") < row_of("password")
     win.deleteLater()
 
 
@@ -650,6 +658,53 @@ def test_switching_kind_keeps_a_password_and_swaps_the_other_choice(qapp):
 
     detail.kind.setCurrentIndex(0)                  # back to Windows
     assert edited.auth == "password"
+    win.deleteLater()
+
+
+def test_testing_a_connection_does_not_freeze_the_window(qapp):
+    """A firewalled machine took 42 seconds to refuse, and the panel was frozen for
+    all of them. The button now says it is asking and the waiting happens
+    elsewhere."""
+    import time
+
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="ctl053", kind="windows", address="10.77.3.51")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+    detail = page.detail
+
+    slow = []
+
+    class Slow:
+        def _sign_in(self):
+            pass
+
+        def reachable(self):
+            slow.append("asked")
+            time.sleep(2)
+            return False
+
+    import core.connectors as conn_mod
+    original = conn_mod.for_machine
+    conn_mod.for_machine = lambda *_a, **_k: Slow()
+    try:
+        started = time.perf_counter()
+        detail._test()
+        elapsed = time.perf_counter() - started
+    finally:
+        conn_mod.for_machine = original
+
+    assert elapsed < 0.5, "the click itself waited for the machine"
+    assert "Asking" in detail.result.text()
+    for _ in range(40):                       # let the worker finish
+        qapp.processEvents()
+        if slow:
+            break
+        time.sleep(0.05)
+    assert slow == ["asked"]
     win.deleteLater()
 
 

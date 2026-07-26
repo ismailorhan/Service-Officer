@@ -8,6 +8,8 @@ each row.
 
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout,
                                QLineEdit, QListWidget, QListWidgetItem,
@@ -244,6 +246,8 @@ class MachineDetail(_Page):
 
     back = Signal()
     changed = Signal()
+    #: carries a test's outcome from its worker thread to the label
+    tested = Signal(str)
 
     KINDS = (("Windows — service manager", "windows"),
              ("Linux — systemd over SSH", "linux"))
@@ -340,19 +344,21 @@ class MachineDetail(_Page):
         field("address", "Host", where,
               "Port 0 means the usual one — 22 for SSH.")
 
-        self.username = QLineEdit()
-        self.username.setPlaceholderText("account on that machine")
-        self.username.editingFinished.connect(self._save)
-        field("username", "User", self.username,
-              "Who we log in as. Reading needs no privilege;\n"
-              "acting needs sudo without a password.")
-
+        # The method first, then what it asks for. The other way round put "User"
+        # above the choice that decides whether a user is wanted at all.
         self.auth = QComboBox()
         self._auths = ()
         self._set_auth_choices("linux")
         self.auth.currentIndexChanged.connect(lambda _i: self._save())
         field("auth", "Sign in method", self.auth,
               "A key is preferred: no secret to keep.")
+
+        self.username = QLineEdit()
+        self.username.setPlaceholderText("account on that machine")
+        self.username.editingFinished.connect(self._save)
+        field("username", "User", self.username,
+              "Who we log in as. Reading needs no privilege;\n"
+              "acting needs sudo without a password.")
 
         # A password is never read back out of the store to show it. The field
         # holds what you are typing now; once saved it says so and goes blank.
@@ -426,6 +432,7 @@ class MachineDetail(_Page):
         self.result = _label("", "hint", wrap=True)
         self.root.addWidget(self.result)
         self.root.addStretch(1)
+        self.tested.connect(self._say_result)
 
     # -- loading and saving ------------------------------------------------
     def load(self, machine):
@@ -687,6 +694,11 @@ class MachineDetail(_Page):
         A test that only says "failed" moves the problem rather than solving it:
         "no authentication methods available" and "host key not confirmed" need
         entirely different fixes.
+
+        On a worker thread, because the answer can take a long time to arrive: a
+        machine with RPC's dynamic ports firewalled took 42 seconds to refuse, and
+        every one of those seconds was a frozen window with no cursor and no
+        explanation. Measured, not imagined — 10.77.3.110 did exactly that.
         """
         machine = self.machine
         if machine is None:
@@ -695,6 +707,12 @@ class MachineDetail(_Page):
             self.result.setText("This computer answers — it is the one running "
                                 "Service Officer.")
             return
+        self.result.setText(f"Asking {machine.where()}…")
+        threading.Thread(target=self._run_test, args=(machine,),
+                         daemon=True).start()
+
+    def _run_test(self, machine):
+        """The test itself, off the UI thread. Reports through a signal."""
         connectors.forget(machine.name)
         conn = connectors.for_machine(machine.name, record=machine)
         try:
@@ -706,16 +724,16 @@ class MachineDetail(_Page):
             if callable(sign_in):
                 sign_in()
             if not conn.reachable():
-                self.result.setText(f"{machine.where()} did not answer.")
+                self.tested.emit(f"{machine.where()} did not answer.")
                 return
             can = conn.abilities()
         except RuntimeError as exc:
             # Ours, and already a sentence — the transport's own words, not a
             # class name in front of them.
-            self.result.setText(f"{machine.where()}: {exc}")
+            self.tested.emit(f"{machine.where()}: {exc}")
             return
         except Exception as exc:
-            self.result.setText(f"{type(exc).__name__}: {exc}")
+            self.tested.emit(f"{type(exc).__name__}: {exc}")
             return
         said = [f"{machine.where()} answered."]
         if machine.auth == "password" and not machine.is_linux:
@@ -726,7 +744,15 @@ class MachineDetail(_Page):
                     else f"Status is asked for every {machine.poll_seconds}s.")
         if can.why:
             said.append(can.why)
-        self.result.setText("  ".join(said))
+        self.tested.emit("  ".join(said))
+
+    def _say_result(self, text: str) -> None:
+        """On the UI thread, and only if the page is still there — closing the panel
+        while a test is in flight used to raise "Signal source has been deleted"."""
+        try:
+            self.result.setText(text)
+        except RuntimeError:
+            pass
 
     def _services_here(self) -> list:
         """The units chosen for this machine. Walked up to the page that holds the

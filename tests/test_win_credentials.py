@@ -165,6 +165,33 @@ def test_no_password_saved_says_so_rather_than_failing_obscurely(wnet, monkeypat
     assert "no password saved" in str(raised.value)
 
 
+def test_an_unanswering_machine_gives_up_instead_of_hanging(monkeypatch):
+    """Measured on 10.77.3.110, which has RPC's dynamic ports firewalled:
+    OpenSCManager took **42 seconds** to answer "the RPC server is unavailable".
+    That is a hang to anyone watching, and it held up the poll of every machine
+    behind it."""
+    import time
+
+    def never(_machine):
+        time.sleep(30)
+        return True
+
+    monkeypatch.setattr(scm_windows, "_ask_scm", never)
+    started = time.perf_counter()
+
+    assert scm_windows.reachable("10.77.3.110", timeout=0.3) is False
+
+    assert time.perf_counter() - started < 3, "waited for the whole call"
+
+
+def test_this_computer_is_never_put_behind_a_timeout(monkeypatch):
+    """There is no network in the way of the local SCM, and a timeout there could
+    only ever report the machine we are running on as unreachable."""
+    monkeypatch.setattr(scm_windows, "_ask_scm", lambda machine: machine == "")
+
+    assert scm_windows.reachable("") is True
+
+
 def test_forgetting_a_machine_signs_out_of_it(wnet, monkeypatch):
     """A cached connector is dropped when settings change; the Windows session it
     established outlives the object, so it has to be dropped too."""
