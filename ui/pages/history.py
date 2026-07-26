@@ -59,6 +59,10 @@ class HistoryPage(_Page):
         self.root.addLayout(row)
         self.root.addSpacing(14)
 
+        # Two rows, not one. Ten controls side by side needed 1,044 px, which set
+        # the whole window's minimum width to 1,286 — wider than a 1280 screen, on
+        # a tool that is used over RDP to customer servers. Split by question:
+        # which rows to show, then how much of each and what to do with them.
         filt = QHBoxLayout()
         filt.setSpacing(8)
         self.service_filter = QComboBox()
@@ -82,23 +86,6 @@ class HistoryPage(_Page):
         filt.addWidget(_label("Trigger", "hint"))
         filt.addWidget(self.source_filter)
 
-        self.full_detail = QCheckBox("Full detail")
-        self.full_detail.setToolTip(
-            "Every state the SCM reported, including the halfway ones. Off, a "
-            "restart reads as “restart requested” then “Running” instead of four "
-            "rows saying the same thing. Nothing is left out of the file either "
-            "way.")
-        self.full_detail.toggled.connect(self.reload)
-        filt.addWidget(self.full_detail)
-
-        self.include_windows = QCheckBox("Windows event log")
-        self.include_windows.setToolTip(
-            "Merge what Windows recorded about these services — the SCM's "
-            "\"terminated unexpectedly\", and errors the service itself logged. "
-            "This is usually where the reason is.")
-        self.include_windows.toggled.connect(self.reload)
-        filt.addWidget(self.include_windows)
-
         # Only offered once something is actually filtered — a permanently
         # visible "clear" invites the question of what it would clear.
         self.clear_filters = _button(f"Clear filters {theme.GLYPH_KILL}",
@@ -107,11 +94,33 @@ class HistoryPage(_Page):
                                       "any trigger.")
         self.clear_filters.setVisible(False)
         filt.addWidget(self.clear_filters)
-
         filt.addStretch(1)
-        filt.addWidget(_button("Refresh", "quiet", self.reload))
-        filt.addWidget(_button("Export CSV…", "quiet", self._export))
         self.root.addLayout(filt)
+        self.root.addSpacing(8)
+
+        opts = QHBoxLayout()
+        opts.setSpacing(8)
+        self.full_detail = QCheckBox("Full detail")
+        self.full_detail.setToolTip(
+            "Every state the SCM reported, including the halfway ones. Off, a "
+            "restart reads as “restart requested” then “Running” instead of four "
+            "rows saying the same thing. Nothing is left out of the file either "
+            "way.")
+        self.full_detail.toggled.connect(self.reload)
+        opts.addWidget(self.full_detail)
+
+        self.include_windows = QCheckBox("Windows event log")
+        self.include_windows.setToolTip(
+            "Merge what Windows recorded about these services — the SCM's "
+            "\"terminated unexpectedly\", and errors the service itself logged. "
+            "This is usually where the reason is.")
+        self.include_windows.toggled.connect(self.reload)
+        opts.addWidget(self.include_windows)
+
+        opts.addStretch(1)
+        opts.addWidget(_button("Refresh", "quiet", self.reload))
+        opts.addWidget(_button("Export CSV…", "quiet", self._export))
+        self.root.addLayout(opts)
         self.root.addSpacing(10)
 
         self.table = QTableWidget(0, len(self.COLUMNS))
