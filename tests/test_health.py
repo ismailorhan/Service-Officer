@@ -392,17 +392,28 @@ def failing_check():
 
 
 def test_nothing_is_judged_during_the_grace_period():
-    """A service that has just started has not opened its port yet, so checking
-    it immediately would report every restart as a failure."""
+    """A service that has just started has not opened its port yet, so a failure
+    then would report every restart as a problem.
+
+    It is asked all the same. "Ignore the first minute" has to mean ignore the
+    *failure*, not the question — otherwise something ready in nine seconds sits
+    at "Starting..." for the rest of the minute because nobody looked.
+    """
     svc = service(failing_check(), grace_seconds=60, interval_seconds=10)
-    mon, clock, _v, _a = monitor(svc)
+    mon, clock, verdicts, _a = monitor(svc)
     mon.note_running(svc.name)
 
-    assert mon.due(svc) is False
-    clock.tick(59)
-    assert mon.due(svc) is False
-    clock.tick(2)
-    assert mon.due(svc) is True
+    assert mon.within_grace(svc) is True
+    clock.tick(11)
+    assert mon.due(svc) is True, "the question was skipped, not just the judgement"
+    mon.check_now(svc)
+    assert mon.verdict(svc.name) == health.STARTING
+    assert health.UNHEALTHY not in [v for _n, v, _d in verdicts]
+
+    clock.tick(60)
+    assert mon.within_grace(svc) is False
+    mon.check_now(svc)
+    assert mon.verdict(svc.name) != health.STARTING
 
 
 def test_a_service_that_was_already_up_gets_its_grace_from_now():
@@ -533,7 +544,8 @@ def test_the_schedule_is_published_for_the_panel_to_show():
                   failures_before_acting=2)
     cfg = cfg_mod.Config(services=[svc])
     store = Recording()
-    mon = health.Monitor(lambda: cfg, store, control=None, now=Clock())
+    clock = Clock()
+    mon = health.Monitor(lambda: cfg, store, control=None, now=clock)
 
     mon.note_running(svc.name)
     said = store.timing[("", "Svc")]
@@ -541,6 +553,9 @@ def test_the_schedule_is_published_for_the_panel_to_show():
     assert said["next"] is not None                 # …but we say when
     assert "settle" in said["detail"]
 
+    # Past the grace window, so a failure counts. Inside it, failures deliberately
+    # do not — that is what makes a slow starter survive its own start.
+    clock.tick(50)
     mon.check_now(svc)
     said = store.timing[("", "Svc")]
     assert said["last"] is not None
@@ -704,8 +719,8 @@ def test_a_service_with_no_checks_is_simply_running(tmp_path):
     assert said == []
 
 
-def test_the_grace_period_still_holds_off_the_first_check(tmp_path):
-    """Saying "starting" must not also start asking early."""
+def test_the_grace_window_is_measured_from_when_it_started(tmp_path):
+    """Not from when the app launched, and not from the last check."""
     from core import health
 
     clock = [1000.0]
@@ -722,11 +737,15 @@ def test_the_grace_period_still_holds_off_the_first_check(tmp_path):
     service = cfg.services[0]
 
     monitor.note_running("webclient.service")
-    assert monitor.due(service) is False
+    assert monitor.within_grace(service) is True
     clock[0] += 39
-    assert monitor.due(service) is False, "asked before the grace was up"
+    assert monitor.within_grace(service) is True
     clock[0] += 2
-    assert monitor.due(service) is True
+    assert monitor.within_grace(service) is False
+
+    # And a later start reopens it.
+    monitor.note_running("webclient.service")
+    assert monitor.within_grace(service) is True
 
 
 def test_an_expected_401_is_how_you_tell_ready_from_still_starting(tmp_path):
@@ -776,3 +795,60 @@ def test_an_expected_401_is_how_you_tell_ready_from_still_starting(tmp_path):
         assert health.run_check(wrong).ok is False
     finally:
         server.shutdown()
+
+
+def test_a_service_ready_early_stops_saying_starting_early(listener):
+    """Grace means "do not hold a failure against it", not "do not look". A web
+    client ready in nine seconds should not sit at "Starting..." for the rest of a
+    minute because nobody asked."""
+    svc = service(cfg_mod.HealthCheck(kind="tcp", host="127.0.0.1",
+                                      port=listener),
+                  grace_seconds=60, interval_seconds=5,
+                  failures_before_acting=3)
+    mon, clock, verdicts, _a = monitor(svc)
+    mon.note_running(svc.name)
+    assert mon.verdict(svc.name) == health.STARTING
+
+    clock.tick(6)                       # one interval in, still inside grace
+    assert mon.due(svc) is True, "grace stopped it looking"
+    mon.check_now(svc)
+
+    assert mon.verdict(svc.name) == health.HEALTHY
+    assert [v for _n, v, _d in verdicts][-1] == health.HEALTHY
+
+
+def test_a_failure_inside_the_grace_window_is_not_held_against_it():
+    """It is what "still starting" looks like, and it must never add up to a
+    restart — otherwise a slow starter gets restarted while it is starting."""
+    svc = service(failing_check(), grace_seconds=60, interval_seconds=5,
+                  failures_before_acting=2)
+    svc.health.action = "restart"
+    mon, clock, verdicts, acted = monitor(svc)
+    mon.note_running(svc.name)
+
+    for _ in range(6):                  # six failures, all inside the window
+        clock.tick(6)
+        mon.check_now(svc)
+
+    assert mon.verdict(svc.name) == health.STARTING
+    assert acted == [], "restarted a service that was still starting"
+    assert "still starting" in mon.detail(svc.name)
+    assert health.UNHEALTHY not in [v for _n, v, _d in verdicts]
+
+
+def test_once_the_window_closes_failures_count_again():
+    svc = service(failing_check(), grace_seconds=30, interval_seconds=5,
+                  failures_before_acting=2)
+    mon, clock, _v, _a = monitor(svc)
+    mon.note_running(svc.name)
+
+    clock.tick(10)
+    mon.check_now(svc)
+    assert mon.verdict(svc.name) == health.STARTING
+
+    clock.tick(25)                      # past the 30s window
+    mon.check_now(svc)
+    assert mon.verdict(svc.name) == health.UNKNOWN      # one failure of two
+    clock.tick(6)
+    mon.check_now(svc)
+    assert mon.verdict(svc.name) == health.UNHEALTHY

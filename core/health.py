@@ -406,12 +406,26 @@ class Monitor:
             # now as the start of its grace period rather than judging blind.
             watch.running_since = now
             return False
-        if now - watch.running_since < health.grace_seconds:
-            return False
+        # Deliberately *not* skipped during the grace period. The setting reads
+        # "ignore the first N minutes after it starts", and what has to be ignored
+        # is a failure, not the question: a service that is ready in nine seconds
+        # should not sit at "Starting..." for the rest of a minute because nobody
+        # looked. During grace we ask on the same interval and simply do not hold
+        # the answer against it — see check_now.
         return now - watch.last_checked >= health.interval_seconds
+
+    def within_grace(self, service, now: float = None) -> bool:
+        """Still inside the window where a failure means "not ready yet" rather
+        than "broken"."""
+        now = now if now is not None else self._now()
+        watch = self._watch(service.key)
+        if not watch.running_since:
+            return False
+        return now - watch.running_since < service.health.grace_seconds
 
     def check_now(self, service) -> tuple:
         """Run one service's checks and record the verdict. Returns (ok, results)."""
+        warming = self.within_grace(service)
         ok, results = run_all(service, self._control)
         watch = self._watch(service.key)
         watch.last_checked = self._now()
@@ -419,8 +433,17 @@ class Monitor:
         before = watch.verdict
 
         if ok:
+            # Passing ends the warm-up early, which is the point of asking during
+            # it: ready in nine seconds should show as ready in nine seconds.
             watch.failures = 0
             watch.verdict = HEALTHY
+        elif warming:
+            # Inside the grace window a failure is expected — it is what "still
+            # starting" looks like. It is not counted, so the window cannot end in
+            # a restart, and the reason is kept because "starting: HTTP 500" is
+            # more use than "starting".
+            watch.verdict = STARTING
+            watch.detail = f"still starting — {watch.detail}"
         else:
             watch.failures += 1
             # Only unhealthy once it has failed enough times in a row; until
@@ -428,10 +451,8 @@ class Monitor:
             if watch.failures >= service.health.failures_before_acting:
                 watch.verdict = UNHEALTHY
             elif watch.verdict == STARTING:
-                # A check has now run, so the warm-up window is over — it just
-                # was not conclusive. Leaving it at "Starting…" would have a
-                # service that has been up for hours read as newly started after
-                # a single blip.
+                # The window has closed and the answer was still no. Not unhealthy
+                # yet — that takes the full count — but no longer "starting".
                 watch.verdict = UNKNOWN
 
         # After the bookkeeping, not before: published first, the panel showed
