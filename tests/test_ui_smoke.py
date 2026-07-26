@@ -1386,11 +1386,23 @@ def test_the_setup_commands_name_only_the_services_that_were_chosen(qapp):
     page.detail._setup()
     text = qapp.clipboard().text()
 
-    assert "usermod -aG systemd-journal svcofficer" in text
+    assert "/usr/sbin/usermod -aG systemd-journal svcofficer" in text
     assert "systemctl start b1s50000.service" in text
     assert "systemctl restart sapb1servertools.service" in text
     assert "AppEngine" not in text, "a service from another machine leaked in"
     assert "NOPASSWD" in text and "ALL=(root)" in text
+    # It has to be pastable as one block. The first version mixed commands with
+    # the contents of a file, so the sudoers line landed in the shell and gave
+    # "syntax error near unexpected token".
+    assert "cat > /etc/sudoers.d/service-officer <<'EOF'" in text
+    assert text.count("EOF") == 2
+    assert "visudo -cf" in text, "a malformed sudoers file must be caught"
+    assert "chmod 0440" in text
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("svcofficer ALL=") or stripped.startswith("/usr/bin/"):
+            continue                      # inside the heredoc
+        assert not stripped or stripped.startswith("#") or "=" not in stripped             or stripped.startswith("cat >"), f"not runnable: {line}"
 
 
 def test_the_setup_commands_say_what_to_do_when_nothing_is_chosen_yet(qapp):
@@ -1404,3 +1416,124 @@ def test_the_setup_commands_say_what_to_do_when_nothing_is_chosen_yet(qapp):
     page.detail._setup()
 
     assert "Services page" in qapp.clipboard().text()
+
+
+def test_a_typed_password_goes_to_the_store_and_not_into_a_widget(qapp, tmp_path,
+                                                                  monkeypatch):
+    """A password left sitting in a widget ends up in screenshots, crash dumps and
+    anything that walks the widget tree."""
+    from core import secrets
+    monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "secrets.dat"))
+
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="hanadev", kind="linux", auth="password",
+                        username="root")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+
+    page.detail.password.setText("CorrectHorse42")
+    page.detail._save_password()
+
+    assert page.detail.password.text() == "", "the password stayed on screen"
+    assert page.detail.password_state.text() == "saved"
+    edited = win.config().machine("hanadev")
+    assert edited.secret_ref == "machine/hanadev"
+    assert secrets.get(edited.secret_ref) == "CorrectHorse42"
+    assert "CorrectHorse42" not in str(cfg_mod.to_dict(win.config()))
+
+
+def test_reopening_a_machine_never_shows_the_stored_password(qapp, tmp_path,
+                                                            monkeypatch):
+    from core import secrets
+    monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "secrets.dat"))
+    secrets.put("machine/hanadev", "hunter2")
+
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="hanadev", kind="linux", auth="password",
+                        secret_ref="machine/hanadev")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+
+    assert page.detail.password.text() == ""
+    assert page.detail.password_state.text() == "saved"      # said, not shown
+
+
+def test_signing_in_as_root_says_no_setup_is_needed(qapp):
+    """Sudo exists to avoid using root. As root there is nothing to grant, and the
+    page should say so rather than leaving someone to follow steps they don't
+    need."""
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="hanadev", kind="linux", auth="password",
+                        username="root")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+
+    note = page.detail.sudo_note.text()
+    assert "needs nothing set up" in note
+    assert "root password is stored" in note      # and the cost is stated
+
+
+def test_the_password_row_appears_only_when_a_password_is_chosen(qapp):
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="hanadev", kind="linux", auth="key")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+
+    assert page.detail.key_path.isVisibleTo(page.detail)
+    assert not page.detail.password.isVisibleTo(page.detail)
+
+    page.detail.auth.setCurrentIndex(1)                      # → password
+
+    assert page.detail.password.isVisibleTo(page.detail)
+    assert not page.detail.key_path.isVisibleTo(page.detail)
+
+
+def test_root_is_told_there_is_nothing_to_set_up(qapp):
+    """Sudo exists to avoid using root. Generating a sudoers file for root would
+    be theatre, and following it would waste someone's afternoon."""
+    cfg = cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="hanadev", kind="linux", username="root")],
+        services=[cfg_mod.Service(name="b1s50000.service", machine="hanadev")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+
+    page.detail._setup()
+
+    text = qapp.clipboard().text()
+    assert "Nothing to set up" in text
+    assert "sudoers" not in text and "usermod" not in text
+    assert "no setup" in page.detail.result.text()
+
+
+def test_with_no_services_chosen_the_block_still_runs(qapp):
+    """It used to emit a sudoers line whose value was a comment — pasteable, and
+    wrong."""
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="hanadev", kind="linux", username="svcofficer")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.machines_page
+    page.list.setCurrentRow(1)
+    page._open()
+
+    page.detail._setup()
+
+    text = qapp.clipboard().text()
+    assert "/usr/sbin/usermod" in text
+    assert "NOPASSWD" not in text, "granted nothing but wrote a rule anyway"
+    assert "sudoers.d" not in text

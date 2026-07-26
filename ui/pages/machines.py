@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout,
                                QWidget)
 
 from core import config as cfg_mod
-from core import connectors, control
+from core import connectors, control, secrets
 
 from .. import theme
 from ..widgets import button as _button, label as _label
@@ -84,10 +84,22 @@ class MachinesPage(QWidget):
             # arrives late and the row is redrawn then. Only ask when we don't
             # already know it — otherwise the redraw would ask again forever.
             if control.cached_address(machine.name) is None:
-                control.resolve_address(machine.name,
-                                        lambda *_a: self.address_found.emit())
+                control.resolve_address(machine.name, self._address_arrived)
         if 0 <= keep < self.list.count():
             self.list.setCurrentRow(keep)
+
+    def _address_arrived(self, *_args):
+        """A DNS lookup finished on a worker thread.
+
+        Guarded because the page may be gone by then: closing the panel while a
+        name is still resolving deleted the C++ object under this QObject, and the
+        callback raised "Signal source has been deleted" in the worker — a
+        traceback in the log for the ordinary act of closing a window.
+        """
+        try:
+            self.address_found.emit()
+        except RuntimeError:
+            pass
 
     def _title(self, machine) -> str:
         """CTL052 (10.77.3.50) — the name alone isn't enough when someone has to
@@ -286,6 +298,22 @@ class MachineDetail(_Page):
         field("auth", "Sign in with", self.auth,
               "A key is preferred: no secret to keep.")
 
+        # A password is never read back out of the store to show it. The field
+        # holds what you are typing now; once saved it says so and goes blank.
+        self.password = QLineEdit()
+        self.password.setEchoMode(QLineEdit.Password)
+        self.password.setPlaceholderText("type to set a password")
+        self.password.editingFinished.connect(self._save_password)
+        pw = QHBoxLayout()
+        pw.setSpacing(theme.SP_8)
+        pw.addWidget(self.password, 1)
+        self.password_state = _label("", "hint")
+        pw.addWidget(self.password_state)
+        pw.addWidget(_button("Forget", "quiet", self._forget_password))
+        field("password", "Password", pw,
+              "Kept encrypted on this computer, not in\n"
+              "services.json. Any administrator here can read it.")
+
         self.key_path = QLineEdit()
         self.key_path.setPlaceholderText(r"C:\Users\you\.ssh\id_ed25519")
         self.key_path.editingFinished.connect(self._save)
@@ -357,6 +385,9 @@ class MachineDetail(_Page):
                       self.fingerprint):
             field.setCursorPosition(0)
         self.poll.setValue(machine.poll_seconds)
+        self.password.clear()
+        self.password_state.setText(
+            "saved" if secrets.has(machine.secret_ref) else "not set")
         self.result.setText("")
         self.machine = machine
         self._apply_visibility()
@@ -390,22 +421,28 @@ class MachineDetail(_Page):
         self.kind.setEnabled(not local)
         for key in ("address",):
             self._hide_row(key, not local)
-        for key in ("username", "auth", "key_path", "fingerprint"):
+        for key in ("username", "auth", "fingerprint"):
             self._hide_row(key, linux)
+        by_password = linux and machine.auth == "password"
+        self._hide_row("password", by_password)
+        self._hide_row("key_path", linux and not by_password)
         self._hide_row("poll", not local)
-        self.key_path.setEnabled(not linux or machine.auth == "key")
         self.setup_button.setVisible(linux)
+        if by_password:
+            self.password_state.setText(
+                "saved" if secrets.has(machine.secret_ref) else "not set")
         if local:
             self.result.setText("This computer is reached by being it — the "
                                 "service manager is right here.")
             self.sudo_note.setText("")
-        elif linux and machine.auth == "password":
-            # Say so rather than failing later: the model has the field, but the
-            # place to keep a password safely is not built yet, so a password
-            # target cannot actually connect.
+        elif by_password and machine.username == "root":
+            # Root needs no sudo and no group: that is the entire reason sudo
+            # exists. Worth saying, because the alternative is someone following
+            # setup steps they do not need.
             self.sudo_note.setText(
-                "Password sign-in is not wired up yet — there is nowhere to keep "
-                "the password safely, so it is not kept. Use a key file for now.")
+                "Signing in as root needs nothing set up on that machine — no "
+                "sudo rule, no group. The cost is that a root password is stored "
+                "on this computer, where any administrator can read it.")
         elif linux:
             self.sudo_note.setText(
                 "Reading a status needs no privilege. Starting and stopping needs "
@@ -414,6 +451,41 @@ class MachineDetail(_Page):
                 "what to run for the services you have chosen.")
         else:
             self.sudo_note.setText("")
+
+    def _save_password(self):
+        """Store what was typed, then clear the field.
+
+        The value is written to the secret store and the config only ever holds
+        the *name* of the entry. Leaving the typed password in a widget would put
+        it in a screenshot, a crash dump, and anything that walks the widget tree.
+        """
+        machine = self.machine
+        typed = self.password.text()
+        if machine is None or not typed:
+            return
+        machine.secret_ref = secrets.ref_for_machine(machine.name)
+        stored = secrets.put(machine.secret_ref, typed)
+        self.password.clear()
+        if stored:
+            self.password_state.setText("saved")
+            self.result.setText("")
+        else:
+            self.password_state.setText("not saved")
+            self.result.setText(secrets.last_error()
+                                or "The password could not be stored. Is Service "
+                                   "Officer running as administrator?")
+        self.changed.emit()
+
+    def _forget_password(self):
+        machine = self.machine
+        if machine is None:
+            return
+        secrets.forget(machine.secret_ref or secrets.ref_for_machine(machine.name))
+        self.password.clear()
+        self.password_state.setText("not set")
+        self.result.setText("Forgotten. That machine cannot be reached with a "
+                            "password until a new one is set.")
+        self.changed.emit()
 
     def _browse(self):
         from PySide6.QtWidgets import QFileDialog
@@ -456,39 +528,74 @@ class MachineDetail(_Page):
             said.append(can.why)
         self.result.setText("  ".join(said))
 
-    def _setup(self):
-        """The exact commands this machine needs, for the services chosen.
+    def _services_here(self) -> list:
+        """The units chosen for this machine. Walked up to the page that holds the
+        config, because the detail deliberately knows only its own machine."""
+        page = self.parent()
+        while page is not None and not hasattr(page, "cfg"):
+            page = page.parent()
+        if page is None:
+            return []
+        return sorted(s.name for s in page.cfg().services
+                      if (s.machine or "") == self.machine.name)
 
-        No unit name is hard-coded anywhere in the app: they come from what the
-        user picked. This turns "which privilege do I grant?" from a support
-        question into a copyable block.
+    def _setup(self):
+        """One block that can be pasted and will run. That is the whole
+        requirement, and the first version failed it.
+
+        It mixed commands to type with the *contents of a file*, so pasting it put
+        a sudoers line into a shell and got "syntax error near unexpected token".
+        A block that looks like a script has to be a script: the file is written
+        with a heredoc, `usermod` is called by full path because it lives in
+        /usr/sbin and is not on a normal PATH, and the result is checked with
+        `visudo -c` — a malformed sudoers file can take sudo away from everyone on
+        the machine, so it must never be left unverified.
+
+        No unit name is hard-coded in the app: they come from what the user picked.
         """
         machine = self.machine
         if machine is None:
             return
-        page = self.parent()
-        services = []
-        while page is not None and not hasattr(page, "cfg"):
-            page = page.parent()
-        if page is not None:
-            services = sorted(s.name for s in page.cfg().services
-                              if (s.machine or "") == machine.name)
-        account = machine.username or "svcofficer"
-        verbs = ("start", "stop", "restart")
-        if services:
-            allowed = ", \\\n    ".join(
-                f"/usr/bin/systemctl {verb} {unit}"
-                for unit in services for verb in verbs)
-        else:
-            allowed = ("# add services for this machine on the Services page "
-                       "first,\n    # and this list will name them")
-        text = (
-            f"# On {machine.where()}, as root:\n"
-            f"usermod -aG systemd-journal {account}\n\n"
-            f"# /etc/sudoers.d/service-officer — only these units, only these "
-            f"verbs:\n"
-            f"{account} ALL=(root) NOPASSWD: {allowed}\n")
         from PySide6.QtWidgets import QApplication
-        QApplication.clipboard().setText(text)
-        self.result.setText(f"Copied. {len(services)} service(s) covered — paste "
-                            f"it into a root shell on {machine.where()}.")
+
+        account = machine.username or "svcofficer"
+        if account == "root":
+            # Nothing to grant. Saying so is the useful answer; producing a
+            # sudoers file for root would be theatre.
+            QApplication.clipboard().setText(
+                f"# Nothing to set up on {machine.where()}: root already has\n"
+                f"# every privilege this app needs, and reads the journal.\n")
+            self.result.setText("Signing in as root needs no setup on that "
+                                "machine — nothing to run.")
+            return
+
+        services = self._services_here()
+        lines = [f"# Run this on {machine.where()} as root.",
+                 f"# If you are not root: sudo -i   (or su -)",
+                 "",
+                 f"/usr/sbin/usermod -aG systemd-journal {account}"]
+        if services:
+            verbs = ("start", "stop", "restart")
+            allowed = ", \\\n    ".join(f"/usr/bin/systemctl {verb} {unit}"
+                                        for unit in services for verb in verbs)
+            lines += [
+                "",
+                "cat > /etc/sudoers.d/service-officer <<'EOF'",
+                f"{account} ALL=(root) NOPASSWD: {allowed}",
+                "EOF",
+                "chmod 0440 /etc/sudoers.d/service-officer",
+                "# Refuse a broken file rather than discovering sudo is gone:",
+                "visudo -cf /etc/sudoers.d/service-officer",
+            ]
+        else:
+            lines += ["",
+                      "# Choose this machine's services on the Services page and",
+                      "# copy this again — the sudo rule will then name them, and",
+                      "# grant nothing beyond them."]
+        QApplication.clipboard().setText("\n".join(lines) + "\n")
+        self.result.setText(
+            f"Copied — paste the whole block into a root shell on "
+            f"{machine.where()}. {len(services)} service(s) covered."
+            if services else
+            "Copied. It only adds the journal group so far: choose this machine's "
+            "services first and copy again to include the sudo rule.")

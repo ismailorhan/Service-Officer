@@ -214,8 +214,13 @@ class SshRunner:
             hostname=self._m.address or self._m.name,
             port=self._m.port or 22,
             username=self._m.username or None,
-            key_filename=self._m.key_path or None,
-            password=_secret_for(self._m) or None,
+            # Password auth and key auth are separate choices, so only the
+            # chosen one is offered. Handing paramiko both makes it try the key
+            # first and report *that* failure, which sends you to the wrong field.
+            key_filename=(self._m.key_path or None
+                          if self._m.auth != "password" else None),
+            password=(_secret_for(self._m) or None
+                      if self._m.auth == "password" else None),
             timeout=10, auth_timeout=10, banner_timeout=10,
             look_for_keys=not self._m.key_path, allow_agent=False,
         )
@@ -270,10 +275,12 @@ class _PinnedHostKey:
 def _secret_for(machine):
     """The stored password for this target, or "".
 
-    A placeholder until the secret store lands: nothing is read from the config
-    file, because a password does not belong in `services.json`.
+    Read from the secret store, never from the config file — `services.json` is a
+    document people are invited to hand-edit.
     """
-    return ""
+    from . import secrets
+    ref = getattr(machine, "secret_ref", "") or ""
+    return secrets.get(ref) if ref else ""
 
 
 # ---------------------------------------------------------------------------
