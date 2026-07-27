@@ -122,8 +122,34 @@ class Event:
         return self.is_stop and self.state.exit_code not in (0,)
 
 
+#: What any store has to answer, whether it holds the data or fetches it over a
+#: network. The coming remote store is not a subclass — it asks a hub instead of
+#: reading a dict — so the surface is written down rather than inherited, and both
+#: stores are checked against it. Grown from
+#: `grep -rhoE "(store|_store)\.[a-z_]+" ui/ app.py`; add to it when the interface
+#: starts calling something new, and the remote store fails until it grows one too.
+READ_API = (
+    "status_of", "get", "snapshot", "counts", "any_pending",
+    "health_of", "health_detail", "health_timing",
+    "start_type", "is_disabled", "machine_state",
+    "subscribe", "unsubscribe",
+)
+#: Everything that changes state. A client sends these to the hub as requests
+#: instead of applying them locally, which is the whole difference between the two
+#: stores — so they are named apart from the readers and must not overlap with them.
+WRITE_API = (
+    "update", "set_start_type", "set_health", "set_health_timing",
+    "note_machine", "expect_stop", "clear_expected", "keep_only", "forget",
+)
+
+
 class Store:
-    """Thread-safe status map plus a subscriber list."""
+    """Thread-safe status map plus a subscriber list.
+
+    Reads and writes are named in READ_API and WRITE_API above, because a second
+    implementation — the client's remote store — has to satisfy the reads without
+    inheriting a line, and must send the writes to the hub rather than doing them.
+    """
 
     def __init__(self):
         self._states: dict = {}
