@@ -1954,3 +1954,72 @@ def test_this_computer_is_not_described_as_answering(qapp):
     page = panel_mod.MainPanel(cfg, store=st.Store()).machines_page
 
     assert page._reachability(cfg.machines[0]) == ("", "This PC", "running", "")
+
+
+def _check_kinds_offered(detail):
+    """{label: enabled} from the Add check menu."""
+    return {a.text(): a.isEnabled() for a in detail.add_menu.actions()}
+
+
+def test_checks_a_machine_cannot_do_are_not_offered_for_it(qapp):
+    """A File or Command check needs to reach into the machine, and a remote Windows
+    machine has no way to do either yet. Offering them means configuring a check whose
+    only possible outcome is failure — and until today it was worse than that: the
+    check ran here and reported this computer's answer as that machine's."""
+    cfg = cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="sc-sql", kind="windows",
+                                  address="10.77.3.112"),
+                  cfg_mod.Machine(name="hanadev", kind="linux",
+                                  address="hanadev")],
+        services=[cfg_mod.Service(name="AppEngine"),
+                  cfg_mod.Service(name="B1ServerTools64", machine="sc-sql"),
+                  cfg_mod.Service(name="webclient.service", machine="hanadev")])
+    win = panel_mod.MainPanel(cfg)
+    page = win.services_page
+
+    _select(page, "B1ServerTools64")
+    page._open_selected()
+    offered = _check_kinds_offered(page.detail)
+    assert offered["A port answers"] is True
+    assert offered["A URL answers"] is True
+    assert offered["A file is being written"] is False
+    assert offered["A command succeeds"] is False
+    assert "another Windows machine" in page.detail.add_menu.toolTip()
+
+    # Over SSH both are genuinely possible, which is what makes HANA checkable.
+    _select(page, "webclient.service")
+    page._open_selected()
+    offered = _check_kinds_offered(page.detail)
+    assert offered["A file is being written"] is True
+    assert offered["A command succeeds"] is True
+
+    # And on this computer everything is available, as it always was.
+    _select(page, "AppEngine")
+    page._open_selected()
+    assert all(_check_kinds_offered(page.detail).values())
+    win.deleteLater()
+
+
+def test_a_check_that_was_already_configured_still_shows(qapp):
+    """Somebody may have made one before this rule existed, or moved a service to
+    another machine afterwards. Hiding it would lose the setting silently; it is shown,
+    and it says why it cannot pass."""
+    cfg = cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="sc-sql", kind="windows",
+                                  address="10.77.3.112")],
+        services=[cfg_mod.Service(
+            name="B1ServerTools64", machine="sc-sql",
+            health=cfg_mod.Health(enabled=True, checks=[
+                cfg_mod.HealthCheck(kind="command",
+                                    command="sc query MSSQLSERVER")]))])
+    win = panel_mod.MainPanel(cfg)
+    page = win.services_page
+    _select(page, "B1ServerTools64")
+    page._open_selected()
+
+    said = " ".join(lb.text() for lb in page.detail.findChildren(QLabel))
+    assert "sc query MSSQLSERVER" in said
+    assert "not available on another Windows machine" in said
+    win.deleteLater()

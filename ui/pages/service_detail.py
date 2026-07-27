@@ -235,12 +235,16 @@ class ServiceDetail(_Page):
         self.add_button.setProperty("kind", "primary")
         self.add_button.setCursor(Qt.PointingHandCursor)
         self.add_menu = QMenu(self.add_button)
+        #: kind -> the action, so a kind the service's machine cannot do can be
+        #: greyed rather than offered and then failed
+        self._kind_actions = {}
         for text, kind in (("A port answers", "tcp"),
                            ("A URL answers", "http"),
                            ("It has a process", "process"),
                            ("A file is being written", "file"),
                            ("A command succeeds", "command")):
-            self.add_menu.addAction(text, lambda k=kind: self._add_check(k))
+            action = self.add_menu.addAction(text, lambda k=kind: self._add_check(k))
+            self._kind_actions[kind] = action
         self.add_button.setMenu(self.add_menu)
         add_row.addWidget(self.add_button)
         self.check_now_button = _button("Check now", None, self._check_now)
@@ -413,10 +417,49 @@ class ServiceDetail(_Page):
         self.health_note.setProperty("role", "section" if checks else "hint")
         self.health_note.style().unpolish(self.health_note)
         self.health_note.style().polish(self.health_note)
+        self._offer_only_what_the_machine_can_do()
         for index, check in enumerate(checks):
             self.checks_lay.addWidget(self._check_row(index, check))
         self.health_rules.setVisible(bool(checks))
         self._sync_health_enabled()
+
+    #: Kinds that need to reach *into* the machine rather than at it over the
+    #: network, and the reason a remote Windows machine cannot do them. Over SSH both
+    #: are ordinary — which is what makes `su - hdbadm -c "HDB info"` a health check
+    #: rather than a note in a runbook.
+    REACHES_INSIDE = ("file", "command")
+    NOT_HERE = ("not available on another Windows machine — reaching into it needs "
+                "something we do not have there yet")
+
+    def _machine_record(self):
+        """The service's machine, from the config this page is editing."""
+        page = self.parent()
+        while page is not None and not hasattr(page, "cfg"):
+            page = page.parent()
+        if page is None or self.svc is None:
+            return None
+        return page.cfg().machine(self.svc.machine or "")
+
+    def _cannot_reach_inside(self) -> bool:
+        machine = self._machine_record()
+        if machine is None:
+            return False
+        return bool(machine.name) and not machine.is_linux
+
+    def _offer_only_what_the_machine_can_do(self) -> None:
+        """Grey the kinds this service's machine cannot answer, and say why.
+
+        Not hidden: a menu that changes shape depending on which service is selected
+        is a menu nobody trusts. Greyed with a reason is a smaller surprise than a
+        check that can only ever fail — and until today those checks did not fail,
+        they answered from this computer and called it the other machine's.
+        """
+        blocked = self._cannot_reach_inside()
+        for kind, action in self._kind_actions.items():
+            unavailable = blocked and kind in self.REACHES_INSIDE
+            action.setEnabled(not unavailable)
+            action.setToolTip(self.NOT_HERE if unavailable else "")
+        self.add_menu.setToolTip(self.NOT_HERE if blocked else "")
 
     #: what to call each kind in the one-line summary
     KIND_NAMES = {"tcp": "PORT", "http": "URL", "process": "PROCESS",
@@ -463,6 +506,12 @@ class ServiceDetail(_Page):
         remove.clicked.connect(lambda _=False, i=index: self._remove_check(i))
         head.addWidget(remove)
         outer.addLayout(head)
+
+        # A check that cannot work where this service lives — configured before the
+        # service moved, or before the kinds were filtered. Shown, not hidden: losing
+        # somebody's setting silently is worse than telling them it cannot pass.
+        if check.kind in self.REACHES_INSIDE and self._cannot_reach_inside():
+            outer.addWidget(_label(self.NOT_HERE, "hint", wrap=True))
 
         # Double-clicking the row opens it too. The Edit button stays, because a
         # double-click is not something anyone can see is available.
