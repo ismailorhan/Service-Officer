@@ -1488,13 +1488,33 @@ git commit -m "Run the engine as a Windows service"
 
 ## Task 9: The tray app as a client
 
+**Two kinds of settings exist from here on, and the difference has to be visible.**
+Getting this wrong means five people each believing they can change the theme for
+everyone, or that retention is somebody else's problem:
+
+| | Lives where | Examples |
+|---|---|---|
+**The landscape** | the hub, one copy, shared | services, machines, categories, stacks, triggers, health checks, recovery rules, history retention |
+**This client** | the machine it runs on | which hub, its token, the pinned certificate, theme, whether the tray starts with Windows, whether *this* screen shows notifications |
+
+So a client needs a small local file of its own. It is not a second config: it holds
+nothing about any service, and losing it costs a re-pairing and nothing else.
+
 **Files:**
-- Modify: `app.py`, `run.bat`
-- Create: `tests/test_client_mode.py`
+- Modify: `app.py`, `run.bat`, `ui/pages/general.py`
+- Create: `core/local.py`, `tests/test_client_mode.py`, `tests/test_local_settings.py`
 
 **Interfaces:**
 - Consumes: `HubClient` (Task 6).
-- Produces: `app.py --connect <url> --token-from <name>`; embedded mode unchanged when neither is given.
+- Produces:
+  - `app.py --connect <url> [--token <token>] [--store-only]`; embedded mode unchanged
+    when `--connect` is absent
+  - `local.Settings(hub_url="", theme="system", auto_start=False, notify=True,
+    hub_fingerprint="")` — this client's own, in `client.json` beside `services.json`
+  - `local.load() -> Settings`, `local.save(settings) -> None`
+  - `local.token(url) -> str`, `local.set_token(url, token) -> bool`,
+    `local.forget_token(url) -> None` — the token itself in the DPAPI store, never in
+    `client.json`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1617,10 +1637,80 @@ run.bat -c https://localhost:8797
 ```
 Expected: the same panel, the same tray, the same rows — reading the hub. Restart a service from the panel and watch the row change; confirm from `Get-Service` that it really happened.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: A page to enter the hub's details in**
+
+A command-line flag is fine for the first pairing and useless when the hub moves, the
+token is revoked or the certificate is replaced. So the panel's **Settings** page gains
+a *Connection* section at the top — the first thing on the page, because it decides what
+everything else on every other page means.
+
+Built out of what the Machines page already uses, deliberately: the same field shape,
+the same `_SecretEdit` that shows ten dots for a stored secret and clears on focus, the
+same pinned-fingerprint idiom, the same `Test connection` that reports in the
+transport's own words. Somebody who has added a Linux machine already knows this page.
+
+| Field | Note beside it |
+|---|---|
+| **Managed by** — `This computer` / `A hub` | Everything else here follows from this. |
+| **Hub** — `https://ctl052:8797` | Where the service is. The name in the certificate, so `localhost` and the machine's name are not interchangeable. |
+| **Token** — dots, `Forget` | Made on the hub with `hub.exe client add <name>`, shown there once. Kept encrypted on this computer. |
+| **Certificate** — `SHA256:…`, `Get it` | Pinned the first time. A different one later is refused — the same rule as a Linux machine's host key. |
+| **Status** — `connected · last event 2s ago` | Live, from the client's own event stream. |
+| `Test connection` | Says what happened: a wrong token, a hub that is not answering and a certificate that has changed need different things done about them. |
+
+Below it, the settings that are this client's own are marked as such, and the ones that
+belong to the landscape are marked as the hub's — with the hub-owned ones **read-only
+while disconnected**, because editing a copy of something you cannot save is how the
+"panel edits a copy" bug felt from the outside on 2026-07-26.
+
+Switching mode **applies on the next start**, and the page says so with a `Restart now`
+button rather than pretending otherwise. Swapping a live engine for a client means
+stopping the poller, the health monitor, the watchdog and the scheduler and starting a
+socket in their place; it is a worthwhile thing to do later and a poor thing to do in the
+same change that introduces the mode.
+
+Write the test first:
+
+```python
+def test_the_connection_section_writes_this_client_s_own_file(qapp, tmp_path,
+                                                             monkeypatch):
+    """Not services.json: which hub this machine talks to is nobody else's setting,
+    and a client that wrote it to the shared config would tell four other people to
+    connect to their own machine."""
+    from core import local
+    monkeypatch.setattr(local, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local, "set_token", lambda url, token: True)
+    win = panel_mod.MainPanel(cfg_mod.Config(), store=st.Store())
+    page = win.general_page
+
+    page.managed_by.setCurrentIndex(1)                 # a hub
+    page.hub_url.setText("https://ctl052:8797")
+    page.hub_token.setText("a-token")
+    page._save_connection()
+
+    assert local.load().hub_url == "https://ctl052:8797"
+    assert "hub_url" in (tmp_path / "client.json").read_text(encoding="utf-8")
+    # And nothing about the hub leaked into the shared document.
+    assert "ctl052" not in cfg_mod.to_dict(win.config()).__str__()
+    win.deleteLater()
+
+
+def test_the_hub_s_own_settings_warn_before_cutting_the_client_off(qapp):
+    """The port the hub listens on is part of the shared config, so a client can edit
+    it — and the moment it is saved, that client is talking to the wrong port."""
+    win = panel_mod.MainPanel(cfg_mod.Config(), store=st.Store())
+    page = win.general_page
+
+    assert page.hub_port_warning(8797, 9000) == (
+        "Changing the port disconnects every client, including this one. They will "
+        "need the new address before they can reach the hub again.")
+    assert page.hub_port_warning(8797, 8797) == ""
+```
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add app.py run.bat tests/test_client_mode.py
+git add app.py run.bat core/local.py ui/pages/general.py tests/test_client_mode.py tests/test_local_settings.py
 git commit -m "Let the tray app read a hub instead of its own engine"
 ```
 
