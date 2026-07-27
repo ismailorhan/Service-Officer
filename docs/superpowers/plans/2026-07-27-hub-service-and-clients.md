@@ -1525,6 +1525,37 @@ so a client on another workstation must not label it "This PC", and must not cal
 and in the snapshot. Getting this wrong shows a workstation's own hostname against a
 server's services, which reads as the app managing the wrong computer.
 
+### What a client sees in the Machines list, exactly
+
+The list is the **landscape**, and the landscape is shared. So a client sees the hub's
+machine and every machine in the config — and **not** the computer it happens to be
+running on. That is deliberate: if the list included each client's own PC, five people
+would see five different lists, and a row labelled "This PC" would mean a different
+machine to each of them. That is the class of lie the whole of 2026-07-26 was spent
+removing.
+
+The workstation you are sitting at is therefore watched **only if somebody added it**,
+exactly like `sc-sql` — which means the two firewall rule groups on it and the hub's
+account being an administrator there. That is a real cost and it is the honest one: the
+hub manages what it can reach, and being able to see a machine's tray icon is not the
+same as being able to reach its service manager.
+
+Two chips, defined so they cannot drift:
+
+| Chip | On which row | Why it is not the other one |
+|---|---|---|
+| **the hub** | the row for `machine=""` | Named by the hub, always present, and the one machine that needs no configuration to be reachable — it is where the engine runs. |
+| **this computer** | a configured machine whose address or name matches this client's own host name | Only when somebody added this workstation on purpose. Its status still comes from the hub over RPC, like any other machine's: the chip says "you are sitting here", not "this row is special". |
+
+On the hub's own machine both chips land on the same row, and the row shows **the hub**
+only — "this computer" adds nothing there and two chips on one row invites the question
+of what the difference is.
+
+**What this does not do, and will not:** let the hub manage a client's machine *through*
+the client. The client is not an agent, it is not always running, and a landscape whose
+truth depends on somebody being logged in is the problem this whole plan exists to
+remove.
+
 **Two kinds of settings exist from here on, and the difference has to be visible.**
 Getting this wrong means five people each believing they can change the theme for
 everyone, or that retention is somebody else's problem:
@@ -1764,6 +1795,55 @@ def test_the_local_machine_is_named_by_the_hub_not_by_this_one(qapp):
 
     assert "CTL052" in title
     assert win.machines_page._reachability(win.config().machines[0])[1] == "the hub"
+    win.deleteLater()
+
+
+def test_the_client_s_own_workstation_is_not_in_the_list_unless_it_was_added(
+        qapp, monkeypatch):
+    """The list is the landscape, and the landscape is shared. A row for whichever PC
+    the panel happens to be open on would mean a different machine to each of five
+    people."""
+    monkeypatch.setattr(panel_mod.control, "host_name", lambda: "ISMAIL-LAPTOP")
+    cfg = cfg_mod.Config(machines=[cfg_mod.Machine(),
+                                   cfg_mod.Machine(name="sc-sql", kind="windows",
+                                                   address="10.77.3.112")])
+    win = panel_mod.MainPanel(cfg, store=st.Store())
+    win.set_hub_identity(name="CTL052", version="2.2.0")
+    page = win.machines_page
+    page.refresh()
+
+    shown = [page._title(m) for m in win.config().machines]
+    assert not any("ISMAIL-LAPTOP" in title for title in shown)
+    assert page.list.count() == 2
+
+
+def test_a_workstation_that_was_added_is_marked_as_the_one_you_are_on(qapp,
+                                                                     monkeypatch):
+    """So that somebody looking at five machines can tell which row is under their own
+    keyboard — without that row pretending to be reached any differently."""
+    monkeypatch.setattr(panel_mod.control, "host_name", lambda: "ISMAIL-LAPTOP")
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),
+        cfg_mod.Machine(name="ismail-laptop", label="Ismail's laptop",
+                        kind="windows", address="ISMAIL-LAPTOP")])
+    win = panel_mod.MainPanel(cfg, store=st.Store())
+    win.set_hub_identity(name="CTL052", version="2.2.0")
+    page = win.machines_page
+
+    assert page._reachability(cfg.machines[0])[1] == "the hub"
+    assert page._reachability(cfg.machines[1])[1] == "this computer"
+    win.deleteLater()
+
+
+def test_on_the_hub_s_own_machine_only_the_hub_chip_shows(qapp, monkeypatch):
+    """Both would be true there, and two chips on one row invites the question of what
+    the difference is."""
+    monkeypatch.setattr(panel_mod.control, "host_name", lambda: "CTL052")
+    cfg = cfg_mod.Config(machines=[cfg_mod.Machine()])
+    win = panel_mod.MainPanel(cfg, store=st.Store())
+    win.set_hub_identity(name="CTL052", version="2.2.0")
+
+    assert win.machines_page._reachability(cfg.machines[0])[1] == "the hub"
     win.deleteLater()
 
 
