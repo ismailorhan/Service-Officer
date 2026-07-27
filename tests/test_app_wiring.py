@@ -59,12 +59,17 @@ def _icon_pixels(app):
 
 def test_a_health_verdict_repaints_the_tray_icon(application, qtbot=None):
     """It only got repainted from the SCM event handler, and a health verdict is
-    not an SCM event — so the icon stayed green while a service was dead."""
+    not an SCM event — so the icon stayed green while a service was dead.
+
+    Driven from the engine's own verdict callback, which is where the store write and
+    the history row live now; the app's job from there on is the repaint, and that is
+    what this checks.
+    """
     application.tray.apply_state()
     green = _icon_pixels(application)
     assert application.tray._anything_unsettled() is False
 
-    application.health_signals.verdict.emit(
+    application.engine._health_verdict(
         "AppEngine", "", health.UNHEALTHY,
         "failed: something answers on CTL052:54002")
 
@@ -72,7 +77,7 @@ def test_a_health_verdict_repaints_the_tray_icon(application, qtbot=None):
     assert application.tray._anything_unsettled() is True
     assert _icon_pixels(application) != green, "the icon did not change"
 
-    application.health_signals.verdict.emit("AppEngine", "", health.HEALTHY, "ok")
+    application.engine._health_verdict("AppEngine", "", health.HEALTHY, "ok")
     assert _icon_pixels(application) == green
 
 
@@ -250,17 +255,27 @@ def test_the_ui_thread_never_asks_another_machine_anything(application, monkeypa
     assert "sc-sql" in soon and None in soon
 
 
-def test_an_action_brings_its_status_back_rather_than_asking_again(application,
-                                                                  monkeypatch):
-    """The handler runs on the UI thread, so the round trip belongs to the worker
-    that already made one."""
+def test_an_action_reads_the_machine_once_on_its_own_thread(application,
+                                                           monkeypatch):
+    """The round trip belongs to the worker that is already making one, and the UI
+    thread must not make a second: on another machine that is a network call, and the
+    window stops redrawing for the length of it.
+
+    Driven through do_action — the real path — so it covers the engine doing the work
+    and the app doing the pixels, which is what this file is for.
+    """
     application.cfg = _two_machines()
     asked = _watching_control(monkeypatch)
+    monkeypatch.setattr(app_mod.engine_mod.control, "restart_service",
+                        lambda name, machine="": None)
+    monkeypatch.setattr(app_mod.engine_mod.control, "query_status",
+                        lambda name, machine="": st.RUNNING)
 
-    application._action_done("B1ServerTools64", "sc-sql", "restart", None,
-                            status=st.RUNNING)
+    application.do_action("restart", "B1ServerTools64", "sc-sql")
+    assert application.engine.wait_for_actions(timeout=5)
 
-    assert [(w, m) for w, m in asked if m] == [], "asked the machine again"
+    # The UI thread asked nothing of the machine; the engine's thread asked once.
+    assert [(w, m) for w, m in asked if m] == [], "the UI thread asked the machine"
     assert application.store.status_of("B1ServerTools64", "sc-sql") == st.RUNNING
 
 
@@ -296,11 +311,18 @@ def test_a_restart_says_starting_even_though_the_status_never_changed(
         assert application.store.health_of("webclient.service", "hanadev") == \
             health.HEALTHY, "could not reach the pre-restart state"
 
-        monkeypatch.setattr(app_mod.control, "query_status",
+        monkeypatch.setattr(app_mod.engine_mod.control, "query_status",
                             lambda *_a, **_k: st.RUNNING)
-        application._action_done("webclient.service", "hanadev", "restart", None)
+        monkeypatch.setattr(app_mod.engine_mod.control, "restart_service",
+                            lambda *_a, **_k: None)
+        application.do_action("restart", "webclient.service", "hanadev")
+        assert application.engine.wait_for_actions(timeout=5)
     assert application.store.health_of("webclient.service", "hanadev") == \
         health.STARTING
+    # The engine finished on its own thread; the busy label is cleared by the
+    # completion signal, which needs the event loop turned to be delivered. Without
+    # this the row still reads "Restarting…" — correct, and not what is being tested.
+    QApplication.instance().processEvents()
     application.flyout.apply_states()
     assert application.flyout._rows[("hanadev", "webclient.service")] \
         .chip.text() == st.LABEL_STARTING

@@ -16,10 +16,9 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import autostart
-from core import (applog, config as cfg_mod, connectors, control, db, health,
-                  history, poller as poller_mod, scm, schedule, stacks)
+from core import (applog, config as cfg_mod, control, db, engine as engine_mod,
+                  health, history)
 from core import state as st
-from core.watchdog import Watchdog
 from ui import flyout as flyout_mod, hover as hover_mod, icons, panel as panel_mod
 from ui import theme
 from ui.tray import StateBridge, Tray
@@ -36,17 +35,6 @@ class StackSignals(QObject):
 class TriggerSignals(QObject):
     """A trigger fires on the scheduler's thread; the work belongs on the UI one."""
     fire = Signal(object)
-
-
-class PollSignals(QObject):
-    """A polled status arrives on the poller's thread; the store belongs to Qt's.
-
-    `status` carries None when the machine could not be reached at all, which is
-    a different thing from a service being stopped and has to stay different all
-    the way to the screen.
-    """
-    status = Signal(str, str, object)        # service, machine, Status or None
-    unreachable = Signal(str, str)           # machine, why
 
 
 class HealthSignals(QObject):
@@ -83,14 +71,14 @@ class Application(QObject):
         self.qt.setWindowIcon(icons.base_icon("green"))
 
         self.cfg = cfg_mod.load()
-        # How a machine is reached is a property of the machine, so the transport
-        # registry reads it from the config rather than being told per call.
-        connectors.use_config(lambda: self.cfg)
         self.store = st.store
         #: set while a trigger's action is in flight, so its outcome is recorded
         self._pending_trigger = None
         #: the running bulk action, so one tally is reported instead of N dialogs
         self._bulk = None
+        #: whether to put a dialog up for a failure, per service, remembered from
+        #: the request because the engine's answer arrives with no opinion about it
+        self._announce: dict = {}
         theme.set_mode(self.cfg.theme)
         self.qt.setStyleSheet(theme.sheet())
         # With "system" chosen, follow Windows when it flips light/dark.
@@ -100,59 +88,47 @@ class Application(QObject):
         except Exception:
             pass
 
-        # --- core ---------------------------------------------------------
-        history.attach(self.store, lambda: self.cfg.history.enabled)
-        # Once shortly after start, then daily. A server runs for weeks without
-        # this app being restarted, and retention that only ran at startup was
-        # retention that never ran.
-        QTimer.singleShot(3000, self._trim_history)
-        self._trim_timer = QTimer(self)
-        self._trim_timer.setInterval(24 * 60 * 60 * 1000)
-        self._trim_timer.timeout.connect(self._trim_history)
-        self._trim_timer.start()
-
-        self.watchdog = Watchdog(
-            config_getter=lambda: self.cfg,
-            control=control,
-            store=self.store,
-            notify=lambda title, text: self.tray.notify(title, text),
-            on_log=lambda event, note: history.record(event, note=note),
-        )
-        self.watchdog.attach(self.store)
-
-        self.runner = stacks.Runner(control, self.store,
-                                    on_log=lambda text: log.info(text))
-
+        # --- the engine ---------------------------------------------------
+        # Everything that is not drawing lives in core/engine.py, so the same code
+        # runs here and in the hub service. Its callbacks arrive on worker threads;
+        # each one is turned into a Qt signal, because touching a widget from
+        # another thread is the crash that has no stack trace worth reading.
         self.health_signals = HealthSignals()
         self.health_signals.verdict.connect(self._on_health_verdict)
         self.health_signals.act.connect(self._on_health_action)
-        self.health = health.Monitor(
-            config_getter=lambda: self.cfg,
+        self.trigger_signals = TriggerSignals()
+        self.trigger_signals.fire.connect(self.run_trigger)
+        self.stack_signals = StackSignals()
+        self.stack_signals.step.connect(self._on_stack_step)
+        self.stack_signals.done.connect(self._on_stack_done)
+        self.action_signals = ActionSignals()
+        self.action_signals.done.connect(self._action_done)
+
+        self.engine = engine_mod.Engine(
+            lambda: self.cfg,
             store=self.store,
-            control=control,
-            on_verdict=lambda svc, verdict, detail, _results:
-                self.health_signals.verdict.emit(svc.name, svc.machine,
-                                                 verdict, detail),
-            on_action=lambda svc, _action, detail:
-                self.health_signals.act.emit(svc.name, svc.machine, detail),
+            on_health=lambda service, machine, verdict, detail:
+                self.health_signals.verdict.emit(service, machine, verdict, detail),
+            on_action_done=lambda **facts:
+                self.action_signals.done.emit(
+                    facts["service"], facts["machine"], facts["action"],
+                    facts["error"], not facts.get("bulk"), facts.get("bulk", False),
+                    facts.get("status", "")),
+            on_stack_step=lambda index, total, service, action, phase:
+                self.stack_signals.step.emit(index, total, service, action, phase),
+            on_stack_done=lambda result: self.stack_signals.done.emit(result),
+            on_trigger=lambda trigger: self.trigger_signals.fire.emit(trigger),
+            on_error=lambda kind, text: self.tray.notify("Service Officer", text),
         )
 
-        # Remote machines cannot push, so they are asked. Local ones are not:
-        # the SCM already tells us within ~32 ms.
-        self.poll_signals = PollSignals()
-        self.poll_signals.status.connect(self._on_polled)
-        self.poll_signals.unreachable.connect(self._on_unreachable)
-        self.poller = poller_mod.Poller(
-            config_getter=lambda: self.cfg,
-            on_status=lambda name, machine, status:
-                self.poll_signals.status.emit(name, machine, status),
-            on_unreachable=lambda machine, why:
-                self.poll_signals.unreachable.emit(machine, why))
-
-        self.scheduler = schedule.Scheduler(
-            config_getter=lambda: self.cfg,
-            on_fire=lambda trigger: self.trigger_signals.fire.emit(trigger),
-            log=lambda text: log.info(text))
+        # Once shortly after start, then daily. A server runs for weeks without
+        # this app being restarted, and retention that only ran at startup was
+        # retention that never ran.
+        QTimer.singleShot(3000, self.engine.trim_history)
+        self._trim_timer = QTimer(self)
+        self._trim_timer.setInterval(24 * 60 * 60 * 1000)
+        self._trim_timer.timeout.connect(self.engine.trim_history)
+        self._trim_timer.start()
 
         # --- ui -----------------------------------------------------------
         self.tray = Tray(lambda: self.cfg, self.store)
@@ -163,16 +139,6 @@ class Application(QObject):
         self.bridge = StateBridge()
         self.bridge.changed.connect(self._on_state_event)
         self.bridge.attach(self.store)
-
-        self.stack_signals = StackSignals()
-        self.stack_signals.step.connect(self._on_stack_step)
-        self.stack_signals.done.connect(self._on_stack_done)
-
-        self.action_signals = ActionSignals()
-        self.action_signals.done.connect(self._action_done)
-
-        self.trigger_signals = TriggerSignals()
-        self.trigger_signals.fire.connect(self.run_trigger)
 
         self.tray.left_clicked.connect(self._toggle_flyout)
         self.tray.hover.connect(self._on_hover)
@@ -193,12 +159,32 @@ class Application(QObject):
         self.start_type_timer.timeout.connect(self._poll_start_types)
         self.start_type_timer.start()
 
-        # --- SCM push notifications ---------------------------------------
-        self.watcher = scm.Watcher(
-            get_names=lambda: [s.name for s in self.cfg.services if not s.machine],
-            on_change=self._on_scm,
-            safety_query=control.query_status,
-        )
+    # The engine's parts, under the names the rest of this file and the wiring tests
+    # already use. Properties rather than copies: there is one poller, and a second
+    # reference to it that went stale would be a bug nobody could see.
+    @property
+    def health(self):
+        return self.engine.health
+
+    @property
+    def poller(self):
+        return self.engine.poller
+
+    @property
+    def watchdog(self):
+        return self.engine.watchdog
+
+    @property
+    def scheduler(self):
+        return self.engine.scheduler
+
+    @property
+    def runner(self):
+        return self.engine.runner
+
+    @property
+    def watcher(self):
+        return self.engine.watcher
 
     def _wire_flyout(self):
         """One place for the flyout's connections — it is rebuilt on a theme
@@ -210,128 +196,32 @@ class Application(QObject):
         self.flyout.open_settings.connect(lambda: self.open_panel())
         self.flyout.open_services_mmc.connect(self._open_services_mmc)
 
-    def _trim_history(self):
-        """Apply the retention window. Says so in the log when it drops anything,
-        because "where did last month go" deserves an answer."""
-        try:
-            dropped = history.trim(self.cfg.history.retention_days)
-        except Exception:
-            log.exception("could not trim history")
-            return
-        if dropped:
-            log.info("history: dropped %d rows past %d days", dropped,
-                     self.cfg.history.retention_days)
-
     def _poll_start_types(self):
-        """Notice a service being disabled or re-enabled outside this app.
+        """Ask the engine to re-read local start types, and repaint if any moved.
 
-        Local services only, and on a 30-second timer: reading a start type costs
-        0.2 ms here and a network round trip elsewhere, so including remote ones
-        froze the window every half minute for as long as they took. A remote
-        machine reports its start types with each poll instead — see poller.
+        The reading is the engine's; the repainting is ours. Kept as a method here
+        because the flyout calls it as it opens, so Disabled is right the moment
+        somebody looks.
         """
-        changed = False
-        for svc in self.cfg.services:
-            if svc.machine:
-                continue
-            try:
-                found = control.start_type(svc.name, svc.machine)
-            except Exception:
-                continue
-            if found != self.store.start_type(svc.name, svc.machine):
-                self.store.set_start_type(svc.name, found, machine=svc.machine)
-                changed = True
-                log.info("%s start type is now %s", svc.name, found or "unknown")
-        if changed:
+        if self.engine.poll_start_types():
             if self.flyout.isVisible():
                 self.flyout.apply_states()
             self.hover.refresh()
 
     # -- startup -----------------------------------------------------------
     def start(self) -> int:
-        self._prime_states()
+        self.engine.start()
         self.tray.show()
         self.tray.apply_state()
-        self.watcher.start()
-        self.poller.start()
-        # What already ran today is on disk, so a restart doesn't repeat it.
-        try:
-            seeded = self.scheduler.seed_from(history.runs(kind="trigger", limit=200))
-            if seeded:
-                log.info("scheduler: %d trigger(s) already ran today", seeded)
-        except Exception as exc:
-            log.warning("could not read past trigger runs: %s", exc)
-        self.scheduler.start()
-        self.scheduler.run_startup_triggers()
-        self.health.start()
-        watched = sum(1 for s in self.cfg.services if s.health.active)
-        log.info("started with %d service(s), %d stack(s), %d trigger(s), "
-                 "%d health-checked",
-                 len(self.cfg.services), len(self.cfg.stacks),
-                 len(self.cfg.triggers), watched)
         return self.qt.exec()
-
-    def _prime_states(self):
-        """Fill the store before the first paint so nothing shows as Unknown.
-
-        This computer only. Asking another machine here is asking on the thread that
-        paints: the local SCM answers in a fraction of a millisecond, a remote one
-        took fifteen seconds, and a firewalled one forty-two — each of them a window
-        that has stopped redrawing and says "Not Responding". Remote states arrive
-        from the poller, which has a thread for waiting in, within its interval.
-        """
-        for svc in self.cfg.services:
-            if svc.machine:
-                self.poller.poll_soon(svc.machine)
-                continue
-            try:
-                status = control.query_status(svc.name, svc.machine)
-            except Exception:
-                status = st.UNKNOWN
-            self.store.update(svc.name, status, machine=svc.machine)
-            try:
-                self.store.set_start_type(svc.name,
-                                          control.start_type(svc.name, svc.machine),
-                                          machine=svc.machine)
-            except Exception:
-                pass
-
-    # -- core events -------------------------------------------------------
-    def _on_scm(self, name, status, exit_code=0, pid=0):
-        self.store.update(name, status, exit_code=exit_code, pid=pid)
-
-    def _on_polled(self, name, machine, status):
-        """GUI thread: an answer from a machine we had to ask."""
-        if status is None:
-            # Unreachable. Not "stopped" — we do not know, and saying Stopped
-            # about a server that is merely unreachable would send someone to fix
-            # the wrong thing.
-            self.store.update(name, st.UNKNOWN, machine=machine)
-            return
-        self.store.update(name, status.state, exit_code=status.exit_code,
-                          pid=status.pid, machine=machine)
-        if status.start_type:
-            self.store.set_start_type(name, status.start_type, machine=machine)
-        self.store.note_machine(machine, True)
-
-    def _on_unreachable(self, machine, why):
-        """Said once per outage, not once per interval: a machine that is down for
-        an hour must not write 720 identical lines into the log."""
-        self.store.note_machine(machine, False, why)
-        if getattr(self, "_down_note", None) == (machine, why):
-            return
-        self._down_note = (machine, why)
-        log.warning("%s is not answering — %s", machine or "this computer", why)
 
     # -- health ------------------------------------------------------------
     def _on_health_verdict(self, name, machine, verdict, detail):
-        """GUI thread: a service changed between answering and not."""
-        self.store.set_health(name, verdict, detail, machine=machine)
-        # "starting" is not something that happened to a service, it is us saying
-        # we do not know yet. Writing it down would put a row in the timeline
-        # after every restart, next to the restart that already explains it.
-        if self.cfg.history.enabled and verdict != health.STARTING:
-            history.record_health(name, verdict, detail, machine=machine)
+        """GUI thread: a service changed between answering and not.
+
+        The store and the history are the engine's already; this is the half that
+        needs a window — the repaint and the toast.
+        """
         self._refresh_lists()
         label = next((s.display() for s in self.cfg.services
                       if s.name == name and (s.machine or "") == (machine or "")),
@@ -345,13 +235,10 @@ class Application(QObject):
             self.tray.notify("Service Officer", f"{label} is responding again.")
 
     def _on_health_action(self, name, machine, detail):
-        """Health checks asked for a restart. Recorded as its own cause, so the
-        history says why rather than showing an unexplained restart."""
-        log.info("health restart of %s: %s", name, detail)
-        if self.cfg.history.enabled:
-            history.record_action(name, "restart", st.SRC_HEALTH,
-                                  machine=machine, note=detail[:200])
-        self.do_action("restart", name, machine, announce_errors=False)
+        """Health checks asked for a restart. The engine does it and writes the
+        history; this only marks the row busy, since it is our row."""
+        self._mark_busy(name, machine, "Restarting…")
+        self.tray.action_started()
 
     def _refresh_lists(self):
         """Everything that shows a service's state, in one place.
@@ -369,103 +256,63 @@ class Application(QObject):
             self.panel.dashboard.apply_states()
 
     def _on_state_event(self, event):
-        """GUI thread: refresh whatever is on screen."""
+        """GUI thread: refresh whatever is on screen, and say when a service that
+        the watchdog was fighting for came back.
+
+        The health bookkeeping this used to do — note_running, note_stopped, copying
+        the verdict — is the engine's now, done before this signal is delivered.
+        """
         self._refresh_lists()
-        # Health is judged from when a service reached Running, and a stopped
-        # service is not unhealthy — it is stopped.
         machine = event.state.machine
-        if event.status == st.RUNNING:
-            self._note_started(event.name, machine)
-            if self.cfg.notifications.on_recovery and \
-                    self.watchdog.attempts_for(event.name, machine):
-                self.tray.notify("Service Officer", f"{event.name} is running again.")
-        elif not st.is_pending(event.status):
-            self.health.note_stopped(event.name, machine)
-            self._copy_verdict(event.name, machine)
+        if event.status == st.RUNNING and self.cfg.notifications.on_recovery \
+                and self.watchdog.attempts_for(event.name, machine):
+            self.tray.notify("Service Officer", f"{event.name} is running again.")
 
     def _note_started(self, name: str, machine: str = "") -> None:
-        """Tell the monitor a service has just started, and show what it says.
-
-        Said explicitly rather than left to be inferred from a status change,
-        because the change is often never seen: `store.update` publishes only when
-        the status *string* differs, and `systemctl restart` returns with the unit
-        already active again. The app asked, got "Running", saw no difference and
-        stayed quiet — so a restart from the panel went straight back to green with
-        no warm-up at all, on exactly the surface someone was watching.
-        """
-        self.health.note_running(name, machine)
-        self._copy_verdict(name, machine)
+        """Kept as a name the wiring tests use; the work is the engine's."""
+        self.engine.note_started(name, machine)
 
     def _copy_verdict(self, name: str, machine: str = "") -> None:
-        """Copy the monitor's verdict into the store, whatever it is.
-
-        Not a hard-coded "unknown": that overwrote the verdict note_running had
-        *just* published, which is why "Starting…" never reached the screen while
-        the monitor was producing it correctly. The monitor is the authority on
-        health; this only carries its answer to the widgets.
-        """
-        self.store.set_health(name, self.health.verdict(name, machine),
-                              self.health.detail(name, machine), machine=machine)
+        """Kept as a name the wiring tests use; the work is the engine's."""
+        self.engine._copy_verdict(name, machine)
 
     # -- actions -----------------------------------------------------------
     def do_action(self, action: str, name: str, machine: str = "",
                   announce_errors: bool = True, bulk: bool = False):
+        """Ask the engine to do it, and say on screen that it is being done.
+
+        The doing, the history row and the status that comes back are the engine's;
+        the busy label and the spinning gear are ours, because they are pixels.
+        """
         if action == "kill":
             self.kill_process(name, machine)
             return
         verb = {"start": "Starting", "stop": "Stopping", "restart": "Restarting"}[action]
         self._mark_busy(name, machine, verb + "…")
         self.tray.action_started()
-        if self.cfg.history.enabled:
-            history.record_action(name, action, st.SRC_PANEL, machine=machine)
+        self._announce.setdefault((name, machine or ""), announce_errors)
+        try:
+            self.engine.act(action, name, machine, actor=self._actor(), bulk=bulk)
+        except engine_mod.Busy as clash:
+            # Somebody else — a person on another client, or the watchdog — is
+            # already doing this. Said on the row rather than in a dialog: the row
+            # is where the click happened.
+            self._clear_busy(name, machine)
+            self.tray.action_finished()
+            self._mark_busy(name, machine, str(clash))
+            log.info("%s %s: %s", action, name, clash)
 
-        def work():
-            error = None
-            try:
-                if action in ("stop", "restart"):
-                    self.store.expect_stop(name, machine)
-                getattr(control, f"{action}_service")(name, machine=machine)
-            except Exception as exc:
-                # "The service has not been started" when stopping something
-                # already stopped is not a failure, so it isn't reported as one.
-                harmless = control.nothing_to_do(exc)
-                if harmless:
-                    log.info("%s %s: nothing to do, %s", action, name, harmless)
-                else:
-                    error = getattr(exc, "strerror", None) or str(exc)
-                    # Logged, not only shown: a dialog is gone the moment it is
-                    # dismissed, and the one failure that mattered tonight left
-                    # nothing behind but a line saying it was harmless.
-                    log.warning("%s %s%s failed: %s", action, name,
-                                f" on {machine}" if machine else "", error)
-                self.store.clear_expected(name, machine)
-            # Asked here, on this thread, and carried to the handler: it is the same
-            # round trip the action just made, and the handler runs on the UI thread.
-            try:
-                status = control.query_status(name, machine)
-            except Exception:
-                status = ""
-            self.action_signals.done.emit(name, machine, action, error,
-                                          announce_errors, bulk, status)
-        threading.Thread(target=work, daemon=True).start()
+    @staticmethod
+    def _actor() -> str:
+        """Who asked. One operator today, so it is whoever is signed in; with a hub
+        it is the client's name, and the history keeps it either way."""
+        import os
+        return os.environ.get("USERNAME", "")
 
     def _action_done(self, name, machine, action, error, announce=True,
                      bulk=False, status=""):
         self.tray.action_finished()
-        # `status` was read on the worker thread. Falling back to asking is for the
-        # tests that call this directly; the running app always brings it along.
-        if not status:
-            try:
-                status = control.query_status(name, machine)
-            except Exception:
-                status = ""
-        if status:
-            self.store.update(name, status, machine=machine, source=st.SRC_PANEL)
-            # We started it, so we know it just started — even if the status
-            # published nothing because it read "Running" before and after.
-            if error is None and action in ("start", "restart") \
-                    and status == st.RUNNING:
-                self._note_started(name, machine)
+        announce = self._announce.pop((name, machine or ""), announce)
         self._clear_busy(name, machine)
         if self.flyout.isVisible():
             self.flyout.apply_states()
@@ -546,27 +393,13 @@ class Application(QObject):
                                bulk=True)
 
     def _bulk_kill(self, name: str, machine: str):
-        """Kill without its own confirmation — the batch was already confirmed."""
-        error = None
+        """Kill without its own confirmation — the batch was already confirmed. The
+        engine reports through on_action_done like any other action, so the tally is
+        counted where every other one is."""
         try:
-            self.store.expect_stop(name, machine)
-            if self.cfg.history.enabled:
-                history.record_action(name, "kill", st.SRC_PANEL, machine=machine)
-            if not control.process_id(name, machine):
-                # Nothing running to kill — that is the desired end state anyway.
-                log.info("kill %s: no process to kill", name)
-            else:
-                control.kill_process(name, machine)
-        except Exception as exc:
-            self.store.clear_expected(name, machine)
-            if not control.nothing_to_do(exc):
-                error = getattr(exc, "strerror", None) or str(exc)
-        self._bulk_report(name, error)
-        try:
-            self.store.update(name, control.query_status(name, machine),
-                              machine=machine, source=st.SRC_PANEL)
-        except Exception:
-            pass
+            self.engine.kill(name, machine, actor=self._actor())
+        except engine_mod.Busy as clash:
+            self._bulk_report(name, str(clash))
 
     def _bulk_report(self, name: str, error):
         """One tally for the whole batch, announced when the last one lands."""
@@ -608,20 +441,15 @@ class Application(QObject):
         if answer != QMessageBox.Yes:
             return
 
-        self.store.expect_stop(name, machine)     # we did this on purpose
-        if self.cfg.history.enabled:
-            history.record_action(name, "kill", st.SRC_PANEL, machine=machine,
-                                  note=f"process {pid}")
+        self._mark_busy(name, machine, "Killing…")
+        self.tray.action_started()
+        self._announce.setdefault((name, machine or ""), True)
         try:
-            control.kill_process(name, machine)
-            log.info("killed %s (pid %s)", name, pid)
-        except Exception as exc:
-            self.store.clear_expected(name, machine)
-            QMessageBox.warning(None, "Service Officer",
-                                f"Could not kill {label}:\n"
-                                f"{getattr(exc, 'strerror', None) or exc}")
-            return
-        self.refresh()
+            self.engine.kill(name, machine, actor=self._actor())
+        except engine_mod.Busy as clash:
+            self.tray.action_finished()
+            self._clear_busy(name, machine)
+            QMessageBox.information(None, "Service Officer", str(clash))
 
     def run_trigger(self, trigger):
         """Do what a trigger says. Shared by the scheduler and its Run now button.
@@ -668,56 +496,36 @@ class Application(QObject):
         self.run_stack(stack)
 
     def run_stack(self, stack_or_name, _action=None):
-        """The second argument exists only because Settings' test-run signal
-        still carries one; a stack has a single way to run."""
         """Accepts a name (tray menu) or a Stack (a test run from Settings, which
-        must use the values currently on screen rather than the saved ones)."""
-        stack = (self.cfg.stack(stack_or_name)
-                 if isinstance(stack_or_name, str) else stack_or_name)
-        if not stack or not stack.steps:
-            return
-        if self.runner.busy:
-            QMessageBox.information(None, "Service Officer",
-                                    "A stack run is already in progress.")
-            return
+        must use the values currently on screen rather than the saved ones).
+
+        The second argument exists only because Settings' test-run signal still
+        carries one; a stack has a single way to run.
+        """
         self.hover.dismiss()
         self.tray.action_started()
-        machine_for = {s.name: s.machine for s in self.cfg.services}
-
-        def work():
-            result = self.runner.run(
-                stack,
-                on_step=lambda i, total, svc, act, phase:
-                    self.stack_signals.step.emit(i, total, svc, act, phase),
-                machine_for=lambda n: machine_for.get(n, ""))
-            self.stack_signals.done.emit(result)
-        threading.Thread(target=work, daemon=True).start()
+        if not self.engine.run_stack(stack_or_name, actor=self._actor()):
+            self.tray.action_finished()
+            if self.runner.busy:
+                QMessageBox.information(None, "Service Officer",
+                                        "A stack run is already in progress.")
 
     def _on_stack_step(self, index, total, service, action, phase):
+        """The pixels of a stack step. Its history row and its "it just started"
+        are the engine's, done before this signal arrives."""
+        self.engine.stack_step_landed(service, action, phase)
         if phase == "begin":
             self.flyout.mark_busy(service, "", f"{action} {index}/{total}…")
-            if self.cfg.history.enabled:
-                history.record_action(service, action, st.SRC_STACK,
-                                      note=f"step {index} of {total}")
         elif phase in ("ok", "fail"):
             machine = next((s.machine for s in self.cfg.services
                             if s.name == service), "")
             self._clear_busy(service, machine)
-            # A stack step starts a service just as a button does, and the status
-            # it leaves behind is just as likely to be unchanged.
-            if phase == "ok" and action in ("start", "restart") \
-                    and self.store.status_of(service, machine) == st.RUNNING:
-                self._note_started(service, machine)
 
     def _on_stack_done(self, result):
         self.tray.action_finished()
         self.refresh()
         log.info(result.summary())
-        outcome = ("cancelled" if result.cancelled
-                   else "success" if result.ok else "failed")
-        history.record_run("stack", result.stack, outcome,
-                           seconds=sum(s.seconds for s in result.steps),
-                           detail=result.summary(), source=st.SRC_STACK)
+        outcome = self.engine.record_stack_run(result)
 
         pending = self._pending_trigger
         self._pending_trigger = None
@@ -754,20 +562,10 @@ class Application(QObject):
             self.panel.dashboard.clear_busy(name, machine)
 
     def refresh(self):
-        """Ask again now. This computer directly; other machines through the poller,
-        which is the only thing allowed to wait for them."""
-        self.poller.poll_soon()
-        for svc in self.cfg.services:
-            if svc.machine:
-                continue
-            try:
-                self.store.update(svc.name, control.query_status(svc.name, svc.machine),
-                                  machine=svc.machine)
-                self.store.set_start_type(svc.name,
-                                          control.start_type(svc.name, svc.machine),
-                                          machine=svc.machine)
-            except Exception:
-                pass
+        """Ask again now, then repaint. The asking is the engine's — and only it
+        knows that another machine goes through the poller rather than being waited
+        for on this thread."""
+        self.engine.refresh()
         self.flyout.refresh()
         if self.panel is not None:
             self.panel.dashboard.apply_states()
@@ -824,30 +622,27 @@ class Application(QObject):
         win.activateWindow()
 
     def _settings_saved(self, new_cfg):
+        """Persist what the panel edited, then rebuild what shows it.
+
+        The saving, the connection dropping and the store pruning are the engine's;
+        the dialogs and the rebuilds are ours, and auto-start is neither — it is a
+        Windows registry key that belongs to this installation rather than to the
+        landscape, so it stays here.
+        """
         old_auto = self.cfg.auto_start
-        # A machine may have been repointed, given a different account, or had its
-        # transport changed: those connections have to go, along with any session
-        # still open to where the machine used to be.
-        #
-        # Only those, though. Dropping every connection on every save cost a fresh
-        # connection to each machine, and to one remote Windows box that is
-        # twenty-one seconds of "Unknown" for changing an unrelated setting.
-        for name in self._machines_changed(self.cfg, new_cfg):
-            connectors.forget(name)
-        self.cfg = new_cfg
         try:
-            cfg_mod.save(self.cfg)
+            self.engine.save_config(new_cfg)
         except Exception as exc:
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not save settings:\n{exc}")
             return
+        self.cfg = new_cfg
         if self.cfg.auto_start != old_auto:
             try:
                 autostart.apply(self.cfg.auto_start)
             except Exception as exc:
                 QMessageBox.warning(None, "Service Officer",
                                     f"Could not apply the auto-start setting:\n{exc}")
-        self.store.keep_only([(s.machine, s.name) for s in self.cfg.services])
         self.tray.rebuild_menu()
         self._prime_states()
         self.flyout.rebuild()
@@ -855,22 +650,15 @@ class Application(QObject):
         if self.panel is not None:
             self.panel.dashboard.rebuild()
         self.tray.apply_state()
-        log.info("settings saved: %d service(s), %d stack(s)",
-                 len(self.cfg.services), len(self.cfg.stacks))
+
+    def _prime_states(self):
+        """Kept as a name the wiring tests use; the work is the engine's."""
+        self.engine.prime_states()
 
     @staticmethod
     def _machines_changed(old, new) -> list:
-        """Machines whose settings differ between two configs, plus any that have
-        appeared or gone. Dataclass equality does the comparing.
-
-        A changed password is not visible here — it lives in the secret store and the
-        config only holds the unchanged name of the entry — so the panel drops that
-        machine's connection itself when it stores one.
-        """
-        before = {m.name: m for m in getattr(old, "machines", [])}
-        after = {m.name: m for m in getattr(new, "machines", [])}
-        return [name for name in set(before) | set(after)
-                if before.get(name) != after.get(name)]
+        """Kept as a name the wiring tests use; the work is the engine's."""
+        return engine_mod.Engine.machines_changed(old, new)
 
     @staticmethod
     def _open_services_mmc():
@@ -878,11 +666,7 @@ class Application(QObject):
 
     def quit(self):
         log.info("quitting")
-        self.watcher.stop()
-        self.poller.stop()
-        self.scheduler.stop()
-        self.watchdog.stop()
-        self.health.stop()
+        self.engine.stop()
         self.tray.hide()
         self.qt.quit()
 
