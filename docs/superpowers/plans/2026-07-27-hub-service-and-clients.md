@@ -1488,6 +1488,43 @@ git commit -m "Run the engine as a Windows service"
 
 ## Task 9: The tray app as a client
 
+**There is no mode. There is an address.**
+
+An earlier draft of this task had the panel offer "this computer" or "a hub". It is
+gone, and the reasoning is worth keeping because it is a smaller product rather than a
+smaller plan:
+
+- The interface has **one** way to work instead of two, so it cannot be right in one
+  and wrong in the other. Tonight's bugs were all in paths nothing exercised.
+- The client stops needing to be an administrator. It talks HTTPS and paints; the
+  service does the privileged work. **The `requireAdministrator` manifest comes off the
+  client**, and with it the UAC prompt on every launch — which is the single most
+  visible cost this app charges its user today.
+- The engine runs in exactly one place, always. Today, if the operator logs off, the
+  tray app dies and nothing recovers — the promise the product is built on, quietly
+  broken by the delivery mechanism.
+
+Three things have to be true for the simplification to hold, and each is a step below:
+
+1. **A single-machine install asks nothing.** `/TYPE=full` generates the certificate,
+   makes a token, writes `client.json` pointing at this computer, and starts the
+   service. The address field arrives filled in. If the common case gained a
+   questionnaire, the mode selector would have been the lesser evil.
+2. **"The hub here is not running" is a state the client handles**, with the reason and a
+   Start button — not an empty window. A service that failed to start because its
+   account cannot log on as a service must not present as an app that does nothing.
+3. **Embedded stays in the code, and not in the interface.** `--embedded` runs the
+   engine in-process for development (`run.bat -p` needs it) and for the tests that
+   build an `Engine` directly. It is not a choice anybody is offered, and it is not
+   documented in `docs/HUB.md`.
+
+**And one consequence nobody would guess.** `machine=""` means "the local machine",
+which until now was the machine the app runs on. It now means **the hub's machine** —
+so a client on another workstation must not label it "This PC", and must not call
+`control.host_name()` to name it either. The name comes from the hub, in `/api/v1/ping`
+and in the snapshot. Getting this wrong shows a workstation's own hostname against a
+server's services, which reads as the app managing the wrong computer.
+
 **Two kinds of settings exist from here on, and the difference has to be visible.**
 Getting this wrong means five people each believing they can change the theme for
 everyone, or that retention is somebody else's problem:
@@ -1507,8 +1544,12 @@ nothing about any service, and losing it costs a re-pairing and nothing else.
 **Interfaces:**
 - Consumes: `HubClient` (Task 6).
 - Produces:
-  - `app.py --connect <url> [--token <token>] [--store-only]`; embedded mode unchanged
-    when `--connect` is absent
+  - `app.py` with no arguments: reads `client.json` and connects to the hub named there
+  - `app.py --connect <url> [--token <token>] [--store-only]`: pair, then carry on (or
+    exit, with `--store-only`, which is what the installer uses)
+  - `app.py --embedded`: run the engine in this process. **Development and tests only**
+    — `run.bat -p` needs it and `tests/test_engine.py` builds one directly. Not offered
+    in the interface, not in `docs/HUB.md`
   - `local.Settings(hub_url="", theme="system", auto_start=False, notify=True,
     hub_fingerprint="")` — this client's own, in `client.json` beside `services.json`
   - `local.load() -> Settings`, `local.save(settings) -> None`
@@ -1651,8 +1692,7 @@ transport's own words. Somebody who has added a Linux machine already knows this
 
 | Field | Note beside it |
 |---|---|
-| **Managed by** — `This computer` / `A hub` | Everything else here follows from this. |
-| **Hub** — `https://ctl052:8797` | Where the service is. The name in the certificate, so `localhost` and the machine's name are not interchangeable. |
+| **Hub** — `https://ctl052:8797` | Where the service runs. This computer, if it is installed here. The name has to be the one in the certificate, so `localhost` and the machine's name are not interchangeable. |
 | **Token** — dots, `Forget` | Made on the hub with `hub.exe client add <name>`, shown there once. Kept encrypted on this computer. |
 | **Certificate** — `SHA256:…`, `Get it` | Pinned the first time. A different one later is refused — the same rule as a Linux machine's host key. |
 | **Status** — `connected · last event 2s ago` | Live, from the client's own event stream. |
@@ -1683,7 +1723,6 @@ def test_the_connection_section_writes_this_client_s_own_file(qapp, tmp_path,
     win = panel_mod.MainPanel(cfg_mod.Config(), store=st.Store())
     page = win.general_page
 
-    page.managed_by.setCurrentIndex(1)                 # a hub
     page.hub_url.setText("https://ctl052:8797")
     page.hub_token.setText("a-token")
     page._save_connection()
@@ -1691,7 +1730,40 @@ def test_the_connection_section_writes_this_client_s_own_file(qapp, tmp_path,
     assert local.load().hub_url == "https://ctl052:8797"
     assert "hub_url" in (tmp_path / "client.json").read_text(encoding="utf-8")
     # And nothing about the hub leaked into the shared document.
-    assert "ctl052" not in cfg_mod.to_dict(win.config()).__str__()
+    assert "ctl052" not in str(cfg_mod.to_dict(win.config()))
+    win.deleteLater()
+
+
+def test_a_hub_on_this_computer_that_is_not_running_says_so(qapp, monkeypatch):
+    """The state that decides whether dropping the mode selector was a good idea. An
+    empty window here — because a service account could not log on as a service — is
+    an app that appears to do nothing for a reason it will not name."""
+    from core import local
+    monkeypatch.setattr(local, "load",
+                        lambda: local.Settings(hub_url="https://ctl052:8797"))
+    monkeypatch.setattr(panel_mod, "hub_is_local", lambda url: True)
+    monkeypatch.setattr(panel_mod, "hub_service_state", lambda: "Stopped")
+    win = panel_mod.MainPanel(cfg_mod.Config(), store=st.Store())
+    page = win.general_page
+
+    assert "not running" in page.connection_status().lower()
+    assert page.start_hub_button.isVisibleTo(page) is True
+    win.deleteLater()
+
+
+def test_the_local_machine_is_named_by_the_hub_not_by_this_one(qapp):
+    """`machine=""` used to mean the computer the app runs on. It means the hub's
+    computer now, and a workstation labelling it "This PC" would show its own hostname
+    against a server's services."""
+    store = st.Store()
+    win = panel_mod.MainPanel(cfg_mod.Config(machines=[cfg_mod.Machine()]),
+                              store=store)
+    win.set_hub_identity(name="CTL052", version="2.2.0")
+
+    title = win.machines_page._title(win.config().machines[0])
+
+    assert "CTL052" in title
+    assert win.machines_page._reachability(win.config().machines[0])[1] == "the hub"
     win.deleteLater()
 
 
@@ -1865,7 +1937,56 @@ Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Service 
 
 The firewall rule is **domain profile only**, deliberately: the same reasoning as the rules enabled on `10.77.3.110` on 2026-07-26 — a machine can find itself on a public network, and a management port has no business being open there.
 
-- [ ] **Step 1b: Let a client be installed already pointed at its hub**
+- [ ] **Step 1a: Pair the local case without asking anything**
+
+Since there is no mode to choose (Task 9), a machine that installs both components has
+to come out of the installer already working. In order, after the files are copied and
+the service is registered:
+
+```
+[Run]
+; 1. the certificate, so there is something to pin
+Filename: "{app}\ServiceOfficerHub\ServiceOfficerHub.exe"; Parameters: "--fingerprint"; \
+  Components: hub; Flags: runhidden waituntilterminated
+; 2. start it, so step 3 has something to talk to
+Filename: "{app}\ServiceOfficerHub\ServiceOfficerHub.exe"; Parameters: "start"; \
+  Components: hub; Flags: runhidden waituntilterminated
+; 3. a token for this machine's own client, and client.json written pointing here
+Filename: "{app}\ServiceOfficerHub\ServiceOfficerHub.exe"; \
+  Parameters: "client pair --local"; Components: hub and client; Flags: runhidden waituntilterminated
+```
+
+`client pair --local` is `client add` plus writing the answer straight into
+`client.json` — the token never leaves the machine and nobody is shown it. Add it beside
+`_client_command` in Task 8.
+
+The address it writes is **this computer's name**, not `localhost`: the certificate is
+issued for the host name, and a client that pins `localhost` cannot later be pointed at
+the same hub by name without failing its own certificate check.
+
+- [ ] **Step 1a2: Take the administrator manifest off the client**
+
+The tray application no longer touches a service manager, so it no longer needs to be
+elevated — and the UAC prompt on every launch is the most visible cost this app charges
+today. In `build.bat` and in the release workflow, `--uac-admin` moves from the client
+target to the hub target.
+
+Two things to check by hand afterwards, because this is the kind of change that appears
+to work and then does not:
+
+| Check | Expected |
+|---|---|
+Launch the tray app as a standard user | no UAC prompt, the panel opens, rows show states |
+Restart a service from it | it works — the hub is doing the work, and the hub is LocalSystem |
+`hub.exe --console` as a standard user | refuses with something readable, since it cannot control services either |
+
+**An existing installation upgrades into this.** The `services.json` already in
+`%ProgramData%\Service Officer` becomes the hub's, unchanged and in place, and the client
+beside it is paired to this computer. Nothing is migrated, moved or rewritten — the file
+is exactly where the hub already looks. Confirm it with the real one on this machine
+(nine services, three machines) before believing it.
+
+- [ ] **Step 1b: Let a *remote* client be installed already pointed at its hub**
 
 Five workstations is four too many to configure by hand. Two optional parameters,
 consumed on the client component only:
