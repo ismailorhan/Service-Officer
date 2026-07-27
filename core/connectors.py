@@ -70,6 +70,13 @@ class Abilities:
     kill: bool = False              # terminate the process outright
     logs: bool = False              # the target's own log for one service
     push: bool = False              # changes arrive; otherwise we poll
+    #: whether a File / Command health check can reach this target. They differ:
+    #: a remote Windows machine can have a file read over its admin share (measured
+    #: 18 ms) but cannot run a command without WinRM or a scheduled task, neither of
+    #: which exists here. Default True so a transport that does not set them — and the
+    #: local one — is unaffected.
+    file_check: bool = True         # a File health check can reach the file
+    command_check: bool = True      # a Command health check can run there
     why: str = ""                   # what to tell the user when something is off
 
 

@@ -351,3 +351,48 @@ def test_this_computer_still_reads_its_own(monkeypatch):
 
     assert local.abilities().logs is True
     assert local.logs("Dnscache") == ["t  Information  started"]
+
+
+def test_a_file_on_another_windows_machine_is_read_over_its_admin_share(monkeypatch,
+                                                                       tmp_path):
+    r"""Measured: C$ answered in 18 ms over the session already established to IPC$.
+    So a File check on a remote Windows service is a path translation — C:\x becomes
+    \\host\C$\x — and needs nothing installed on the target."""
+    import os
+    import time as _t
+
+    beat = tmp_path / "heartbeat.txt"
+    beat.write_text("alive", encoding="utf-8")
+    os.utime(beat, (_t.time() - 120, _t.time() - 120))
+
+    conn = scm_windows.WindowsConnector("ctl053", _machine())
+    monkeypatch.setattr(conn, "_sign_in", lambda: None)
+    # The translation is the whole trick; point it at the real temp file.
+    monkeypatch.setattr(scm_windows, "_admin_share_path",
+                        lambda host, path: str(beat))
+
+    exists, age = conn.stat(r"D:\b1\heartbeat.txt")
+
+    assert exists is True
+    assert 110 < age < 200
+
+
+def test_the_admin_share_translation_is_what_you_would_type():
+    assert scm_windows._admin_share_path("10.0.0.9", r"C:\b1\beat.txt") == \
+        r"\\10.0.0.9\C$\b1\beat.txt"
+    assert scm_windows._admin_share_path("host", r"D:\logs\x.log") == \
+        r"\\host\D$\logs\x.log"
+    # A path that is not a local drive letter cannot be reached this way.
+    assert scm_windows._admin_share_path("host", r"\\already\unc") == ""
+    assert scm_windows._admin_share_path("host", "relative\\path") == ""
+
+
+def test_a_missing_file_on_another_machine_is_absent_not_an_error(monkeypatch):
+    conn = scm_windows.WindowsConnector("ctl053", _machine())
+    monkeypatch.setattr(conn, "_sign_in", lambda: None)
+    monkeypatch.setattr(scm_windows, "_admin_share_path",
+                        lambda host, path: r"\ctl053\C$\nope\missing.txt")
+
+    exists, age = conn.stat(r"C:\nope\missing.txt")
+
+    assert exists is False and age == 0.0

@@ -510,3 +510,43 @@ it gets push notifications (32 ms) instead of polling (5 s), needs no firewall r
 credentials, and is the only Windows machine where Kill, Command and File checks work at
 all. Everything else is a remote target. So the hub belongs on the machine whose services
 matter most — or the landscape has to accept polling and RPC rules for them.
+
+---
+
+## Kill, File and Command on another Windows machine — researched 2026-07-27
+
+Asked whether the three "no"s for a remote Windows target could be made yes. Probed the
+mechanisms against the real SAP/SQL server (10.77.3.112, in the SC domain from CT.CORP),
+each riding — or not — the IPC$ session core/win_session.py already holds:
+
+| Wanted | Mechanism | Rides IPC$? | Result |
+|---|---|---|---|
+File | admin share `\host\C$\path` | yes | **18 ms**, and through the real health path 9 ms |
+control | `sc \host`, held connection | yes | works (the 21 s first-open, then ms) |
+Command | `schtasks /Create /S` | writes; needs Task Scheduler rights | *Access denied* |
+Command/Kill | WMI / CIM over DCOM | no — dynamic RPC + WinRM | TrustedHosts / firewalled |
+Kill | `taskkill /S`, `tasklist /S` | **no — authenticates itself** | *user name or password is incorrect* |
+Command/Kill | WinRM `Invoke-Command` | separate service, 5985 | open on this server; cross-forest needs config |
+
+The clean line: **anything that travels over the SMB named pipe uses the session we
+already established; anything that does its own RPC authentication does not**, and across
+a forest boundary its own attempt fails. `sc`, `schtasks` and the admin shares are on the
+first side; `taskkill`, `tasklist` and WMI are on the second.
+
+So **File is built** — a path translation, `C:\x` → `\host\C$\x`, nothing installed on
+the target, and `abilities.file_check` is true for a remote Windows machine so the editor
+offers it. `command_check` and `kill` stay false.
+
+**Command and Kill are one transport away, and it is WinRM.** It was open on the server
+tested (5985), it is on by default on Windows Server, one fixed port with no dynamic RPC
+range, and it would slot in as a third `Connector` implementation exactly as SSH did —
+`Invoke-Command` for a command, `Stop-Process -Id` for a kill (the SCM already gives us the
+pid). The cross-forest case needs TrustedHosts or HTTPS with explicit credentials, which is
+the same DPAPI-stored password already in play. schtasks was the other candidate and is
+worse: it writes, it needs Task Scheduler rights the account did not have, and the
+create-run-read-delete round trip measured ~77 s against File's 9 ms.
+
+**Not built now** because it is a transport, not a tweak, and the thing that makes it
+matter most — a machine where these need to work — is the same machine you would put the
+hub on, where they already do. A WinRM connector is the right next step *after* the hub, or
+for a Windows target that genuinely cannot host one.

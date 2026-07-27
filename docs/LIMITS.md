@@ -23,17 +23,29 @@ Start type (Automatic / Manual / Disabled) | read | read | read (`masked` = Disa
 **Change** the start type | **no** | **no** | **no** |
 TCP / HTTP health check | yes | yes | yes |
 Process health check | yes | yes | yes, but `MainPID` is 0 for a `oneshot` unit, so it proves nothing there |
-**File** health check | yes | **no** | yes |
+**File** health check | yes | **yes**, over the admin share (C$) — measured 9 ms | yes |
 **Command** health check | yes | **no** | yes — which is what makes `su - hdbadm -c "HDB info"` a check |
 Read the service's own log | yes, Windows event log | **no** | yes, `journalctl`, with the `systemd-journal` group |
 Needs setting up on that machine | nothing | *Remote Service Management* + *File and Printer Sharing (SMB-In)*, domain profile; an administrator account or stored credentials | an account; `sudo` for control; the host key confirmed here |
 
-**Why the three "no"s for another Windows machine.** All three need to reach *into* the
-machine rather than at it over a protocol: terminating a process, reading a file's
-timestamp, running a command, reading an event log. The service manager's RPC does none of
-them. WinRM or a scheduled task would; neither exists here yet. Until one does, the app
-says so — the alternative, which it did until 2026-07-27, is answering from **this**
-computer and calling it that machine's.
+**Why the "no"s for another Windows machine, and why File is not one.** These need to
+reach *into* the machine rather than at it over the service manager's RPC: terminating a
+process, running a command, reading an event log. Measured on 2026-07-27, the mechanisms
+split cleanly by whether they ride the SMB session the app already holds:
+
+| Wanted | Mechanism | Rides the IPC$ session? | Result |
+|---|---|---|---|
+File | admin share `\\host\C$\…` | yes | **works, 9 ms** — now built |
+Command | `schtasks /Create` on the target | writes, needs Task Scheduler rights | *Access denied* on the test machine |
+Command / Kill | WinRM (`Invoke-Command`, `Stop-Process`) | separate service, port 5985 | needs enabling + cross-forest TrustedHosts/HTTPS |
+Kill | `taskkill /S` (its own RPC) | **no**, authenticates itself | *the user name or password is incorrect* |
+
+So File was a translation waiting to be written and is done. Command and Kill both need a
+transport the app does not have — **WinRM is the realistic one**, it was open on the SAP
+server tested (5985) and is on by default on Windows Server, and it would be a third
+`Connector` implementation the way SSH is. Until it exists the app says a command cannot be
+run there, rather than running it here and calling it that machine's — which is what it did
+until 2026-07-27.
 
 **A note on the first connection.** Opening a connection to a remote Windows service
 manager took **21 seconds** on a machine whose dynamic RPC ports are firewalled, because

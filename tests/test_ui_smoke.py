@@ -1962,10 +1962,10 @@ def _check_kinds_offered(detail):
 
 
 def test_checks_a_machine_cannot_do_are_not_offered_for_it(qapp):
-    """A File or Command check needs to reach into the machine, and a remote Windows
-    machine has no way to do either yet. Offering them means configuring a check whose
-    only possible outcome is failure — and until today it was worse than that: the
-    check ran here and reported this computer's answer as that machine's."""
+    """A remote Windows machine can have a file read over its admin share (measured
+    18 ms) but cannot run a command — that needs WinRM or a scheduled task, neither of
+    which is wired up. So File is offered and Command is not, per that difference,
+    rather than by a blanket "it is remote" rule."""
     cfg = cfg_mod.Config(
         machines=[cfg_mod.Machine(),
                   cfg_mod.Machine(name="sc-sql", kind="windows",
@@ -1983,9 +1983,9 @@ def test_checks_a_machine_cannot_do_are_not_offered_for_it(qapp):
     offered = _check_kinds_offered(page.detail)
     assert offered["A port answers"] is True
     assert offered["A URL answers"] is True
-    assert offered["A file is being written"] is False
-    assert offered["A command succeeds"] is False
-    assert "another Windows machine" in page.detail.add_menu.toolTip()
+    assert offered["A file is being written"] is True     # over the admin share
+    assert offered["A command succeeds"] is False         # no command transport
+    assert "run a command" in page.detail.add_menu.toolTip()
 
     # Over SSH both are genuinely possible, which is what makes HANA checkable.
     _select(page, "webclient.service")
@@ -2021,5 +2021,5 @@ def test_a_check_that_was_already_configured_still_shows(qapp):
 
     said = " ".join(lb.text() for lb in page.detail.findChildren(QLabel))
     assert "sc query MSSQLSERVER" in said
-    assert "not available on another Windows machine" in said
+    assert "cannot run a command on another Windows machine" in said
     win.deleteLater()

@@ -423,13 +423,15 @@ class ServiceDetail(_Page):
         self.health_rules.setVisible(bool(checks))
         self._sync_health_enabled()
 
-    #: Kinds that need to reach *into* the machine rather than at it over the
-    #: network, and the reason a remote Windows machine cannot do them. Over SSH both
-    #: are ordinary — which is what makes `su - hdbadm -c "HDB info"` a health check
-    #: rather than a note in a runbook.
-    REACHES_INSIDE = ("file", "command")
-    NOT_HERE = ("not available on another Windows machine — reaching into it needs "
-                "something we do not have there yet")
+    #: The reason a kind is unavailable, by kind. Filled from the machine's abilities
+    #: rather than a fixed list, because "can it do a File check" now differs from
+    #: "can it do a Command check" on the same remote Windows machine — the file is
+    #: read over the admin share, the command has nowhere to run.
+    NOT_HERE = {
+        "file": "cannot reach the file on this machine",
+        "command": "cannot run a command on another Windows machine — that needs "
+                   "something we do not have there yet",
+    }
 
     def _machine_record(self):
         """The service's machine, from the config this page is editing."""
@@ -440,26 +442,44 @@ class ServiceDetail(_Page):
             return None
         return page.cfg().machine(self.svc.machine or "")
 
-    def _cannot_reach_inside(self) -> bool:
+    def _machine_can(self):
+        """What this service's machine can do, from the transport itself. Empty when
+        there is no machine record yet (a service being added before Save)."""
+        from core import control
         machine = self._machine_record()
         if machine is None:
-            return False
-        return bool(machine.name) and not machine.is_linux
+            return None
+        try:
+            return control.abilities(machine.name, record=machine)
+        except Exception:
+            return None
+
+    def _blocked_kinds(self) -> dict:
+        """{kind: reason} for the check kinds this machine cannot do."""
+        can = self._machine_can()
+        if can is None:
+            return {}
+        blocked = {}
+        if not getattr(can, "file_check", True):
+            blocked["file"] = self.NOT_HERE["file"]
+        if not getattr(can, "command_check", True):
+            blocked["command"] = self.NOT_HERE["command"]
+        return blocked
 
     def _offer_only_what_the_machine_can_do(self) -> None:
         """Grey the kinds this service's machine cannot answer, and say why.
 
         Not hidden: a menu that changes shape depending on which service is selected
         is a menu nobody trusts. Greyed with a reason is a smaller surprise than a
-        check that can only ever fail — and until today those checks did not fail,
+        check that can only ever fail — and until this, those checks did not fail,
         they answered from this computer and called it the other machine's.
         """
-        blocked = self._cannot_reach_inside()
+        blocked = self._blocked_kinds()
         for kind, action in self._kind_actions.items():
-            unavailable = blocked and kind in self.REACHES_INSIDE
-            action.setEnabled(not unavailable)
-            action.setToolTip(self.NOT_HERE if unavailable else "")
-        self.add_menu.setToolTip(self.NOT_HERE if blocked else "")
+            reason = blocked.get(kind, "")
+            action.setEnabled(not reason)
+            action.setToolTip(reason)
+        self.add_menu.setToolTip("  ·  ".join(sorted(set(blocked.values()))))
 
     #: what to call each kind in the one-line summary
     KIND_NAMES = {"tcp": "PORT", "http": "URL", "process": "PROCESS",
@@ -510,8 +530,9 @@ class ServiceDetail(_Page):
         # A check that cannot work where this service lives — configured before the
         # service moved, or before the kinds were filtered. Shown, not hidden: losing
         # somebody's setting silently is worse than telling them it cannot pass.
-        if check.kind in self.REACHES_INSIDE and self._cannot_reach_inside():
-            outer.addWidget(_label(self.NOT_HERE, "hint", wrap=True))
+        blocked = self._blocked_kinds()
+        if check.kind in blocked:
+            outer.addWidget(_label(blocked[check.kind], "hint", wrap=True))
 
         # Double-clicking the row opens it too. The Edit button stays, because a
         # double-click is not something anyone can see is available.
