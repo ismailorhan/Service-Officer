@@ -463,6 +463,14 @@ def _make_handler(hub: HubServer):
                 pass                    # the client went away; that is not an error
             finally:
                 hub._drop_listener(listener)
+                # Close the socket rather than keeping it alive. This is HTTP/1.1 and
+                # the stream has no Content-Length, so a client cannot tell that the
+                # body has ended: when the hub stopped, the handler returned, the
+                # connection was held open for a next request that never came, and the
+                # client sat blocked on a socket that would never say anything again —
+                # for ever, through restarts. Measured: it never noticed in fifteen
+                # seconds. Closing gives it the EOF it reconnects on.
+                self.close_connection = True
                 if listener.dropped:
                     log.info("%s missed %d event(s) — it was not reading",
                              who, listener.dropped)
