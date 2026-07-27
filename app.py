@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 import autostart
 from core import (applog, config as cfg_mod, control, db, engine as engine_mod,
-                  health, history)
+                  health, history, hub_client, local as local_mod)
 from core import state as st
 from ui import flyout as flyout_mod, hover as hover_mod, icons, panel as panel_mod
 from ui import theme
@@ -62,6 +62,60 @@ class ActionSignals(QObject):
     done = Signal(str, str, str, object, bool, bool, str)
 
 
+class HubSignals(QObject):
+    """A hub's answers arrive on its reader thread; the widgets are on Qt's."""
+    event = Signal(object)          # one wire event
+    connected = Signal(bool)
+
+
+def _pair(argv) -> str:
+    """The hub to talk to, storing a token given on the command line.
+
+    `--connect URL [--token T]` once; after that `client.json` remembers and the flag is
+    not needed. The token is accepted on a command line and then stored because a command
+    line is visible in Task Manager for as long as the process starts — once is a small
+    window, every launch is not.
+    """
+    argv = list(argv or [])
+    url = ""
+    for flag in ("--connect", "-c"):
+        if flag in argv:
+            index = argv.index(flag)
+            if index + 1 < len(argv):
+                url = argv[index + 1].rstrip("/")
+    token = ""
+    if "--token" in argv:
+        index = argv.index("--token")
+        if index + 1 < len(argv):
+            token = argv[index + 1]
+
+    settings = local_mod.load()
+    if not url:
+        return settings.hub_url
+    if url != settings.hub_url:
+        # A different hub: whatever was pinned belongs to the old one.
+        settings.hub_url = url
+        settings.hub_fingerprint = ""
+        local_mod.save(settings)
+    if token:
+        local_mod.set_token(url, token)
+    return url
+
+
+def pair_only(argv) -> int:
+    """`--store-only`: pair and exit, with nothing shown.
+
+    The installer's path. A tray icon appearing in the middle of an install, and then
+    vanishing, is alarming for no reason — and the first real launch is already connected.
+    """
+    url = _pair(argv)
+    if not url:
+        print("nothing to pair: --connect <url> is needed")
+        return 1
+    print(f"paired with {url}")
+    return 0
+
+
 class Application(QObject):
     def __init__(self, argv):
         super().__init__()
@@ -71,6 +125,13 @@ class Application(QObject):
         self.qt.setWindowIcon(icons.base_icon("green"))
 
         self.cfg = cfg_mod.load()
+        #: Where the engine is. "" means here — which is what everybody has today and
+        #: what a single-machine install keeps. There is no *mode* to pick: if the hub
+        #: runs on this computer you point at this computer, and if it is elsewhere you
+        #: point there. One field, one code path, and a client that needs no
+        #: administrator rights because it controls nothing itself.
+        self.hub_url = _pair(argv)
+        self.hub = None
         self.store = st.store
         #: set while a trigger's action is in flight, so its outcome is recorded
         self._pending_trigger = None
@@ -103,32 +164,62 @@ class Application(QObject):
         self.stack_signals.done.connect(self._on_stack_done)
         self.action_signals = ActionSignals()
         self.action_signals.done.connect(self._action_done)
+        self.hub_signals = HubSignals()
+        self.hub_signals.event.connect(self._on_hub_event)
+        self.hub_signals.connected.connect(self._on_hub_connected)
 
-        self.engine = engine_mod.Engine(
-            lambda: self.cfg,
-            store=self.store,
-            on_health=lambda service, machine, verdict, detail:
-                self.health_signals.verdict.emit(service, machine, verdict, detail),
-            on_action_done=lambda **facts:
-                self.action_signals.done.emit(
-                    facts["service"], facts["machine"], facts["action"],
-                    facts["error"], not facts.get("bulk"), facts.get("bulk", False),
-                    facts.get("status", "")),
-            on_stack_step=lambda index, total, service, action, phase:
-                self.stack_signals.step.emit(index, total, service, action, phase),
-            on_stack_done=lambda result: self.stack_signals.done.emit(result),
-            on_trigger=lambda trigger: self.trigger_signals.fire.emit(trigger),
-            on_error=lambda kind, text: self.tray.notify("Service Officer", text),
-        )
+        if self.hub_url:
+            # Connected: the hub owns the engine and this process owns the pixels.
+            # Nothing below may reach a service manager or an SSH session — that is the
+            # whole point of the split, and the way to keep it true is to have no engine
+            # here at all.
+            self.engine = None
+            settings = local_mod.load()
+            self.hub = hub_client.HubClient(
+                self.hub_url, local_mod.token(self.hub_url),
+                fingerprint=settings.hub_fingerprint,
+                on_event=lambda payload: self.hub_signals.event.emit(payload),
+                on_connected=lambda ok: self.hub_signals.connected.emit(ok))
+            try:
+                pinned = self.hub.check_identity()
+                if pinned and pinned != settings.hub_fingerprint:
+                    settings.hub_fingerprint = pinned
+                    local_mod.save(settings)
+            except hub_client.WrongHub as exc:
+                # Not fatal, and not accepted either: the panel shows it and the client
+                # keeps refusing until somebody decides. Silently trusting a changed
+                # certificate is the one thing a pin must never do.
+                log.error("%s", exc)
+            self.store = self.hub.store
+            self.hub.start()
+        else:
+            self.engine = engine_mod.Engine(
+                lambda: self.cfg,
+                store=self.store,
+                on_health=lambda service, machine, verdict, detail:
+                    self.health_signals.verdict.emit(service, machine, verdict,
+                                                     detail),
+                on_action_done=lambda **facts:
+                    self.action_signals.done.emit(
+                        facts["service"], facts["machine"], facts["action"],
+                        facts["error"], not facts.get("bulk"),
+                        facts.get("bulk", False), facts.get("status", "")),
+                on_stack_step=lambda index, total, service, action, phase:
+                    self.stack_signals.step.emit(index, total, service, action,
+                                                 phase),
+                on_stack_done=lambda result: self.stack_signals.done.emit(result),
+                on_trigger=lambda trigger: self.trigger_signals.fire.emit(trigger),
+                on_error=lambda kind, text: self.tray.notify("Service Officer", text),
+            )
 
-        # Once shortly after start, then daily. A server runs for weeks without
-        # this app being restarted, and retention that only ran at startup was
-        # retention that never ran.
-        QTimer.singleShot(3000, self.engine.trim_history)
-        self._trim_timer = QTimer(self)
-        self._trim_timer.setInterval(24 * 60 * 60 * 1000)
-        self._trim_timer.timeout.connect(self.engine.trim_history)
-        self._trim_timer.start()
+            # Once shortly after start, then daily. A server runs for weeks without
+            # this app being restarted, and retention that only ran at startup was
+            # retention that never ran. The hub does its own when connected.
+            QTimer.singleShot(3000, self.engine.trim_history)
+            self._trim_timer = QTimer(self)
+            self._trim_timer.setInterval(24 * 60 * 60 * 1000)
+            self._trim_timer.timeout.connect(self.engine.trim_history)
+            self._trim_timer.start()
 
         # --- ui -----------------------------------------------------------
         self.tray = Tray(lambda: self.cfg, self.store)
@@ -162,29 +253,31 @@ class Application(QObject):
     # The engine's parts, under the names the rest of this file and the wiring tests
     # already use. Properties rather than copies: there is one poller, and a second
     # reference to it that went stale would be a bug nobody could see.
+    # None when connected to a hub: the hub has them, and a client reaching for a
+    # watchdog of its own would be a second thing recovering the same services.
     @property
     def health(self):
-        return self.engine.health
+        return self.engine.health if self.engine else None
 
     @property
     def poller(self):
-        return self.engine.poller
+        return self.engine.poller if self.engine else None
 
     @property
     def watchdog(self):
-        return self.engine.watchdog
+        return self.engine.watchdog if self.engine else None
 
     @property
     def scheduler(self):
-        return self.engine.scheduler
+        return self.engine.scheduler if self.engine else None
 
     @property
     def runner(self):
-        return self.engine.runner
+        return self.engine.runner if self.engine else None
 
     @property
     def watcher(self):
-        return self.engine.watcher
+        return self.engine.watcher if self.engine else None
 
     def _wire_flyout(self):
         """One place for the flyout's connections — it is rebuilt on a theme
@@ -201,16 +294,33 @@ class Application(QObject):
 
         The reading is the engine's; the repainting is ours. Kept as a method here
         because the flyout calls it as it opens, so Disabled is right the moment
-        somebody looks.
+        somebody looks. Connected, there is nothing to do here: the hub reads them and
+        sends them with the snapshot.
         """
+        if self.engine is None:
+            return
         if self.engine.poll_start_types():
             if self.flyout.isVisible():
                 self.flyout.apply_states()
             self.hover.refresh()
 
+    # -- the hub, when there is one ----------------------------------------
+    def _on_hub_event(self, payload) -> None:
+        """Something happened on the hub. The store has already been updated by the
+        client; this is the repaint, and the notifications that belong to this screen."""
+        self._refresh_lists()
+
+    def _on_hub_connected(self, connected: bool) -> None:
+        log.info("hub %s", "connected" if connected else "disconnected")
+        self._refresh_lists()
+        if not connected and local_mod.load().notify:
+            self.tray.notify("Service Officer",
+                             "Lost the connection to the hub. Trying again.")
+
     # -- startup -----------------------------------------------------------
     def start(self) -> int:
-        self.engine.start()
+        if self.engine is not None:
+            self.engine.start()
         self.tray.show()
         self.tray.apply_state()
         return self.qt.exec()
@@ -270,11 +380,13 @@ class Application(QObject):
 
     def _note_started(self, name: str, machine: str = "") -> None:
         """Kept as a name the wiring tests use; the work is the engine's."""
-        self.engine.note_started(name, machine)
+        if self.engine is not None:
+            self.engine.note_started(name, machine)
 
     def _copy_verdict(self, name: str, machine: str = "") -> None:
         """Kept as a name the wiring tests use; the work is the engine's."""
-        self.engine._copy_verdict(name, machine)
+        if self.engine is not None:
+            self.engine._copy_verdict(name, machine)
 
     # -- actions -----------------------------------------------------------
     def do_action(self, action: str, name: str, machine: str = "",
@@ -292,8 +404,8 @@ class Application(QObject):
         self.tray.action_started()
         self._announce.setdefault((name, machine or ""), announce_errors)
         try:
-            self.engine.act(action, name, machine, actor=self._actor(), bulk=bulk)
-        except engine_mod.Busy as clash:
+            self._ask_for(action, name, machine, bulk=bulk)
+        except (engine_mod.Busy, hub_client.Busy) as clash:
             # Somebody else — a person on another client, or the watchdog — is
             # already doing this. Said on the row rather than in a dialog: the row
             # is where the click happened.
@@ -302,10 +414,41 @@ class Application(QObject):
             self._mark_busy(name, machine, str(clash))
             log.info("%s %s: %s", action, name, clash)
 
+    def _kill(self, name: str, machine: str = "") -> str:
+        """Terminate the process, here or over there. The confirmation happened before
+        this was called; the engine and the hub both take it without asking again."""
+        if self.hub is not None:
+            return self.hub.act("kill", name, machine, actor=self._actor())
+        return self.engine.kill(name, machine, actor=self._actor())
+
+    def _save_config(self, new_cfg) -> None:
+        """Persist the config, wherever it lives.
+
+        Connected, a save can be *refused*: somebody else got there first, and the
+        panel has to say so rather than pretend. Raised on, so the caller's own error
+        dialog reports it.
+        """
+        if self.hub is None:
+            self.engine.save_config(new_cfg)
+            return
+        _current, etag = self.hub.config()
+        self.hub.save_config(new_cfg, etag, actor=self._actor())
+
+    def _ask_for(self, action: str, name: str, machine: str = "",
+                 bulk: bool = False) -> str:
+        """The one place that knows whether the work happens here or over there.
+
+        Everything else — the flyout, the dashboard, the watchdog's own path, a
+        trigger — goes through do_action and never learns which.
+        """
+        if self.hub is not None:
+            return self.hub.act(action, name, machine, actor=self._actor())
+        return self.engine.act(action, name, machine, actor=self._actor(), bulk=bulk)
+
     @staticmethod
     def _actor() -> str:
         """Who asked. One operator today, so it is whoever is signed in; with a hub
-        it is the client's name, and the history keeps it either way."""
+        it is still this person, and the hub records the client they came from."""
         import os
         return os.environ.get("USERNAME", "")
 
@@ -397,8 +540,8 @@ class Application(QObject):
         engine reports through on_action_done like any other action, so the tally is
         counted where every other one is."""
         try:
-            self.engine.kill(name, machine, actor=self._actor())
-        except engine_mod.Busy as clash:
+            self._kill(name, machine)
+        except (engine_mod.Busy, hub_client.Busy) as clash:
             self._bulk_report(name, str(clash))
 
     def _bulk_report(self, name: str, error):
@@ -445,8 +588,8 @@ class Application(QObject):
         self.tray.action_started()
         self._announce.setdefault((name, machine or ""), True)
         try:
-            self.engine.kill(name, machine, actor=self._actor())
-        except engine_mod.Busy as clash:
+            self._kill(name, machine)
+        except (engine_mod.Busy, hub_client.Busy) as clash:
             self.tray.action_finished()
             self._clear_busy(name, machine)
             QMessageBox.information(None, "Service Officer", str(clash))
@@ -504,7 +647,12 @@ class Application(QObject):
         """
         self.hover.dismiss()
         self.tray.action_started()
-        if not self.engine.run_stack(stack_or_name, actor=self._actor()):
+        started = (self.hub.run_stack(
+                       stack_or_name if isinstance(stack_or_name, str)
+                       else stack_or_name.name, actor=self._actor())
+                   if self.hub is not None
+                   else self.engine.run_stack(stack_or_name, actor=self._actor()))
+        if not started:
             self.tray.action_finished()
             if self.runner.busy:
                 QMessageBox.information(None, "Service Officer",
@@ -513,7 +661,8 @@ class Application(QObject):
     def _on_stack_step(self, index, total, service, action, phase):
         """The pixels of a stack step. Its history row and its "it just started"
         are the engine's, done before this signal arrives."""
-        self.engine.stack_step_landed(service, action, phase)
+        if self.engine is not None:
+            self.engine.stack_step_landed(service, action, phase)
         if phase == "begin":
             self.flyout.mark_busy(service, "", f"{action} {index}/{total}…")
         elif phase in ("ok", "fail"):
@@ -525,7 +674,8 @@ class Application(QObject):
         self.tray.action_finished()
         self.refresh()
         log.info(result.summary())
-        outcome = self.engine.record_stack_run(result)
+        outcome = (self.engine.record_stack_run(result) if self.engine is not None
+                   else ("success" if getattr(result, "ok", False) else "failed"))
 
         pending = self._pending_trigger
         self._pending_trigger = None
@@ -565,7 +715,11 @@ class Application(QObject):
         """Ask again now, then repaint. The asking is the engine's — and only it
         knows that another machine goes through the poller rather than being waited
         for on this thread."""
-        self.engine.refresh()
+        if self.hub is not None:
+            self.hub.refresh_machine()
+            self.hub.refresh_now()
+        else:
+            self.engine.refresh()
         self.flyout.refresh()
         if self.panel is not None:
             self.panel.dashboard.apply_states()
@@ -631,7 +785,7 @@ class Application(QObject):
         """
         old_auto = self.cfg.auto_start
         try:
-            self.engine.save_config(new_cfg)
+            self._save_config(new_cfg)
         except Exception as exc:
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not save settings:\n{exc}")
@@ -703,6 +857,10 @@ def main() -> int:
     if brought:
         log.info("brought %s forward into %s", ", ".join(brought),
                  cfg_mod.APP_DIR)
+
+    # Pair and leave, without a QApplication or a tray icon. The installer's path.
+    if "--store-only" in sys.argv:
+        return pair_only(sys.argv)
 
     prepare_history()
     # No manual DPI call here: Qt already opts into per-monitor v2 awareness

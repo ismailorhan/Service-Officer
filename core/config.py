@@ -41,6 +41,19 @@ CONFIG_PATH = os.path.join(APP_DIR, "services.json")
 #: dropped next to the moved files so a second run doesn't try again
 MIGRATION_MARK = ".moved"
 
+
+def in_app_dir(name: str) -> str:
+    """A path beside services.json.
+
+    Read at call time rather than baked into a constant, because the tests and the
+    sandboxed probes point APP_DIR somewhere else — and a path computed at import would
+    have them all writing into the real ProgramData.
+
+    The hub's certificate lives here: it belongs to the installation, not to the build,
+    and a build replaces its own directory.
+    """
+    return os.path.join(APP_DIR, name)
+
 CURRENT_VERSION = 2
 
 
@@ -410,6 +423,21 @@ class Notifications:
 
 
 @dataclass
+class Hub:
+    """How this installation serves its clients.
+
+    Absent from a config written before hubs existed, so every field has a default and
+    such a file still loads. `enabled` is False on purpose: installing an update must
+    never open a port on its own — that is a decision somebody makes.
+    """
+    enabled: bool = False
+    port: int = 8797
+    #: "" means every address on this machine. A single address is how the hub is kept
+    #: off a second network card the machine happens to have.
+    bind: str = ""
+
+
+@dataclass
 class Config:
     services: list = field(default_factory=list)      # list[Service]
     stacks: list = field(default_factory=list)        # list[Stack]
@@ -418,6 +446,7 @@ class Config:
     categories: list = field(default_factory=list)     # list[Category]
     history: History = field(default_factory=History)
     notifications: Notifications = field(default_factory=Notifications)
+    hub: Hub = field(default_factory=Hub)
     auto_start: bool = True
     theme: str = "system"          # "system" follows Windows; else "dark"/"light"
     version: int = CURRENT_VERSION
@@ -733,6 +762,7 @@ def from_dict(data: dict) -> Config:
 
     h = data.get("history") if isinstance(data.get("history"), dict) else {}
     n = data.get("notifications") if isinstance(data.get("notifications"), dict) else {}
+    hub = data.get("hub") if isinstance(data.get("hub"), dict) else {}
 
     return Config(
         services=services,
@@ -748,6 +778,16 @@ def from_dict(data: dict) -> Config:
             on_crash=bool(n.get("on_crash", True)),
             on_recovery=bool(n.get("on_recovery", True)),
             on_give_up=bool(n.get("on_give_up", True)),
+        ),
+        hub=Hub(
+            enabled=bool(hub.get("enabled", False)),
+            # Clamped rather than trusted: a hand-edited port outside the range would
+            # leave the service unable to start with nothing to say about why. 0 is not
+            # "any free port" here — a hub whose port moved every restart is a hub no
+            # client can find.
+            port=(_as_int(hub.get("port"), 8797)
+                  if 1 <= _as_int(hub.get("port"), 8797) <= 65535 else 8797),
+            bind=str(hub.get("bind") or ""),
         ),
         auto_start=bool(data.get("auto_start", True)),
         theme=(data.get("theme") if data.get("theme") in ("system", "dark", "light")
@@ -766,6 +806,7 @@ def to_dict(cfg: Config) -> dict:
         "categories": [asdict(c) for c in cfg.categories],
         "history": asdict(cfg.history),
         "notifications": asdict(cfg.notifications),
+        "hub": asdict(cfg.hub),
         "auto_start": cfg.auto_start,
         "theme": cfg.theme,
     }

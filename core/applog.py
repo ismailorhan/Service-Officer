@@ -35,9 +35,30 @@ def setup(level=logging.INFO, to_stderr: bool = False) -> logging.Logger:
         pass
     if to_stderr and sys.stderr:
         log.addHandler(logging.StreamHandler(sys.stderr))
+    _quieten_paramiko()
     _configured = True
     log.propagate = False
     return log
+
+
+def _quieten_paramiko() -> None:
+    """Stop paramiko printing a traceback for a machine that is merely switched off.
+
+    It logs "Error reading SSH protocol banner" at ERROR with the full stack whenever a
+    connection does not complete — which for us is an ordinary, expected answer that the
+    poller already reports as one sentence on the machine's row. Left alone, a SUSE box
+    that is off fills the hub's log with tracebacks every retry, and the log is the thing
+    that has to answer "why did it restart at 04:12".
+
+    Critical only, and no propagation: paramiko's own failures that matter arrive here as
+    exceptions we catch and describe.
+    """
+    for name in ("paramiko", "paramiko.transport", "paramiko.transport.sftp"):
+        quiet = logging.getLogger(name)
+        quiet.setLevel(logging.CRITICAL)
+        quiet.propagate = False
+        if not quiet.handlers:
+            quiet.addHandler(logging.NullHandler())
 
 
 def get(name: str = "") -> logging.Logger:

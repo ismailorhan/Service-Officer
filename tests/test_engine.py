@@ -107,3 +107,19 @@ def test_a_listener_that_raises_does_not_take_the_engine_down(monkeypatch):
 
     built.act("restart", "Dnscache", actor="tests")
     assert built.wait_for_actions(timeout=5)     # did not raise out of the thread
+
+
+def test_paramikos_tracebacks_do_not_fill_the_log():
+    """A SUSE box that is switched off makes paramiko log "Error reading SSH protocol
+    banner" at ERROR with a full stack, on every retry. The poller already reports that
+    machine as not answering, in one sentence, on its row — and the log has to stay
+    readable enough to answer "why did it restart at 04:12"."""
+    import logging
+
+    from core import applog
+
+    applog.setup()
+
+    quiet = logging.getLogger("paramiko.transport")
+    assert quiet.level >= logging.CRITICAL
+    assert quiet.propagate is False

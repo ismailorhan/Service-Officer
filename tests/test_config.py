@@ -200,3 +200,37 @@ def test_the_build_identifies_itself():
         assert version.short() == version.VERSION
     finally:
         version.COMMIT, version.BUILT, version.BUILD = "dev", "", 0
+
+
+def test_the_hub_section_defaults_and_round_trips():
+    """A config written before the hub existed has to load, and default to off —
+    installing an update must never open a port on its own."""
+    loaded = cfg.from_dict({"services": [{"name": "AppEngine"}]})
+    assert loaded.hub.enabled is False
+    assert loaded.hub.port == 8797
+    assert loaded.hub.bind == ""
+
+    loaded.hub.enabled = True
+    loaded.hub.port = 9000
+    loaded.hub.bind = "10.77.3.50"
+    back = cfg.from_dict(cfg.to_dict(loaded))
+    assert back.hub.enabled is True
+    assert back.hub.port == 9000
+    assert back.hub.bind == "10.77.3.50"
+
+
+def test_a_silly_hub_port_is_refused():
+    """Clamped the way poll_seconds is: a hand-edited file must not leave the service
+    unable to start with nothing to say about why."""
+    assert cfg.from_dict({"hub": {"port": 70000}}).hub.port == 8797
+    assert cfg.from_dict({"hub": {"port": 0}}).hub.port == 8797
+    assert cfg.from_dict({"hub": {"port": "nonsense"}}).hub.port == 8797
+    assert cfg.from_dict({"hub": {"port": 443}}).hub.port == 443
+
+
+def test_in_app_dir_puts_a_file_beside_services_json():
+    """The hub's certificate belongs to the installation, not to the build — a build
+    replaces its own directory."""
+    where = cfg.in_app_dir("hub.pem")
+    assert where.endswith("hub.pem")
+    assert where.startswith(cfg.APP_DIR)
