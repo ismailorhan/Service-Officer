@@ -328,3 +328,26 @@ def test_forgetting_a_machine_signs_out_of_it(wnet, monkeypatch):
     connectors.forget("ctl053")
 
     assert wnet.cancelled == [r"\\10.77.3.51\IPC$"]
+
+
+def test_a_remote_machine_does_not_offer_this_computer_s_event_log(wnet,
+                                                                  monkeypatch):
+    """eventlog.read opens the log with OpenEventLog(None, …) — always this machine.
+    Claiming logs for another one served our own events under that service's name."""
+    conn = scm_windows.WindowsConnector("ctl053", _machine())
+
+    assert conn.abilities().logs is False
+    assert "event log cannot be read" in conn.abilities().why
+    with pytest.raises(RuntimeError) as raised:
+        conn.logs("MSSQLSERVER")
+    assert "not supported" in str(raised.value)
+
+
+def test_this_computer_still_reads_its_own(monkeypatch):
+    local = scm_windows.WindowsConnector("")
+    monkeypatch.setattr("core.eventlog.read",
+                        lambda *a, **k: [{"ts": "t", "level": "Information",
+                                          "summary": "started", "message": ""}])
+
+    assert local.abilities().logs is True
+    assert local.logs("Dnscache") == ["t  Information  started"]

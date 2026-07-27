@@ -435,10 +435,14 @@ class WindowsConnector:
         # mechanism we do not have. Push notifications are local-only too, in the
         # code as it stands — scm.Watcher skips remote services.
         local = not self.machine
+        # logs=local for the same reason as kill: the event log reader opens *this*
+        # computer's log, so claiming it for another machine would offer our own
+        # events under that service's name.
         return Abilities(
-            control=True, kill=local, logs=True, push=local,
+            control=True, kill=local, logs=local, push=local,
             why="" if local else "This is another computer: its process cannot be "
-                                 "terminated from here, and status is polled.")
+                                 "terminated from here, its event log cannot be read "
+                                 "from here, and status is polled.")
 
     def reachable(self) -> bool:
         try:
@@ -509,7 +513,18 @@ class WindowsConnector:
     def logs(self, name: str, lines: int = 50) -> list:
         """The Windows event log already has its own reader, which merges several
         logs and matches on more than the service name — so this defers to it
-        rather than growing a second, worse one."""
+        rather than growing a second, worse one.
+
+        This computer only. `eventlog.read` opens the log with
+        `OpenEventLog(None, …)`: there is no machine to pass, so for another machine
+        it would return *our* events under that service's name. Reading a remote
+        event log needs its own path (RPC to the target's log, or `wevtutil /r:`),
+        and until it exists, saying so beats answering with the wrong machine's
+        history.
+        """
+        if self.machine:
+            raise RuntimeError("Reading the event log of another computer is not "
+                               "supported yet.")
         from . import eventlog
         return [f"{r['ts']}  {r['level']}  {r['summary'] or r['message']}"
                 for r in eventlog.read([name], [name], limit=lines)]

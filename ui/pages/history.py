@@ -276,6 +276,9 @@ class HistoryPage(_Page):
                 service=self.service_filter.currentData(),
                 hours=self.range_filter.currentData() or None,
                 include_windows=self.include_windows.isChecked(),
+                # Which of them are on this computer, because the Windows event log
+                # is only this computer's — see history.query.
+                local_services=[s.name for s in cfg.services if not s.machine],
                 full=self.full_detail.isChecked())
         except Exception:
             return []

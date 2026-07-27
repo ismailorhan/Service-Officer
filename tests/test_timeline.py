@@ -1,6 +1,8 @@
 """The timeline has to read as an explanation, not a log dump."""
 
 import json
+
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from core import clock
@@ -130,8 +132,10 @@ def test_windows_events_are_merged_when_asked_for(tmp_path, monkeypatch):
     plain = history.query(service_names=["AppEngine"], path=p)
     assert all(r["kind"] != "windows" for r in plain)
 
+    # local_services says which of them are on this computer, because the event log
+    # being read is this computer's. AppEngine is.
     merged = history.query(service_names=["AppEngine"], labels=["CompuTec AppEngine"],
-                           include_windows=True, path=p)
+                           include_windows=True, local_services=["AppEngine"], path=p)
     win = next(r for r in merged if r["kind"] == "windows")
     assert win["event"] == "terminated unexpectedly"
     assert win["source"].startswith("Windows event log")
@@ -147,3 +151,45 @@ def test_reading_the_real_event_log_does_not_explode():
     assert isinstance(rows, list)
     for r in rows:
         assert {"ts", "level", "source", "event_id", "message"} <= set(r)
+
+
+def test_the_windows_event_log_is_only_read_for_this_computer(monkeypatch, tmp_path):
+    """Its rows come from OpenEventLog(None, ...) — always this machine. Merging them
+    into the timeline of a service that lives on another one attributes this computer's
+    events to that machine, which is the same silent lie as a File check measuring the
+    wrong disk."""
+    from core import eventlog, history
+
+    asked = []
+
+    def fake_read(names, labels=None, **kw):
+        asked.append(list(names))
+        return [{"ts": "2026-07-27T01:00:00+00:00", "service": names[0],
+                 "summary": "entered the running state", "message": "",
+                 "level": "Information", "event_id": 7036, "source": "SCM"}]
+
+    monkeypatch.setattr(eventlog, "read", fake_read)
+    path = str(tmp_path / "history.db")
+
+    rows = history.query(service_names=["AppEngine", "B1ServerTools64"],
+                         labels=["CompuTec AppEngine", "SAP B1 Server Tools"],
+                         local_services=["AppEngine"],
+                         include_windows=True, path=path)
+
+    assert asked == [["AppEngine"]], f"read the local log for a remote service: {asked}"
+    assert all(r["service"] == "AppEngine" for r in rows if r["kind"] == "windows")
+
+
+def test_without_being_told_which_are_local_no_windows_rows_are_invented(monkeypatch,
+                                                                        tmp_path):
+    """A caller that does not say which services are on this computer gets no event-log
+    rows rather than all of them. Defaulting the other way is how the bug got in."""
+    from core import eventlog, history
+
+    monkeypatch.setattr(eventlog, "read",
+                        lambda *a, **k: pytest.fail("read the log anyway"))
+
+    rows = history.query(service_names=["B1ServerTools64"], include_windows=True,
+                         path=str(tmp_path / "history.db"))
+
+    assert [r for r in rows if r.get("kind") == "windows"] == []

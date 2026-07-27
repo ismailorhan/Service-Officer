@@ -395,7 +395,7 @@ PENDING_STATES = ("Starting", "Stopping", "Resuming", "Pausing")
 
 def query(service_names=None, labels=None, service: str = None, hours: int = None,
           include_windows: bool = False, windows_levels=None, limit: int = 800,
-          path: str = None, full: bool = False) -> list:
+          path: str = None, full: bool = False, local_services=None) -> list:
     """One timeline, newest first, in a shape a table can render directly.
 
     Merges three kinds of row: what we asked for (action), what the SCM told us
@@ -481,11 +481,24 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
                          "source": SOURCE_TEXT.get(rec.get("source", ""),
                                                    rec.get("source", ""))})
 
-    if include_windows and service_names:
-        from . import eventlog
-        wanted = [service] if service else list(service_names)
+    # The Windows event log is *this* computer's — eventlog.read opens it with
+    # OpenEventLog(None, …) and there is no machine to pass. So it may only be read
+    # for services that live here. Merging it into another machine's timeline
+    # attributes this computer's events to that machine, which is the same silent lie
+    # as a File check measuring the wrong disk.
+    #
+    # `local_services` is required rather than defaulting to all of them: a caller
+    # that has not said which are local gets no event-log rows, because defaulting
+    # the other way round is how this got in.
+    here = set(local_services or ())
+    wanted, wanted_labels = [], []
+    if include_windows and service_names and here:
+        wanted = [n for n in ([service] if service else list(service_names))
+                  if n in here]
         wanted_labels = ([label_of.get(service, service)] if service
                          else list(labels or []))
+    if wanted:
+        from . import eventlog
         for rec in eventlog.read(wanted, wanted_labels, hours=hours or 168,
                                  levels=windows_levels, limit=400):
             name = rec.get("service") or ""
