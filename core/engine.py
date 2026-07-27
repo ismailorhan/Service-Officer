@@ -143,6 +143,13 @@ class Engine:
         edits a copy, and the engine must always read the current one."""
         return self._config()
 
+    def snapshot(self) -> dict:
+        """Everything a client needs to draw its first frame. Imported here rather
+        than at the top: wire imports nothing from the engine, and keeping it that way
+        is what stops the format and the machinery growing into each other."""
+        from . import wire
+        return wire.snapshot(self)
+
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
         self.prime_states()
