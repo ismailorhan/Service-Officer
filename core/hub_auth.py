@@ -30,6 +30,7 @@ import os
 import secrets as stdlib_secrets
 import socket
 import threading
+import time
 
 from . import applog
 from . import secrets as store          # the project's DPAPI store, not the stdlib
@@ -45,8 +46,18 @@ TOKEN_BYTES = 32
 #: Ten years. The certificate is pinned by fingerprint rather than trusted by a chain,
 #: so an expiry that lapsed would break every client and buy nothing.
 CERT_YEARS = 10
+#: How often a client's "last seen" is actually written. Every request would mean a
+#: DPAPI encrypt and an atomic file replace per request — measured at ~35 ms, which is
+#: most of the cost of answering a snapshot. A minute's resolution is all the
+#: `client list` column is for.
+SEEN_EVERY = 60.0
 
 _lock = threading.RLock()
+#: The client list, decrypted once. Every request checks a token, and a DPAPI decrypt
+#: plus a file read per request is the sort of cost that only shows up under a client.
+#: Invalidated whenever the list is written, which is the only way it changes.
+_cache: dict = None
+_seen_at: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -64,19 +75,41 @@ def _digest(token: str) -> str:
 
 
 def _read() -> dict:
+    """The client list, from the cache if it is warm.
+
+    Callers must hold `_lock`, and must not mutate what they get back — it is the
+    cached dictionary itself, not a copy, because copying it on every token check is
+    the cost this cache exists to avoid.
+    """
+    global _cache
+    if _cache is not None:
+        return _cache
     raw = store.get(CLIENTS_REF)
     if not raw:
-        return {}
+        _cache = {}
+        return _cache
     try:
         found = json.loads(raw)
     except ValueError:
         log.warning("the client list could not be read; starting an empty one")
-        return {}
-    return found if isinstance(found, dict) else {}
+        found = {}
+    _cache = found if isinstance(found, dict) else {}
+    return _cache
 
 
 def _write(clients: dict) -> bool:
-    return store.put(CLIENTS_REF, json.dumps(clients))
+    global _cache
+    ok = store.put(CLIENTS_REF, json.dumps(clients))
+    _cache = clients if ok else None
+    return ok
+
+
+def forget_cache() -> None:
+    """Drop the cached list. For tests, and for the moment a store is repointed."""
+    global _cache, _seen_at
+    with _lock:
+        _cache = None
+        _seen_at = {}
 
 
 def add_client(name: str) -> str:
@@ -114,10 +147,21 @@ def check(token: str) -> str:
 
 
 def note_seen(name: str) -> None:
-    """Remember when a client last spoke, so `client list` can say. Best-effort: a
-    failed write here must never refuse a request that was otherwise fine."""
+    """Remember when a client last spoke, so `client list` can say.
+
+    Written at most once a minute per client. Every request meant a DPAPI encrypt and
+    an atomic file replace per request — about 35 ms, most of the cost of answering a
+    snapshot — to keep a column nobody reads to the second.
+
+    Best-effort throughout: a failed write here must never refuse a request that was
+    otherwise fine.
+    """
     try:
+        now = time.monotonic()
         with _lock:
+            if now - _seen_at.get(name, 0.0) < SEEN_EVERY:
+                return
+            _seen_at[name] = now
             clients = _read()
             if name in clients:
                 clients[name]["last_seen"] = datetime.datetime.now().isoformat(

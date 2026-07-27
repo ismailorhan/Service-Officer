@@ -14,10 +14,18 @@ from core import hub_auth                                    # noqa: E402
 
 @pytest.fixture(autouse=True)
 def own_store(tmp_path, monkeypatch):
-    """Its own secret store, so a test never reads or writes the real one."""
+    """Its own secret store, so a test never reads or writes the real one.
+
+    And a cold cache: the client list is held in memory between requests — a DPAPI
+    decrypt per token check was measurable — so a test that did not clear it would read
+    the previous test's clients out of the last one's store.
+    """
     from core import secrets
     monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "secrets.dat"))
     monkeypatch.setattr(secrets, "_last_error", "")
+    hub_auth.forget_cache()
+    yield
+    hub_auth.forget_cache()
 
 
 def test_a_token_is_long_enough_to_be_uninteresting():
@@ -127,3 +135,50 @@ def test_a_replaced_certificate_has_a_different_fingerprint(tmp_path):
     _p, second = hub_auth.ensure_certificate(path)
 
     assert first != second
+
+
+def test_a_token_check_does_not_decrypt_the_store_every_time(monkeypatch):
+    """Measured before this: a snapshot took 37 ms over TLS against 0.27 ms to build
+    one, and nearly all of the difference was a DPAPI decrypt plus a file write per
+    request — the write from recording that the client had been seen."""
+    from core import secrets
+
+    token = hub_auth.add_client("busy")
+    reads = []
+    real_get = secrets.get
+    monkeypatch.setattr(secrets, "get",
+                        lambda ref: reads.append(ref) or real_get(ref))
+    writes = []
+    real_put = secrets.put
+    monkeypatch.setattr(secrets, "put",
+                        lambda ref, value: writes.append(ref) or real_put(ref, value))
+
+    for _ in range(50):
+        assert hub_auth.check(token) == "busy"
+        hub_auth.note_seen("busy")
+
+    assert reads == [], f"decrypted the store {len(reads)} times"
+    assert len(writes) <= 1, f"wrote {len(writes)} times for fifty requests"
+
+
+def test_last_seen_is_still_recorded_once(monkeypatch):
+    """Throttled, not dropped: the column exists so somebody can tell whether a client
+    is still talking."""
+    token = hub_auth.add_client("seen")
+    monkeypatch.setattr(hub_auth, "SEEN_EVERY", 0.0)
+
+    hub_auth.note_seen(hub_auth.check(token))
+
+    assert hub_auth.clients()[0]["last_seen"]
+
+
+def test_revoking_takes_effect_through_the_cache():
+    """The cache is only safe if every write invalidates it — a revoked token that
+    went on working because the list was remembered would be the worst kind of bug
+    here."""
+    token = hub_auth.add_client("cached")
+    assert hub_auth.check(token) == "cached"
+
+    hub_auth.revoke("cached")
+
+    assert hub_auth.check(token) == ""
