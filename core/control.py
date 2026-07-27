@@ -31,6 +31,21 @@ def _for(machine: str = "", record=None):
     return connectors.for_machine(machine, record)
 
 
+def connector_for(machine: str = "", record=None):
+    """The transport itself, for the two checks that need to reach past a status.
+
+    A file's age and a command's exit code are questions about the machine rather
+    than about a service, so there is no verb below to route them through — but they
+    are still questions about *that* machine, and answering them here is how a
+    heartbeat check on a Linux service ended up measuring a Windows path.
+
+    Named rather than `_for` because health imports this deliberately: a caller
+    reaching for the transport is doing something the seven verbs do not cover, and
+    that should be visible at the call site.
+    """
+    return _for(machine, record)
+
+
 # -- the seven verbs --------------------------------------------------------
 def query_status(service_name: str, machine: str = "") -> str:
     return _for(machine).status(service_name).state

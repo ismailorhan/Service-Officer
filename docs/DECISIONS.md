@@ -475,3 +475,38 @@ The one to watch is the machines list, and 3 ms every three seconds is a thousan
 a core. The expensive things in this application are all on the other side of a
 network, which is why the rule that came out of tonight is about threads and not about
 algorithms: **the UI thread only ever asks this computer.**
+
+---
+
+## A check has to measure the machine the service is on — 2026-07-27
+
+Found while answering "why does it matter where the hub runs", and it was live in 2.1.0:
+`_file` called `os.path.getmtime` and `_command` called `subprocess.Popen`, both ignoring
+the service's machine entirely. So a heartbeat check on a Linux service measured a path on
+the Windows box the app happened to be running on — and **passed**, if a file of that name
+existed locally. The connectors had `run()` and `stat()` for exactly this from the day the
+Linux transport was written; health never called them.
+
+Both now go through the transport. Verified against the real machines:
+
+| Check | Machine | Answer |
+|---|---|---|
+`systemctl is-active webclient.service` | hanadev, over SSH | ok, `active`, 891 ms |
+`su - hdbadm -c "HDB info"` | hanadev | ok — which is what makes HANA checkable at all |
+`/usr/sap/SAPBusinessOne/WebClient/startup.sh` exists | hanadev | ok |
+`/no/such/heartbeat` | hanadev | fails: *not on sd* |
+`C:\Windows\win.ini` **as if it were on hanadev** | hanadev | **fails** — it passed before |
+`sc query MSSQLSERVER` | sc-sql, remote Windows | fails: *running a command on another computer is not supported yet* |
+`C:\Windows\win.ini`, `cmd /c exit 0` | this computer | unchanged |
+
+The last two rows are the point. A remote Windows machine cannot run a command, and saying
+so is the whole job: the alternative is running it here and calling the answer that
+machine's. And the local paths deliberately do **not** route through a connector — they are
+a few lines of `os` and `subprocess` that have worked for months, and a registry lookup in
+front of every check on the machine we are already standing on buys nothing.
+
+**Why this decides where the hub goes.** Whatever machine the hub runs on is `machine=""`:
+it gets push notifications (32 ms) instead of polling (5 s), needs no firewall rule, no
+credentials, and is the only Windows machine where Kill, Command and File checks work at
+all. Everything else is a remote target. So the hub belongs on the machine whose services
+matter most — or the landscape has to accept polling and RPC rules for them.

@@ -206,11 +206,44 @@ def _process(check, machine: str, control=None, service: str = "") -> Result:
     return Result(False, "the SCM reports it as running, but there is no process")
 
 
-def _file(check, machine: str) -> Result:
-    try:
-        age = time.time() - os.path.getmtime(check.path)
-    except OSError as exc:
-        return Result(False, f"{check.path} — {getattr(exc, 'strerror', exc)}")
+def _on(machine: str, control):
+    """The transport for a machine, or None for this computer.
+
+    None rather than the local connector on purpose: the local paths below are a few
+    lines of `os` and `subprocess` that have worked for months, and routing them
+    through a connector to save those lines would put a registry lookup in front of
+    every check on the machine we are already standing on.
+    """
+    if not machine or control is None:
+        return None
+    getter = getattr(control, "connector_for", None)
+    if not callable(getter):
+        return None
+    return getter(machine)
+
+
+def _file(check, machine: str = "", control=None) -> Result:
+    """Is the file there, and was it written recently?
+
+    On the machine the *service* is on — which is not always this one. It used to
+    call os.path.getmtime whatever the machine was, so a heartbeat check on a Linux
+    service measured a path on the Windows box the app happened to run on, and passed
+    if a file of that name existed locally. A check that measures the wrong machine is
+    worse than no check, because it is believed.
+    """
+    remote = _on(machine, control)
+    if remote is not None:
+        try:
+            exists, age = remote.stat(check.path)
+        except Exception as exc:
+            return Result(False, f"{check.path} — {exc}")
+        if not exists:
+            return Result(False, f"{check.path} — not on {machine}")
+    else:
+        try:
+            age = time.time() - os.path.getmtime(check.path)
+        except OSError as exc:
+            return Result(False, f"{check.path} — {getattr(exc, 'strerror', exc)}")
     if age <= check.max_age_seconds:
         return Result(True, f"written {int(age)}s ago")
     return Result(False, f"last written {int(age)}s ago, expected within "
@@ -232,7 +265,25 @@ def _kill_tree(pid: int) -> None:
         pass
 
 
-def _command(check, machine: str) -> Result:
+def _command(check, machine: str = "", control=None) -> Result:
+    """Run it where the service is.
+
+    Over SSH for a Linux target — which is what makes `su - devadm -c "HDB info"` a
+    health check rather than a note in a runbook. A remote Windows machine has no way
+    to run a command yet and says so; running it here and calling the answer that
+    machine's is the thing this must never do again.
+    """
+    remote = _on(machine, control)
+    if remote is not None:
+        try:
+            code, said = remote.run(check.command, timeout=check.timeout_seconds)
+        except Exception as exc:
+            return Result(False, str(exc))
+        if code == check.expect_exit:
+            return Result(True, (said or f"exit {code}").strip()[:200])
+        return Result(False, f"exit {code}"
+                             + (f" — {said.strip()[:200]}" if said else ""))
+
     try:
         proc = subprocess.Popen(check.command, shell=True, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -270,9 +321,9 @@ def run_check(check, machine: str = "", control=None, service: str = "") -> Resu
         elif check.kind == "process":
             result = _process(check, machine, control, service)
         elif check.kind == "file":
-            result = _file(check, machine)
+            result = _file(check, machine, control)
         elif check.kind == "command":
-            result = _command(check, machine)
+            result = _command(check, machine, control)
         else:
             result = Result(False, f"unknown check “{check.kind}”")
     except Exception as exc:                       # a check must never take us

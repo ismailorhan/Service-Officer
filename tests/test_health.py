@@ -896,3 +896,70 @@ def test_once_the_window_closes_failures_count_again():
     clock.tick(6)
     mon.check_now(svc)
     assert mon.verdict(svc.name) == health.UNHEALTHY
+
+
+def test_a_file_check_on_another_machine_looks_on_that_machine(tmp_path):
+    """The bug this exists for, and it was live: `_file` ignored the machine and
+    called os.path.getmtime, so a File check on a Linux service measured a path on
+    the Windows box the app happened to be running on. Silently — a heartbeat file
+    that does not exist over there passed here, because a file of the same name
+    existed locally."""
+    asked = []
+
+    class Remote:
+        def stat(self, path):
+            asked.append(path)
+            return True, 42.0                 # exists, written 42 seconds ago
+
+    fresh = cfg_mod.HealthCheck(kind="file", path="/var/log/b1/heartbeat",
+                               max_age_seconds=300)
+    result = health.run_check(fresh, machine="hanadev", control=_router(Remote()))
+
+    assert asked == ["/var/log/b1/heartbeat"], "asked this computer instead"
+    assert result.ok is True
+    assert "42" in result.detail or "seconds" in result.detail
+
+
+def test_a_command_check_on_another_machine_runs_it_there(tmp_path):
+    asked = []
+
+    class Remote:
+        def run(self, command, timeout=10.0):
+            asked.append(command)
+            return 0, "HDB is running"
+
+    check = cfg_mod.HealthCheck(kind="command",
+                               command='su - devadm -c "HDB info"')
+    result = health.run_check(check, machine="hanadev", control=_router(Remote()))
+
+    assert asked == ['su - devadm -c "HDB info"']
+    assert result.ok is True and "HDB is running" in result.detail
+
+
+def test_a_check_a_transport_cannot_do_says_so_instead_of_measuring_here():
+    """A remote Windows machine has no way to run a command yet. Reporting that is
+    the whole point: the alternative is running it locally and calling the answer
+    the remote machine's."""
+    class Refuses:
+        def run(self, command, timeout=10.0):
+            raise RuntimeError("Running a command on another computer is not "
+                               "supported yet.")
+
+    check = cfg_mod.HealthCheck(kind="command", command="sc query MSSQLSERVER")
+    result = health.run_check(check, machine="sc-sql", control=_router(Refuses()))
+
+    assert result.ok is False
+    assert "not supported" in result.detail
+
+
+def _router(connector):
+    """Stands in for core.control: the one function health needs from it."""
+    class Router:
+        @staticmethod
+        def connector_for(machine, record=None):
+            return connector
+
+        @staticmethod
+        def process_id(service, machine=""):
+            return 0
+    return Router
