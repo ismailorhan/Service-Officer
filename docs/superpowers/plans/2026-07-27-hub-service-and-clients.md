@@ -1699,20 +1699,62 @@ git commit -m "Record who asked for an action"
 
 ## Task 11: Installing it
 
+**One installer, two components.** Not two installers, and the reasoning is worth
+having written down because it is the kind of decision that gets quietly reversed:
+
+| | One installer with components | Two installers |
+|---|---|---|
+Artifacts to build, sign, publish | one | two, and code signing is per-artifact effort |
+Payload on disk after install | only the chosen component | only what that installer holds |
+Download size | both payloads, ~45 MB (the hub excludes Qt, the client excludes the service exe) | smaller each |
+Version skew between hub and client | impossible — same file | a real failure mode, and the protocol version check exists because of it |
+The common case (one machine, no hub) | untick one box, or accept the default | pick the right download |
+Both roles on one machine — the test setup | tick both | install twice |
+
+The download grows by the size of a payload most people will not install. That is the
+price, and it is worth paying to make "the hub and the client are the same build" true
+by construction rather than by discipline.
+
 **Files:**
 - Modify: `installer.iss`
 - Create: `docs/HUB.md`
 
 **Interfaces:**
 - Consumes: `hub.exe` from Task 8.
-- Produces: an installer that can set up a hub, a client, or both.
+- Produces: one installer that sets up a hub, a client, or both, interactively or
+  silently.
 
 - [ ] **Step 1: Add the components to `installer.iss`**
 
 ```
+[Types]
+Name: "client";  Description: "Client only — the tray application"
+Name: "hub";     Description: "Hub only — the Windows service, for a server"
+Name: "full";    Description: "Both, on this machine"
+Name: "custom";  Description: "Choose"; Flags: iscustom
+
 [Components]
-Name: "client"; Description: "Service Officer (tray application)"; Types: full compact custom; Flags: fixed
-Name: "hub";    Description: "Service Officer Hub (Windows service)"; Types: full
+Name: "client"; Description: "Service Officer (tray application)"; Types: client full
+Name: "hub";    Description: "Service Officer Hub (Windows service)"; Types: hub full
+```
+
+Neither component is `fixed`: a server that nobody logs into wants the hub without a
+tray icon, and a workstation wants the tray without a service. What must not happen is
+*neither*, so:
+
+```
+[Code]
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = wpSelectComponents)
+     and not (IsComponentSelected('client') or IsComponentSelected('hub')) then
+  begin
+    MsgBox('Choose at least one: the tray application, the hub service, or both.',
+           mbError, MB_OK);
+    Result := False;
+  end;
+end;
 ```
 
 Files: ship `ServiceOfficerHub` under the `hub` component. Then:
@@ -1732,6 +1774,50 @@ Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Service 
 ```
 
 The firewall rule is **domain profile only**, deliberately: the same reasoning as the rules enabled on `10.77.3.110` on 2026-07-26 — a machine can find itself on a public network, and a management port has no business being open there.
+
+- [ ] **Step 1b: Let a client be installed already pointed at its hub**
+
+Five workstations is four too many to configure by hand. Two optional parameters,
+consumed on the client component only:
+
+```
+[Setup]
+; /HUBURL=https://ctl052:8797 /HUBTOKEN=xxxx
+[Run]
+Filename: "{app}\ServiceOfficer.exe"; \
+  Parameters: "--connect {code:GetHubUrl} --token {code:GetHubToken} --store-only"; \
+  Components: client; Check: HaveHubDetails; Flags: runhidden waituntilterminated
+```
+
+`--store-only` writes the token and pins the certificate, then exits without opening
+anything — so the installer finishes without a tray icon appearing mid-install, and the
+first real launch is already connected. Add it to `app.py`'s argument handling in
+Task 9 (it is two lines: do the storing, then `return 0` before the QApplication is
+built).
+
+A token on an installer command line is visible in the process list while the
+installer runs, and in whatever log a deployment tool keeps. Say so in `docs/HUB.md`,
+and say the alternative: install without it and pass `--token` once on first launch.
+Neither is worse than the other; what matters is that nobody is surprised.
+
+- [ ] **Step 1c: Do not ask for the service account's password**
+
+The hub is registered as **LocalSystem** and the administrator changes it afterwards in
+`services.msc` → Log On, or with `sc.exe config`. The installer does not collect a
+password: Inno would hold it in memory and in its own log, an unattended install would
+need it on a command line, and the whole point of running the hub as a domain account
+is to *stop* storing credentials.
+
+`docs/HUB.md` says this in one sentence and gives the command:
+
+```bat
+sc.exe config ServiceOfficerHub obj= "CT\svc-officer" password= "..."
+```
+
+with the note that it is typed by a person in a console, once, and that the account
+needs *Log on as a service* (`secpol.msc` → User Rights Assignment) — which is the
+single most common reason a service account fails to start and the message Windows
+gives for it is unhelpful.
 
 - [ ] **Step 2: Handle upgrading a running service**
 
@@ -1757,6 +1843,26 @@ Sections, each of which must contain the actual commands rather than a descripti
 5. The certificate: where it is, what its fingerprint is, and what to do when it changes.
 6. Troubleshooting, as a table of symptom → check → fix. Include: `curl -k https://hub:8797/api/v1/ping`, the log path, `Get-Service ServiceOfficerHub`, and "the hub is up but a target says no answer" pointing at the Machines page's own reachability line.
 
+- [ ] **Step 3b: The silent commands, tested rather than written down hopefully**
+
+These go in `docs/HUB.md` and each one has to be run once before it is documented:
+
+```bat
+:: a server: the hub, no tray icon
+ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=hub
+
+:: a workstation, already pointed at the hub
+ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=client ^
+    /HUBURL=https://ctl052:8797 /HUBTOKEN=xxxxxxxx
+
+:: this machine, both, for testing
+ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=full
+```
+
+An upgrade needs no `/TYPE`: Inno remembers what was installed and preselects it, so
+`ServiceOfficerSetup.exe /SILENT /NORESTART` upgrades a hub as a hub and a client as a
+client. Verify that by upgrading both kinds of install rather than assuming it.
+
 - [ ] **Step 4: Build the installer and install it on this machine**
 
 ```bash
@@ -1769,6 +1875,11 @@ Get-Service ServiceOfficerHub
 curl.exe -k https://localhost:8797/api/v1/ping
 Get-NetFirewallRule -DisplayName "Service Officer Hub" | Select-Object Enabled, Profile
 ```
+
+Then install the *client only* on top and confirm the hub service is left alone and the
+tray icon appears; then `/TYPE=full`; then uninstall and confirm the service is stopped,
+removed, and the firewall rule is gone. Four installs, because the component matrix is
+exactly where an installer is wrong in a way nobody notices until a customer's server.
 
 - [ ] **Step 5: Commit**
 
