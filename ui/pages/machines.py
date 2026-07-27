@@ -789,7 +789,7 @@ class MachineDetail(_Page):
             if callable(sign_in):
                 sign_in()
             if not conn.reachable():
-                self.tested.emit(f"{machine.where()} did not answer.")
+                self.tested.emit(self._why_unreachable(machine))
                 return
             can = conn.abilities()
         except RuntimeError as exc:
@@ -810,6 +810,19 @@ class MachineDetail(_Page):
         if can.why:
             said.append(can.why)
         self.tested.emit("  ".join(said))
+
+    def _why_unreachable(self, machine) -> str:
+        """A remote machine that did not answer: say what to open, not just that it
+        did not. A Linux machine's reasons come from SSH; a Windows one's from the
+        firewall diagnosis."""
+        if machine.is_linux:
+            return (f"{machine.where()} did not answer over SSH. Check that the "
+                    f"machine is on, that port {machine.port or 22} is open, and that "
+                    f"the account, key or password and the host key all match.")
+        from core import scm_windows
+        host = machine.address or machine.name
+        told = scm_windows.diagnose(host)
+        return told or f"{machine.where()} did not answer."
 
     def _say_result(self, text: str) -> None:
         """On the UI thread, and only if the page is still there — closing the panel

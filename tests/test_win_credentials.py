@@ -396,3 +396,29 @@ def test_a_missing_file_on_another_machine_is_absent_not_an_error(monkeypatch):
     exists, age = conn.stat(r"C:\nope\missing.txt")
 
     assert exists is False and age == 0.0
+
+
+def test_a_closed_smb_port_names_that_as_the_problem(monkeypatch):
+    """The first thing that has to work. If 445 is shut, nothing else matters and
+    the message says so rather than blaming the service manager."""
+    said = scm_windows.diagnose("10.77.3.110",
+                                port_open=lambda host, port: False)
+    assert "445" in said and "SMB" in said
+    assert "first thing" in said
+
+
+def test_an_open_port_but_dead_scm_names_the_firewall_rule(monkeypatch):
+    """The common one, and the one whose native error tells you nothing. 445 is up,
+    the service manager is not, so the Remote Service Management rule is off."""
+    monkeypatch.setattr(scm_windows, "reachable", lambda host: False)
+    said = scm_windows.diagnose("10.77.3.110",
+                                port_open=lambda host, port: True)
+    assert "Remote Service Management" in said
+    assert "File and Printer Sharing" in said
+    assert "RPC server is unavailable" in said
+
+
+def test_a_machine_that_answers_has_nothing_to_diagnose(monkeypatch):
+    monkeypatch.setattr(scm_windows, "reachable", lambda host: True)
+    assert scm_windows.diagnose("10.77.3.112",
+                                port_open=lambda host, port: True) == ""

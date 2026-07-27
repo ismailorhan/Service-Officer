@@ -399,6 +399,45 @@ def reachable(machine: str, timeout: float = REMOTE_TIMEOUT) -> bool:
     return answer[0]
 
 
+def diagnose(host: str, port_open=None) -> str:
+    """Why a remote Windows machine is not answering, in a sentence that names the
+    fix — or "" when it answers fine.
+
+    "did not answer" moves the problem rather than solving it. The three failures a
+    person actually hits need three different actions, and they are distinguishable:
+
+      * 445 refused / timed out → SMB is blocked or the machine is off. Nothing else
+        can work until this does.
+      * 445 open but the service manager will not → the *Remote Service Management*
+        firewall rule is not enabled on that machine. This is the common one, and the
+        one whose native error ("the RPC server is unavailable", after ~21-42s) tells
+        you nothing.
+      * an authentication error → surfaced by win_session before this is reached, so
+        it is not repeated here.
+
+    `port_open` is injectable for the test; live it does one short TCP connect.
+    """
+    import socket
+    if port_open is None:
+        def port_open(where, tcp_port):
+            try:
+                with socket.create_connection((where, tcp_port), timeout=4):
+                    return True
+            except OSError:
+                return False
+    if not port_open(host, 445):
+        return (f"{host} did not answer on 445 (SMB). It may be switched off, or a "
+                f"firewall between here and there is blocking it. This is the first "
+                f"thing that has to work.")
+    if not reachable(host):
+        return (f"{host} answers on 445, but its service manager did not. Enable the "
+                f"“Remote Service Management” firewall rule on that machine — in the "
+                f"Domain profile — and the “File and Printer Sharing (SMB-In)” rule "
+                f"with it. Until then Windows refuses the connection with “the RPC "
+                f"server is unavailable”.")
+    return ""
+
+
 class WindowsConnector:
     """The SCM as a connector. A thin wrapper: the functions above are the
     implementation, this gives them the shape everything above `control.py`
