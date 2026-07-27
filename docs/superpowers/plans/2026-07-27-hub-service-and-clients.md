@@ -34,6 +34,29 @@ Bearer token per client | Windows-integrated auth (Negotiate) cannot work across
 Hub is the only writer of `services.json` and `history.db` | SQLite over a network share with several writers corrupts. One writer, many readers over the API. |
 Embedded mode stays | It is what everyone has today, it is the fallback when the hub is down, and it keeps the engine honest: the same code must run both ways. |
 
+## What a client may do, and what that costs
+
+**Everything the hub's own machine can do.** A client is not a viewer: start, stop,
+restart, kill, run a stack, run a trigger, edit the config, read the history — all of it,
+from any machine with a token. The client's own privileges are irrelevant, because the
+client executes nothing; the hub does, with the hub's account.
+
+That is the feature and it is also the whole security model, so it has to be said plainly:
+
+- **The token is the privilege.** Somebody holding one can restart a production service
+  without being an administrator anywhere. It is issued per client, it is revocable
+  (`hub.exe client revoke <name>`), and it is stored where only administrators on that
+  machine can read it — but it is not a password and there is no per-action permission
+  behind it.
+- **So the history has to say who.** That is Task 10, and this is why it is not optional
+  polish: with one operator, "restart at 03:00" was answerable from memory. With five, it
+  is answerable only from the record.
+- **Read-only tokens are a deliberate not-yet.** The shape that would carry them is
+  already here — `hub_auth.check()` returns a client name, so returning a role instead is
+  a change to one function and one `if` in the action endpoint. Building the roles now
+  would be inventing a permission model for a team of five who all have the server
+  passwords anyway.
+
 **Deliberately out of scope of this plan** (each needs its own plan):
 - The browser UI. This plan reserves the endpoints and serves a placeholder page, nothing more.
 - A hosted hub with thin clients over the internet (the "we host it" idea). The API shape here does not prevent it — token auth and TLS are already the right primitives — but multi-tenancy, accounts and internet exposure are a different product and must not be designed in passing.
@@ -368,6 +391,101 @@ def _call(self, callback, **facts) -> None:
     except Exception:
         log.exception("a listener failed handling %s", facts.get("kind", "an event"))
 ```
+
+- [ ] **Step 3b: One action per service at a time, and say whose**
+
+Every client can do everything the hub's own machine can — that is the point of the
+split, and it means two people can press Restart on the same service within a second of
+each other. It also means the watchdog can decide to recover a service while somebody is
+already restarting it, which is **possible today** and has simply never been observed
+because there has only ever been one operator.
+
+So the engine takes a lock per `(machine, service)` and refuses the second attempt with
+the name of whoever holds it:
+
+```python
+class Busy(RuntimeError):
+    """Somebody is already doing something to this service.
+
+    Carries who and what, because "busy" on its own invites pressing the button again.
+    """
+
+    def __init__(self, actor: str, action: str, since: float):
+        self.actor, self.action, self.since = actor, action, since
+        who = actor or "something else"
+        super().__init__(f"{who} is already running {action} on this service")
+```
+
+In `act`, before the thread is started:
+
+```python
+    key = (machine or "", service)
+    with self._acting_lock:
+        held = self._acting.get(key)
+        if held is not None:
+            raise Busy(held["actor"], held["action"], held["at"])
+        self._acting[key] = {"actor": actor, "action": action, "at": time.time()}
+```
+
+and cleared in `work()`'s final block, next to `self._finished(action_id)`.
+
+The same lock is taken by the watchdog, the health monitor's restart action, a stack step
+and a trigger — all of them go through `act`, which is why it is the place to put it. A
+stack refuses to start at all if any of its services is held, rather than stopping
+halfway: a half-run stack is worse than one that did not start, because nobody knows
+which half.
+
+Write the test first:
+
+```python
+def test_two_people_cannot_restart_the_same_service_at_once(monkeypatch):
+    """Five clients, one landscape. Two restarts interleaving on one service is a
+    service stopped twice and started once, and the second person has no idea."""
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(name="AppEngine")])
+    gate = threading.Event()
+    monkeypatch.setattr(engine_mod.control, "restart_service",
+                        lambda name, machine="": gate.wait(5))
+    monkeypatch.setattr(engine_mod.control, "query_status",
+                        lambda name, machine="": st.RUNNING)
+    built = engine_mod.Engine(lambda: cfg, store=st.Store())
+
+    first = built.act("restart", "AppEngine", actor="ismail")
+
+    with pytest.raises(engine_mod.Busy) as raised:
+        built.act("restart", "AppEngine", actor="ayse")
+    assert "ismail" in str(raised.value)
+    assert raised.value.action == "restart"
+
+    gate.set()
+    assert built.wait_for_actions(timeout=10)
+    # And once it is over, the next person may act.
+    assert built.act("restart", "AppEngine", actor="ayse") != first
+
+
+def test_the_watchdog_does_not_fight_a_person(monkeypatch):
+    """It goes through the same door, so it waits its turn instead of restarting
+    something that is already being restarted — which is today's behaviour and has
+    only been survivable because there has been one operator."""
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(name="AppEngine")])
+    gate = threading.Event()
+    monkeypatch.setattr(engine_mod.control, "stop_service",
+                        lambda name, machine="": gate.wait(5))
+    monkeypatch.setattr(engine_mod.control, "query_status",
+                        lambda name, machine="": st.STOPPED)
+    built = engine_mod.Engine(lambda: cfg, store=st.Store())
+    built.act("stop", "AppEngine", actor="ismail")
+
+    with pytest.raises(engine_mod.Busy):
+        built.act("start", "AppEngine", actor="watchdog")
+
+    gate.set()
+    assert built.wait_for_actions(timeout=10)
+```
+
+The API turns `Busy` into **409** with `{"actor", "action", "since"}`, and the client
+shows it on the row it was pressed on — not in a dialog. "Ismail is already restarting
+this" beside the service is an answer; a modal box in the middle of the screen is an
+interruption.
 
 - [ ] **Step 4: Run the engine tests**
 
