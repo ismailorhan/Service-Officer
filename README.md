@@ -97,9 +97,10 @@ Setting one up, the service account, the certificate and the troubleshooting tab
 dist\ServiceOfficerSetup.exe
 ```
 
-One installer, and it asks what this computer should do: run the **Hub (service) and
-Client (tray)**, the **Hub only** (a server nobody logs into), or the **Client only**. Then
-it asks which hub the Client reads — a hub on this computer counts — and checks the answer:
+One installer, and it asks one question: **run a hub on this computer**, or **connect to an
+existing one**. Every installation has the panel — on a server nobody logs into it never
+runs, and the moment somebody does it is what they want. Then it asks which hub the panel
+reads — a hub on this computer counts — and checks the answer:
 an address on another computer running a different version stops the installation rather
 than producing a client that connects and then refuses everything. A single-machine install
 is the first answer and needs nothing else. The address can be changed later in

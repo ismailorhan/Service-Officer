@@ -15,7 +15,7 @@
 ; download that carries a payload most people will not install, and it is worth it.
 ;
 ; Silent installs:
-;   ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=hub [/HUBPORT=9100]
+;   ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=full [/HUBPORT=9100]
 ;   ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=client ^
 ;       /HUBURL=https://ctl052:8797 /HUBTOKEN=xxxxxxxx
 ;   ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=full
@@ -67,9 +67,7 @@ Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
 english.AutoStartTask=Start &Service Officer automatically when Windows starts
 english.DesktopIconTask=Create a &desktop shortcut
 english.TypeClient=Client (tray) only
-english.TypeHub=Hub (service) only
 english.TypeFull=Hub and Client
-english.TypeCustom=Choose
 english.CompClient=Service Officer (tray application)
 english.CompHub=Service Officer Hub (Windows service)
 english.RegisteringHub=Registering the hub service...
@@ -77,9 +75,8 @@ english.PairingLocal=Pairing this computer with its hub...
 english.SecuringData=Setting permissions on the data folder...
 english.TypeCaption=Setup type
 english.TypeBody=What should this computer do?
-english.TypeBoth=Hub (service) and Client (tray) — this computer does the work
-english.TypeHubOnly=Hub (service) only — a server nobody logs into
-english.TypeClientOnly=Client (tray) only — read a hub on another computer
+english.TypeBoth=Run a hub on this computer — it does the work, and the panel is here
+english.TypeClientOnly=Connect to an existing hub — another computer does the work
 english.HubCaption=The hub
 english.HubBody=Which hub should the Client read? A hub on this computer counts — the address is checked either way.
 english.HubHostField=Host name or IP
@@ -104,9 +101,7 @@ english.ReadyClientRemote=Client (tray): reads %1
 turkish.AutoStartTask=Windows ba&şladığında Service Officer'ı otomatik başlat
 turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
 turkish.TypeClient=Yalnızca Client (tepsi)
-turkish.TypeHub=Yalnızca Hub (servis)
 turkish.TypeFull=Hub ve Client
-turkish.TypeCustom=Seç
 turkish.CompClient=Service Officer (tepsi uygulaması)
 turkish.CompHub=Service Officer Hub (Windows hizmeti)
 turkish.RegisteringHub=Hub hizmeti kaydediliyor...
@@ -114,9 +109,8 @@ turkish.PairingLocal=Bu makine hub'ına eşleştiriliyor...
 turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
 turkish.TypeCaption=Kurulum türü
 turkish.TypeBody=Bu bilgisayar ne yapsın?
-turkish.TypeBoth=Hub (servis) ve Client (tepsi) — işi bu bilgisayar yapar
-turkish.TypeHubOnly=Yalnızca Hub (servis) — kimsenin oturum açmadığı bir sunucu
-turkish.TypeClientOnly=Yalnızca Client (tepsi) — başka bir bilgisayardaki hub'ı okur
+turkish.TypeBoth=Bu bilgisayarda bir hub çalıştır — işi o yapar, panel de burada
+turkish.TypeClientOnly=Mevcut bir hub'a bağlan — işi başka bir bilgisayar yapıyor
 turkish.HubCaption=Hub
 turkish.HubBody=Client hangi hub'ı okusun? Bu bilgisayardaki bir hub da sayılır — adres her durumda denetlenir.
 turkish.HubHostField=Makine adı veya IP
@@ -140,17 +134,19 @@ turkish.ReadyClientLocal=Client (tepsi): bu bilgisayardaki hub'ı okur
 turkish.ReadyClientRemote=Client (tepsi): %1 okur
 
 [Types]
+; Two, matching the two answers on the first page. There is no "hub only": every
+; installation has the panel, because a server somebody logs into wants it and a server
+; nobody logs into never runs it.
 Name: "client"; Description: "{cm:TypeClient}"
-Name: "hub";    Description: "{cm:TypeHub}"
 Name: "full";   Description: "{cm:TypeFull}"
-Name: "custom"; Description: "{cm:TypeCustom}"; Flags: iscustom
 
 [Components]
-; Neither is `fixed`: a server nobody logs into wants the hub without a tray icon, and
-; a workstation wants the tray without a service. What must not happen is *neither* —
-; see NextButtonClick.
+; The client is in both types and the hub only in `full`: every installation has a panel,
+; and the setup type decides whether a hub comes with it. The components page is never
+; shown — see ShouldSkipPage — so this section is what the two answers mean, not a list
+; anybody picks from.
 Name: "client"; Description: "{cm:CompClient}"; Types: client full
-Name: "hub";    Description: "{cm:CompHub}";    Types: hub full
+Name: "hub";    Description: "{cm:CompHub}";    Types: full
 
 [Tasks]
 Name: "autostart"; Description: "{cm:AutoStartTask}"; GroupDescription: "{cm:AdditionalIcons}"; Components: client
@@ -282,8 +278,7 @@ Type: files; Name: "{userappdata}\Microsoft\Windows\Start Menu\Programs\Startup\
 // opened the panel and found it empty.
 const
   TypeBoth = 0;
-  TypeHubOnly = 1;
-  TypeClientOnly = 2;
+  TypeClientOnly = 1;
 
 var
   TypePage: TInputOptionWizardPage;
@@ -525,13 +520,12 @@ end;
 
 function InstallingHub(): Boolean;
 begin
-  Result := TypePage.SelectedValueIndex <> TypeClientOnly;
+  Result := TypePage.SelectedValueIndex = TypeBoth;
 end;
 
-function InstallingClient(): Boolean;
-begin
-  Result := TypePage.SelectedValueIndex <> TypeHubOnly;
-end;
+// There is no InstallingClient. Every installation has one — see [Types] — so the question
+// stopped being a question, and the branches that asked it are gone rather than left
+// answering True for ever.
 
 // ---------------------------------------------------------------------------
 // what the [Run] entries ask
@@ -609,9 +603,7 @@ procedure ShowTokenOnlyIfNeeded();
 var
   Local: Boolean;
 begin
-  // No Client, no token: nothing here will read a hub.
-  Local := (not InstallingClient())
-           or LooksLikeThisComputer(HostOfUrl(Trim(HostEdit.Text)));
+  Local := LooksLikeThisComputer(HostOfUrl(Trim(HostEdit.Text)));
   TokenCaption.Visible := not Local;
   TokenEdit.Visible := not Local;
   if Local then
@@ -723,7 +715,6 @@ begin
     wpSelectDir, ExpandConstant('{cm:TypeCaption}'),
     ExpandConstant('{cm:TypeBody}'), '', True, False);
   TypePage.Add(ExpandConstant('{cm:TypeBoth}'));
-  TypePage.Add(ExpandConstant('{cm:TypeHubOnly}'));
   TypePage.Add(ExpandConstant('{cm:TypeClientOnly}'));
 
   BuildHubPage();
@@ -768,12 +759,8 @@ begin
   // parts is a worse question than "what should this computer do".
   if PageID = wpSelectComponents then
     Result := True
-  else if (HubPage <> nil) and (PageID = HubPage.ID) then
-    // Shown when there is something on it to answer. A Client needs an address; a *new*
-    // Hub needs a port. "Hub only" used to skip the page altogether, which left somebody
-    // installing a hub on a server with no way to choose its port except /HUBPORT.
-    Result := not (InstallingClient()
-                   or (InstallingHub() and not HubInstalledHere()));
+  // The hub page is always shown: there is always a Client, and it always needs an
+  // address. Which hub, and on which port, is the whole question.
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -795,10 +782,6 @@ begin
       PortEdit.ReadOnly := False;
       PortNote.Caption := ExpandConstant('{cm:HubPortNew}');
     end;
-    // With no Client being installed there is nothing here to read a hub, so the address
-    // and the token are not questions — only the port the Hub will listen on.
-    HostCaption.Visible := InstallingClient();
-    HostEdit.Visible := InstallingClient();
     ShowTokenOnlyIfNeeded();
   end;
 end;
@@ -819,12 +802,6 @@ begin
   if AsPort(PortEdit.Text) = '' then
   begin
     Complaint := ExpandConstant('{cm:PortBad}');
-    Exit;
-  end;
-  if not InstallingClient() then
-  begin
-    // Hub only: the port is the whole of this page, and it has just been checked.
-    Result := True;
     Exit;
   end;
   Url := AddressFromFields();
@@ -926,7 +903,6 @@ begin
     else
       Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubNew}'), [GetHubPort('')]) + NewLine;
   end;
-  if InstallingClient() then
   begin
     if HubIsLocal then
       Lines := Lines + Space + ExpandConstant('{cm:ReadyClientLocal}') + NewLine
@@ -973,8 +949,6 @@ begin
     // left to tick.
     if TypePage.SelectedValueIndex = TypeBoth then
       WizardSelectComponents('hub,client')
-    else if TypePage.SelectedValueIndex = TypeHubOnly then
-      WizardSelectComponents('hub')
     else
       WizardSelectComponents('client');
     Exit;

@@ -45,18 +45,20 @@ touch a service manager themselves.
 
 One installer. It asks two questions, and keeps them apart.
 
-**Setup type** — what this computer does:
+**Setup type** — where the work happens:
 
 | | |
 |---|---|
-| **Hub (service) and Client (tray)** | This computer does the work and has the panel. A single-machine install, and the first server. |
-| **Hub (service) only** | A server nobody logs into: no tray icon. |
-| **Client (tray) only** | The work happens elsewhere. |
+| **Run a hub on this computer** | It watches the services, and the panel is here too. A single-machine install, and the first server. |
+| **Connect to an existing hub** | Another computer does the work; this one reads it. |
 
-There is no component list to work out afterwards — the answer decides it.
+Every installation has the panel, and there is no "hub only". On a server nobody logs into
+the tray application never runs, so it costs nothing — and the moment somebody *does* log
+in it is what they want, because the hub's own **Clients** page lives in it.
 
-**Hub port** — only when a Hub is being installed, and only when there is not already one
-here. Default 8797; change it if something else has the port. A hub that is already
+There is no component list to work out afterwards: the answer decides it.
+
+**Hub port** — asked when a hub is being installed here and there is not already one. Default 8797; change it if something else has the port. A hub that is already
 serving keeps its port, because its clients have it stored; move that one with
 
 ```bat
@@ -89,11 +91,11 @@ instead of hiding it in the wording of a choice.
 Silently:
 
 ```bat
-:: a server: the hub, no tray icon
-ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=hub
+:: a server: a hub, with the panel
+ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=full
 
 :: ...on a different port
-ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=hub /HUBPORT=9100
+ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=full /HUBPORT=9100
 
 :: a workstation, already pointed at its hub
 ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=client /HUBURL=https://ctl052:8797 /HUBTOKEN=xxxxxxxx
