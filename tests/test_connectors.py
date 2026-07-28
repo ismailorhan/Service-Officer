@@ -5,6 +5,8 @@ target is a new file rather than an edit to the watchdog, the health monitor and
 four pages.
 """
 
+import pytest
+
 from core import connectors
 from core import control
 from core import state as st
@@ -263,3 +265,111 @@ def test_a_caller_that_knows_the_machine_can_say_so():
         assert any("systemctl" in c for c in listed), listed
     finally:
         connectors.forget()
+
+
+# ---------------------------------------------------------------------------
+# WinRM: the three things SMB cannot do on another Windows machine
+# ---------------------------------------------------------------------------
+def test_a_remote_machine_is_asked_what_it_can_do(monkeypatch):
+    """It used to be told. `local = not self.machine` meant a remote machine was reported
+    unable to do three things without anybody having tried — and `sc` and the admin shares
+    were already proving that some things *do* work across that boundary."""
+    from core import config as cfg_mod
+    from core import scm_windows, winrm_windows
+
+    asked = []
+    monkeypatch.setattr(winrm_windows, "probe",
+                        lambda host, user="", password="", **k:
+                            asked.append(host) or {"ok": True, "why": "", "name": "SC-SQL"})
+    record = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
+    can = scm_windows.WindowsConnector("sc-sql", record).abilities()
+
+    assert asked == ["10.77.3.112"], "nothing asked the machine"
+    assert (can.kill, can.logs, can.command_check) == (True, True, True)
+    assert can.file_check is True
+    # Still polled: there is no doorbell for a remote service manager.
+    assert can.push is False
+    assert "polled" in can.why
+
+
+def test_without_winrm_it_says_what_is_missing_and_what_to_do(monkeypatch):
+    """A refusal nobody can act on is worse than no feature. The reason travels from the
+    probe into the sentence the panel shows."""
+    from core import config as cfg_mod
+    from core import scm_windows, winrm_windows
+
+    monkeypatch.setattr(
+        winrm_windows, "probe",
+        lambda host, user="", password="", **k: {
+            "ok": False, "name": "",
+            "why": "On that machine, as an administrator:  winrm quickconfig"})
+    record = cfg_mod.Machine(name="sc-sap", address="10.77.3.110", kind="windows")
+    can = scm_windows.WindowsConnector("sc-sap", record).abilities()
+
+    assert (can.kill, can.logs, can.command_check) == (False, False, False)
+    assert can.control is True and can.file_check is True, \
+        "control and File ride the IPC$ session and are not affected"
+    assert "winrm quickconfig" in can.why
+
+
+def test_this_computer_is_never_asked_about_winrm(monkeypatch):
+    """Everything WinRM would provide is already available locally and cheaper — and a
+    PowerShell process per question would be 100 ms for nothing."""
+    from core import scm_windows, winrm_windows
+
+    monkeypatch.setattr(winrm_windows, "probe",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("asked WinRM about this computer")))
+    can = scm_windows.WindowsConnector("", None).abilities()
+
+    assert (can.kill, can.logs, can.command_check, can.push) == (True, True, True, True)
+    assert can.why == ""
+
+
+def test_a_remote_kill_goes_by_process_id(monkeypatch):
+    """By id, not by name: the service manager has already said which process this service
+    is, and killing by name on a machine running two of them is a different, worse thing."""
+    from core import config as cfg_mod
+    from core import scm_windows, winrm_windows
+
+    killed = []
+    monkeypatch.setattr(scm_windows, "process_id", lambda name, machine="": 4242)
+    monkeypatch.setattr(winrm_windows, "kill",
+                        lambda host, pid, user="", password="":
+                            killed.append((host, pid)) or (True, ""))
+    record = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
+
+    pid = scm_windows.WindowsConnector("sc-sql", record).kill("MSSQLSERVER")
+
+    assert pid == 4242
+    assert killed == [("10.77.3.112", 4242)]
+
+
+def test_a_remote_kill_that_fails_says_why(monkeypatch):
+    from core import config as cfg_mod
+    from core import scm_windows, winrm_windows
+
+    monkeypatch.setattr(scm_windows, "process_id", lambda name, machine="": 7)
+    monkeypatch.setattr(winrm_windows, "kill",
+                        lambda *a, **k: (False, "10.77.3.112 refused the account."))
+    record = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
+
+    with pytest.raises(RuntimeError) as raised:
+        scm_windows.WindowsConnector("sc-sql", record).kill("MSSQLSERVER")
+    assert "refused the account" in str(raised.value)
+
+
+def test_editing_a_machines_credentials_forgets_what_winrm_learned(monkeypatch):
+    """The old password may have been the reason it did not work, or the reason it did."""
+    from core import config as cfg_mod
+    from core import scm_windows, winrm_windows
+
+    forgotten = []
+    monkeypatch.setattr(winrm_windows, "forget", forgotten.append)
+    monkeypatch.setattr(scm_windows, "disconnect", lambda host: None)
+    record = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows",
+                             auth="signed-in")
+
+    scm_windows.WindowsConnector("sc-sql", record).forget()
+
+    assert forgotten == ["10.77.3.112"]

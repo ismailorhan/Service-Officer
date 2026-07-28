@@ -482,29 +482,66 @@ class WindowsConnector:
         if not self.machine:
             return
         disconnect(self.host)
+        from . import winrm_windows
+        winrm_windows.forget(self.host)
         if getattr(self.record, "auth", "") == "password":
             from . import win_session
             win_session.forget(self.host)
 
+    def _winrm_credentials(self) -> tuple:
+        """(user, password) for WinRM, or ("", "") to go as this process.
+
+        The same credentials the Machines page already holds. As this process is right for
+        a machine in the hub's own domain — Kerberos then works and no password is stored
+        anywhere.
+        """
+        record = self.record
+        if not record or getattr(record, "auth", "") != "password":
+            return "", ""
+        from . import secrets
+        return (getattr(record, "username", "") or "",
+                secrets.get(secrets.ref_for_machine(self.machine)))
+
+    def _winrm(self) -> dict:
+        """Whether this machine can be reached over WinRM. Asked once, then remembered.
+
+        Deliberately not asked for *this* computer: everything WinRM would provide is
+        already available locally and cheaper.
+        """
+        if not self.machine:
+            return {"ok": False, "why": ""}
+        from . import winrm_windows
+        user, password = self._winrm_credentials()
+        return winrm_windows.probe(self.host, user, password)
+
     def abilities(self):
         from .connectors import Abilities
-        # Kill is local-only: terminating a process on another machine needs a
-        # mechanism we do not have. Push notifications are local-only too, in the
-        # code as it stands — scm.Watcher skips remote services.
         local = not self.machine
-        # logs=local for the same reason as kill: the event log reader opens *this*
-        # computer's log, so claiming it for another machine would offer our own
-        # events under that service's name.
+        if local:
+            return Abilities(control=True, kill=True, logs=True, push=True,
+                             file_check=True, command_check=True, why="")
+
+        # Another computer. What it can do is *asked*, not assumed: this used to answer
+        # "no" to three things without anybody having tried. Push stays off either way —
+        # scm.Watcher only watches this computer's service manager, and no doorbell exists
+        # for a remote one.
+        winrm = self._winrm()
+        if winrm.get("ok"):
+            return Abilities(
+                control=True, kill=True, logs=True, push=False,
+                file_check=True, command_check=True,
+                why="This is another computer, so its status is polled rather than "
+                    "reported. Everything else works over WinRM.")
+        # No WinRM. Control and File still work — they ride the session on IPC$ — and the
+        # rest says what is missing *and* what to do about it, because "not supported" is
+        # not something anybody can act on.
+        missing = winrm.get("why", "")
         return Abilities(
-            control=True, kill=local, logs=local, push=local,
-            # A File check reaches another machine over its admin share; a Command
-            # check does not, because running one there needs WinRM or a scheduled
-            # task and neither is wired up.
-            file_check=True, command_check=local,
-            why="" if local else "This is another computer: its process cannot be "
-                                 "terminated from here, its event log cannot be read "
-                                 "from here, a command cannot be run on it, and status "
-                                 "is polled.")
+            control=True, kill=False, logs=False, push=False,
+            file_check=True, command_check=False,
+            why="This is another computer: its status is polled, and its process cannot be "
+                "terminated, its event log read, or a command run on it, because WinRM is "
+                "not usable here." + (f"  {missing}" if missing else ""))
 
     def reachable(self) -> bool:
         try:
@@ -570,7 +607,23 @@ class WindowsConnector:
         restart_service(name, self.host)
 
     def kill(self, name: str) -> int:
-        return kill_process(name, self.machine)
+        """The process behind this service, gone.
+
+        On another machine this is `Stop-Process -Id` over WinRM, by *id* rather than by
+        name: the service manager has already told us which process this service is, and
+        killing by name on a machine running two of them is a different and worse thing.
+        """
+        if not self.machine:
+            return kill_process(name, self.machine)
+        pid = process_id(name, self.machine)
+        if not pid:
+            raise RuntimeError("That service has no running process.")
+        from . import winrm_windows
+        user, password = self._winrm_credentials()
+        ok, why = winrm_windows.kill(self.host, pid, user, password)
+        if not ok:
+            raise RuntimeError(why or f"could not terminate process {pid} on {self.host}")
+        return pid
 
     def logs(self, name: str, lines: int = 50) -> list:
         """The Windows event log already has its own reader, which merges several
@@ -585,19 +638,26 @@ class WindowsConnector:
         history.
         """
         if self.machine:
-            raise RuntimeError("Reading the event log of another computer is not "
-                               "supported yet.")
+            from . import winrm_windows
+            user, password = self._winrm_credentials()
+            return winrm_windows.logs(self.host, name, lines, user, password)
         from . import eventlog
         return [f"{r['ts']}  {r['level']}  {r['summary'] or r['message']}"
                 for r in eventlog.read([name], [name], limit=lines)]
 
     def run(self, command: str, timeout: float = 10.0):
-        """Only on this computer. Running a command on another Windows box needs
-        WinRM or a scheduled task, and pretending otherwise would make a health
-        check quietly measure the wrong machine."""
+        """A command line, on whichever machine this is.
+
+        On another machine it goes over WinRM and runs under `cmd /c` there, so what a
+        person types is what runs. Each call authenticates, which means a logon record in
+        that machine's Security log — see the warning the health check editor shows before
+        anybody schedules one of these every minute.
+        """
         if self.machine:
-            raise RuntimeError("Running a command on another computer is not "
-                               "supported yet.")
+            from . import winrm_windows
+            user, password = self._winrm_credentials()
+            return winrm_windows.run(self.host, command, user, password,
+                                     timeout=max(timeout, 20.0))
         import subprocess
         try:
             done = subprocess.run(command, shell=True, capture_output=True,

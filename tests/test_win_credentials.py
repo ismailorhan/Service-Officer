@@ -330,17 +330,48 @@ def test_forgetting_a_machine_signs_out_of_it(wnet, monkeypatch):
     assert wnet.cancelled == [r"\\10.77.3.51\IPC$"]
 
 
-def test_a_remote_machine_does_not_offer_this_computer_s_event_log(wnet,
-                                                                  monkeypatch):
-    """eventlog.read opens the log with OpenEventLog(None, …) — always this machine.
-    Claiming logs for another one served our own events under that service's name."""
+def test_a_remote_machine_never_gets_this_computer_s_event_log(wnet, monkeypatch):
+    """The original point of this test, and it still holds: `eventlog.read` opens the log
+    with `OpenEventLog(None, ...)` — always *this* machine — so using it for another one
+    served our own events under that service's name.
+
+    What changed is the answer to "then what". It used to refuse; now it asks the target
+    over WinRM. The thing that must never happen is unchanged.
+    """
+    from core import eventlog, winrm_windows
+
+    def refuse(*a, **k):
+        raise AssertionError("read this computer's event log for another machine")
+
+    monkeypatch.setattr(eventlog, "read", refuse)
+    monkeypatch.setattr(winrm_windows, "probe",
+                        lambda host, user="", password="", **k: {"ok": True, "why": "",
+                                                                "name": "CTL053"})
+    monkeypatch.setattr(winrm_windows, "logs",
+                        lambda host, service, lines=50, user="", password="":
+                            [f"from {host}: {service} started"])
     conn = scm_windows.WindowsConnector("ctl053", _machine())
 
-    assert conn.abilities().logs is False
-    assert "event log cannot be read" in conn.abilities().why
-    with pytest.raises(RuntimeError) as raised:
-        conn.logs("MSSQLSERVER")
-    assert "not supported" in str(raised.value)
+    assert conn.abilities().logs is True, "WinRM can read it, so it is offered"
+    assert conn.logs("MSSQLSERVER") == ["from 10.77.3.51: MSSQLSERVER started"]
+
+
+def test_a_remote_machine_without_winrm_says_what_to_do(wnet, monkeypatch):
+    """And when it cannot be read, the sentence has to be actionable — "not supported" was
+    something nobody could do anything with."""
+    from core import winrm_windows
+
+    monkeypatch.setattr(
+        winrm_windows, "probe",
+        lambda host, user="", password="", **k: {
+            "ok": False, "name": "",
+            "why": "On that machine, as an administrator:  winrm quickconfig"})
+    conn = scm_windows.WindowsConnector("ctl053", _machine())
+
+    can = conn.abilities()
+    assert can.logs is False
+    assert "event log read" in can.why
+    assert "winrm quickconfig" in can.why
 
 
 def test_this_computer_still_reads_its_own(monkeypatch):
