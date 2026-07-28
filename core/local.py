@@ -97,19 +97,27 @@ def load() -> Settings:
     return Settings(**{k: v for k, v in raw.items() if k in known})
 
 
-def save(settings: Settings) -> bool:
+def save(settings: Settings, machine: bool = False) -> bool:
     """Write it whole and move it into place, so a crash mid-write cannot leave a client
-    that cannot read its own settings."""
+    that cannot read its own settings.
+
+    `machine=True` writes the machine-wide copy instead, which needs the rights to write
+    the data folder. Exactly one caller does that — `hub.exe client pair --local`, running
+    from the installer — and it is the whole point of that command: the pairing has to be
+    there for *whoever* logs into the server next, not only for the person who happened to
+    run the installer.
+    """
+    where = MACHINE_PATH if machine else PATH
     try:
-        os.makedirs(os.path.dirname(PATH) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(where) or ".", exist_ok=True)
         handle, temporary = tempfile.mkstemp(
-            dir=os.path.dirname(PATH) or ".", prefix="client-", suffix=".json")
+            dir=os.path.dirname(where) or ".", prefix="client-", suffix=".json")
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
             json.dump(asdict(settings), fh, indent=2)
-        os.replace(temporary, PATH)
+        os.replace(temporary, where)
         return True
     except OSError as exc:
-        log.warning("could not save %s: %s", PATH, exc)
+        log.warning("could not save %s: %s", where, exc)
         return False
 
 
@@ -128,10 +136,16 @@ def token(url: str) -> str:
             or secrets.get(ref))
 
 
-def set_token(url: str, value: str) -> bool:
-    """Always this user's own store — the machine's is not writable without elevation,
-    and one person pairing must not repoint everybody who logs into this computer."""
-    return secrets.put(_token_ref(url), value, path=secrets.USER_SECRETS_PATH)
+def set_token(url: str, value: str, machine: bool = False) -> bool:
+    """This user's own store — the machine's is not writable without elevation, and one
+    person pairing must not repoint everybody who logs into this computer.
+
+    `machine=True` is for `client pair --local` at install time, for the same reason as
+    `save(machine=True)`: a token only that one person can read is a token the next person
+    to sign in does not have.
+    """
+    return secrets.put(_token_ref(url), value,
+                       path=None if machine else secrets.USER_SECRETS_PATH)
 
 
 def forget_token(url: str) -> bool:

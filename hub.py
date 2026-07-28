@@ -121,8 +121,16 @@ def _client_command(argv) -> int | None:
         settings = local_mod.load()
         settings.hub_url = url
         settings.hub_fingerprint = fingerprint
-        local_mod.save(settings)
-        local_mod.set_token(url, token)
+        # The *machine's* copy, not this account's. This command runs from the installer,
+        # as whoever happened to be installing, and the pairing has to be there for
+        # whoever logs into the server next — that is the entire reason it exists. Writing
+        # it per-user, as it briefly did, left a server where the second person to sign in
+        # was asked for a token nobody had.
+        wrote = local_mod.save(settings, machine=True)
+        stored = local_mod.set_token(url, token, machine=True)
+        if not (wrote and stored):
+            print("could not write the machine-wide pairing — is this elevated?")
+            return 1
         print(f"paired this machine's client to {url}")
         return 0
 

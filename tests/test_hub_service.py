@@ -93,3 +93,39 @@ def test_a_stray_word_is_pywin32s_problem_not_a_silent_dispatch(routes):
     """Something unrecognised must not be treated as "the SCM started us": that would
     hang for thirty seconds and then report a timeout, instead of printing usage."""
     assert run(routes, "wibble") == ["commandline"]
+
+
+def test_pair_local_writes_the_machines_copy_not_the_installers(tmp_path, monkeypatch):
+    """`client pair --local` runs from the installer, as whoever is installing. If it
+    writes that account's own client.json — which is where a client's settings now live —
+    then the second person to sign into that server is asked for a token nobody has, and
+    the whole point of the command is gone.
+
+    It was exactly that for one release. Caught by looking at where the files landed on a
+    real install.
+    """
+    from core import config as cfg_mod
+    from core import hub_auth, local, secrets
+
+    machine_json = tmp_path / "ProgramData" / "client.json"
+    user_json = tmp_path / "user" / "client.json"
+    monkeypatch.setattr(local, "MACHINE_PATH", str(machine_json))
+    monkeypatch.setattr(local, "PATH", str(user_json))
+    monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "machine.dat"))
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
+    monkeypatch.setattr(hub_auth, "add_client", lambda name: "issued-once")
+    monkeypatch.setattr(hub_auth, "ensure_certificate",
+                        lambda path: ("hub.pem", "SHA256:pinned"))
+    monkeypatch.setattr(cfg_mod, "load", lambda path=None: cfg_mod.Config())
+
+    assert hub._client_command(["hub.exe", "client", "pair", "--local"]) == 0
+
+    assert machine_json.exists(), "the machine-wide pairing was not written"
+    assert not user_json.exists(), "wrote it into the installing account's profile"
+    settings = local.load()
+    assert settings.hub_url.startswith("https://")
+    assert settings.hub_fingerprint == "SHA256:pinned"
+    # And the token is readable by a user who has none of their own.
+    assert local.token(settings.hub_url) == "issued-once"
+    assert secrets.get(local._token_ref(settings.hub_url),
+                       path=str(tmp_path / "user.dat")) == ""
