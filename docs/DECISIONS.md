@@ -657,3 +657,20 @@ to the response and forgets it, and `urlopen` never exposed it in the first plac
 
 It also runs on the way out of the application, where twenty seconds is a window that does
 not close.
+
+### The service that would not have started, 2026-07-28
+
+`hub.py` had no test file, and the one path nothing exercised was the only path a service
+ever really takes. The SCM launches the exe with **no arguments** and expects
+`StartServiceCtrlDispatcher` within about thirty seconds; `main()` fell through to
+pywin32's `HandleCommandLine`, which found no command, printed usage and exited. Windows
+calls that error 1053, "the service did not respond in a timely fashion".
+
+Nothing that had been run could have found it: `--console` takes a different branch, and
+the tests never ran `main()` at all. `tests/test_hub_service.py` now covers every way of
+being started, one test each, and the fix was checked by removing it and watching the
+right test fail.
+
+The general lesson, which has now cost twice: **an entry point is code.** `app.main()` and
+`hub.main()` are where the arguments are interpreted, and an interpretation nothing asserts
+is a guess.

@@ -159,11 +159,30 @@ def pair_only(argv) -> int:
 
     The installer's path. A tray icon appearing in the middle of an install, and then
     vanishing, is alarming for no reason — and the first real launch is already connected.
+
+    It pins the certificate too, which is the part that has to happen *here* rather than
+    on that first launch: at install time the address came from whoever is deploying, and
+    on first launch it comes from whatever answers. Both are trust-on-first-use; only one
+    of them is under the administrator's control.
+
+    A hub that cannot be reached right now is not a failure — a workstation may be
+    imaged before the server is up. The token is kept, the certificate is pinned on the
+    first launch that reaches it, and the reason is printed rather than swallowed.
     """
     url = _pair(argv)
     if not url:
         print("nothing to pair: --connect <url> is needed")
         return 1
+    settings = local_mod.load()
+    if not settings.hub_fingerprint:
+        client = hub_client.HubClient(url, local_mod.token(url) or "")
+        try:
+            settings.hub_fingerprint = client.check_identity()
+            local_mod.save(settings)
+            print(f"pinned {settings.hub_fingerprint}")
+        except Exception as exc:
+            print(f"could not reach {url} to pin its certificate ({exc});"
+                  " it will be pinned on the first launch that can")
     print(f"paired with {url}")
     return 0
 

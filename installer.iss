@@ -1,4 +1,4 @@
-; -----------------------------------------------------------------------------
+﻿; -----------------------------------------------------------------------------
 ; Service Officer - Inno Setup script
 ;
 ; Build:
@@ -238,7 +238,8 @@ function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
   if (CurPageID = wpSelectComponents)
-     and not (IsComponentSelected('client') or IsComponentSelected('hub')) then
+     and not (WizardIsComponentSelected('client')
+              or WizardIsComponentSelected('hub')) then
   begin
     MsgBox(ExpandConstant('{cm:PickOne}'), mbError, MB_OK);
     Result := False;

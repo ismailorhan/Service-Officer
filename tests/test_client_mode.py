@@ -14,6 +14,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication          # noqa: E402
 
 import app as app_mod                               # noqa: E402
+from core import hub_client as hub_client_mod        # noqa: E402
 from core import config as cfg_mod                   # noqa: E402
 from core import state as st                         # noqa: E402
 
@@ -120,7 +121,13 @@ def test_the_certificate_is_pinned_on_the_first_connection(qapp, monkeypatch):
 
 def test_store_only_pairs_and_leaves(qapp, monkeypatch):
     """The installer's path: pair the client and exit, so no tray icon appears in the
-    middle of an install and the first real launch is already connected."""
+    middle of an install and the first real launch is already connected.
+
+    The certificate is pinned here too — at install time the address came from whoever is
+    deploying, and on first launch it comes from whatever answers. Both are
+    trust-on-first-use; only one is under the administrator's control. Found missing by
+    running the *built* exe against a real TLS hub, which is the only place it shows.
+    """
     from core import local
     monkeypatch.setattr(cfg_mod, "load", lambda path=None: cfg_mod.Config())
     monkeypatch.setattr(app_mod.hub_client, "HubClient", FakeHub)
@@ -131,6 +138,27 @@ def test_store_only_pairs_and_leaves(qapp, monkeypatch):
     assert code == 0
     assert local.token("https://hub:8797") == "xyz"
     assert local.load().hub_url == "https://hub:8797"
+    assert local.load().hub_fingerprint == "SHA256:pinned-now"
+
+
+def test_store_only_survives_a_hub_that_is_not_up_yet(qapp, monkeypatch):
+    """A workstation can be imaged before the server exists. The token is kept and the
+    install finishes; the certificate is pinned by the first launch that can reach it."""
+    from core import local
+    monkeypatch.setattr(cfg_mod, "load", lambda path=None: cfg_mod.Config())
+
+    class Unreachable(FakeHub):
+        def check_identity(self):
+            raise hub_client_mod.Unreachable("no route to host")
+
+    monkeypatch.setattr(app_mod.hub_client, "HubClient", Unreachable)
+
+    code = app_mod.pair_only(["--connect", "https://hub:8797", "--token", "xyz",
+                              "--store-only"])
+
+    assert code == 0, "an unreachable hub failed the install"
+    assert local.token("https://hub:8797") == "xyz"
+    assert local.load().hub_fingerprint == ""
 
 
 def test_an_action_goes_to_whichever_is_there(qapp, monkeypatch):

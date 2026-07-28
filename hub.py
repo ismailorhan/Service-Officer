@@ -229,6 +229,26 @@ def _service_class():
     return HubService
 
 
+def _dispatch() -> int:
+    """Hand this process to the service control manager.
+
+    This is how a service actually *starts*. The SCM launches the exe with no arguments
+    and expects the process to connect back to it within about thirty seconds; nothing
+    on a command line says which service it is. Without this branch the launch falls
+    through to `HandleCommandLine`, which finds no command, prints usage and exits — and
+    Windows reports error 1053, "the service did not respond in a timely fashion", which
+    says nothing about the actual cause.
+
+    It cannot be reached from a console (`StartServiceCtrlDispatcher` fails with
+    error 1063 there, which is the correct answer), so `--console` exists for debugging.
+    """
+    import servicemanager
+    servicemanager.Initialize()
+    servicemanager.PrepareToHostSingle(_service_class())
+    servicemanager.StartServiceCtrlDispatcher()
+    return 0
+
+
 def main() -> int:
     if "--fingerprint" in sys.argv:
         _p, fingerprint = hub_auth.ensure_certificate(cfg_mod.in_app_dir("hub.pem"))
@@ -241,6 +261,12 @@ def main() -> int:
 
     if "--console" in sys.argv:
         return _console()
+
+    # No arguments at all means the SCM started us — see _dispatch. A person typing the
+    # name of this exe with nothing after it gets the same path and a readable refusal
+    # from Windows (error 1063: not started by the service control manager).
+    if len(sys.argv) == 1:
+        return _dispatch()
 
     import win32serviceutil
     win32serviceutil.HandleCommandLine(_service_class())
