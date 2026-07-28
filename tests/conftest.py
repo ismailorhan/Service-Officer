@@ -31,8 +31,12 @@ REAL_LEGACY_DIRS = cfg_mod.LEGACY_DIRS
 # Done at import time, not in a fixture: the logger is configured on first use,
 # which can happen while a test module is still being imported.
 cfg_mod.APP_DIR = str(_SANDBOX)
+cfg_mod.USER_DIR = str(_SANDBOX / "user")
 cfg_mod.CONFIG_PATH = str(_SANDBOX / "services.json")
 applog.LOG_PATH = str(_SANDBOX / "service-officer.log")
+# The fallback as well: a process that cannot write the first one must not reach the real
+# profile — see applog.setup.
+applog.USER_LOG_PATH = str(_SANDBOX / "user" / "service-officer.log")
 
 from core import db, history                               # noqa: E402
 history.HISTORY_PATH = str(_SANDBOX / "history.db")
@@ -59,6 +63,8 @@ def real_paths():
 def _no_real_data():
     """Fail loudly if something still points at the installed app's directory."""
     assert "ProgramData" not in applog.LOG_PATH
+    assert "ProgramData" not in applog.USER_LOG_PATH
+    assert str(_SANDBOX) in applog.log_path, applog.log_path
     assert "ProgramData" not in history.HISTORY_PATH
     yield
 

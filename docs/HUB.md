@@ -142,6 +142,38 @@ ServiceOfficer.exe --connect https://ctl052:8797 --token <the token>
 The token is stored (DPAPI, machine scope) and the certificate is pinned. After that the
 flags are not needed again — the client remembers.
 
+**Where it remembers.** In that user's own profile:
+
+```
+%LOCALAPPDATA%\Service Officer\client.json      which hub, its fingerprint, the theme
+%LOCALAPPDATA%\Service Officer\secrets.dat      the token
+```
+
+Per user, because the tray application is not elevated and the machine's folder is not
+writable by it — and because one person pairing should not repoint everybody who logs into
+the same computer. A machine-wide `client.json` beside `services.json` is still **read**
+when a user has none of their own, which is what makes `client pair --local` work for the
+next person who signs in: they inherit the pairing and cannot overwrite anyone else's.
+
+### The data folder, and who may write it
+
+The installer locks it down, because the hub reads `services.json` as **LocalSystem** and a
+health check of kind `command` is a shell command line in that file. If everybody could
+write it, everybody could run code as SYSTEM.
+
+```powershell
+icacls "C:\ProgramData\Service Officer"
+```
+
+Expect SYSTEM and Administrators with full control, and Authenticated Users with read only.
+If you see the built-in Users group with `(W)` — which is what ProgramData hands down by
+default, and what installs made by 2.2.0 were left with — put it right in an elevated
+console:
+
+```bat
+icacls "%ProgramData%\Service Officer" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F /grant:r *S-1-5-32-544:(OI)(CI)F /grant:r *S-1-5-11:(OI)(CI)RX
+```
+
 Who is paired, and who is still talking:
 
 ```bat
@@ -210,6 +242,17 @@ C:\ProgramData\Service Officer\service-officer.log
 ```
 
 It rotates at 1 MB, keeps three, and holds everything the hub did including who asked.
+
+A **client's** log is not in there. That folder belongs to the machine and to the hub
+service — administrators and SYSTEM can write it, everybody else can only read — and the
+tray application does not run elevated, so it keeps its own:
+
+```
+%LOCALAPPDATA%\Service Officer\service-officer.log
+```
+
+An install with no hub is unchanged: that app *is* elevated, so everything stays in one
+file.
 
 To watch the hub in a console instead of as a service — the fastest way to see a startup
 failure:

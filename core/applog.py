@@ -15,6 +15,13 @@ import sys
 from . import config as cfg_mod
 
 LOG_PATH = os.path.join(cfg_mod.APP_DIR, "service-officer.log")
+#: Where a process that cannot write the machine's log puts its own. The hub owns
+#: APP_DIR and, once the installer has stopped ProgramData handing `Write` to everybody,
+#: an unelevated tray application cannot write there at all — and a client with no log is
+#: a client nobody can troubleshoot.
+USER_LOG_PATH = os.path.join(cfg_mod.USER_DIR, "service-officer.log")
+#: Which of the two this process ended up with, so About and the History page can say.
+log_path = LOG_PATH
 _configured = False
 
 
@@ -24,15 +31,22 @@ def setup(level=logging.INFO, to_stderr: bool = False) -> logging.Logger:
     if _configured:
         return log
     log.setLevel(level)
-    try:
-        os.makedirs(cfg_mod.APP_DIR, exist_ok=True)
-        handler = logging.handlers.RotatingFileHandler(
-            LOG_PATH, maxBytes=1024 * 1024, backupCount=3, encoding="utf-8")
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
-        log.addHandler(handler)
-    except OSError:
-        pass
+    global log_path
+    for candidate in (LOG_PATH, USER_LOG_PATH):
+        try:
+            os.makedirs(os.path.dirname(candidate), exist_ok=True)
+            handler = logging.handlers.RotatingFileHandler(
+                candidate, maxBytes=1024 * 1024, backupCount=3, encoding="utf-8")
+            handler.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+            log.addHandler(handler)
+            log_path = candidate
+            break
+        except OSError:
+            # The machine's log first, so a single-machine install keeps one file with
+            # everything in it. A client that is refused falls back to its own rather
+            # than running silently.
+            continue
     if to_stderr and sys.stderr:
         log.addHandler(logging.StreamHandler(sys.stderr))
     _quieten_paramiko()

@@ -72,6 +72,7 @@ english.CompHub=Service Officer Hub (Windows service)
 english.PickOne=Choose at least one: the tray application, the hub service, or both.
 english.RegisteringHub=Registering the hub service...
 english.PairingLocal=Pairing this computer with its hub...
+english.SecuringData=Setting permissions on the data folder...
 turkish.AutoStartTask=Windows ba&şladığında Service Officer'ı otomatik başlat
 turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
 turkish.TypeClient=Yalnızca istemci — sistem tepsisi uygulaması
@@ -83,6 +84,7 @@ turkish.CompHub=Service Officer Hub (Windows hizmeti)
 turkish.PickOne=En az birini seçin: tepsi uygulaması, hub hizmeti ya da ikisi.
 turkish.RegisteringHub=Hub hizmeti kaydediliyor...
 turkish.PairingLocal=Bu makine hub'ına eşleştiriliyor...
+turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
 
 [Types]
 Name: "client"; Description: "{cm:TypeClient}"
@@ -110,6 +112,10 @@ Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm
 ;
 ; An existing installation upgrades into this untouched: the services.json already
 ; here becomes the hub's, in place, because it is exactly where the hub looks.
+;
+; `Permissions` only *adds*. ProgramData hands `Write` down to the built-in Users group,
+; and that inherited right is not removed by anything here — see the [Run] entry that
+; calls icacls, which is what actually closes it.
 Name: "{commonappdata}\{#MyDataDir}"; Permissions: admins-modify
 
 [Files]
@@ -131,6 +137,26 @@ Name: "{commondesktop}\{#MyAppName}";    Filename: "{app}\{#MyAppExeName}"; Icon
 Name: "{userstartup}\{#MyAppName}";      Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: autostart
 
 [Run]
+; -- who may write the data directory -----------------------------------------
+; This has to happen before the hub is registered, and it matters most on a machine that
+; other people log into.
+;
+; ProgramData grants the built-in Users group `Write` by inheritance, and Inno's
+; `Permissions` parameter adds rights without removing that. Before there was a hub it
+; was untidy: the app ran as the administrator sitting in front of it, so a user who
+; edited services.json gained nothing they did not already have. With a hub it is a
+; privilege escalation — the hub runs as **LocalSystem** and a health check of kind
+; `command` is a shell command line stored in that file, so anyone who could write it
+; could run anything as SYSTEM.
+;
+; SIDs, not names: this installer runs on Turkish Windows, where the Users group is
+; "Kullanıcılar" and an English name silently matches nothing.
+;   *S-1-5-18     SYSTEM                  full
+;   *S-1-5-32-544 Administrators          full
+;   *S-1-5-11     Authenticated Users     read — the tray application must still read the
+;                                         pairing left by `client pair --local`
+Filename: "{sys}\icacls.exe";   Parameters: """{commonappdata}\{#MyDataDir}"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F /grant:r *S-1-5-32-544:(OI)(CI)F /grant:r *S-1-5-11:(OI)(CI)RX";   StatusMsg: "{cm:SecuringData}"; Flags: runhidden waituntilterminated
+
 ; -- the hub, in the order the next step depends on ---------------------------
 ; 1. register it. LocalSystem; the account is changed afterwards in services.msc,
 ;    because an installer that collected a password would hold it in memory, in its

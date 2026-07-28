@@ -114,3 +114,78 @@ def test_an_unknown_field_in_the_file_is_ignored(tmp_path):
 
     assert settings.hub_url == "https://x:1"
     assert not hasattr(settings, "from_the_future")
+
+
+# ---------------------------------------------------------------------------
+# who owns which file
+# ---------------------------------------------------------------------------
+# The tray application stopped running elevated in 2.2.0, and the data directory
+# stopped being writable by non-administrators in 2.2.1 — because the hub reads
+# services.json as LocalSystem and a `command` health check is a shell command line, so a
+# user-writable copy of that file was a way to run code as SYSTEM.
+#
+# Both of those are right, and together they mean a client cannot write where it used to.
+# What it must still be able to do is remember its own pairing.
+def test_a_client_writes_its_own_copy_not_the_machines(tmp_path, monkeypatch):
+    from core import config as cfg_mod
+
+    machine = tmp_path / "ProgramData" / "client.json"
+    machine.parent.mkdir(parents=True)
+    machine.write_text('{"hub_url": "https://installed:8797"}', encoding="utf-8")
+    monkeypatch.setattr(local, "MACHINE_PATH", str(machine))
+    monkeypatch.setattr(local, "PATH", str(tmp_path / "user" / "client.json"))
+
+    settings = local.load()
+    assert settings.hub_url == "https://installed:8797", "did not inherit the pairing"
+
+    settings.theme = "dark"
+    assert local.save(settings) is True
+
+    assert (tmp_path / "user" / "client.json").exists()
+    assert machine.read_text(encoding="utf-8") == \
+        '{"hub_url": "https://installed:8797"}', "wrote over the machine's copy"
+
+
+def test_the_users_own_copy_wins_once_there_is_one(tmp_path, monkeypatch):
+    """Otherwise a machine-wide file dropped by a deployment tool would silently
+    repoint somebody who had chosen their own hub."""
+    from core import config as cfg_mod
+
+    machine = tmp_path / "machine.json"
+    machine.write_text('{"hub_url": "https://installed:8797"}', encoding="utf-8")
+    mine = tmp_path / "mine.json"
+    mine.write_text('{"hub_url": "https://mine:8797", "theme": "dark"}',
+                    encoding="utf-8")
+    monkeypatch.setattr(local, "MACHINE_PATH", str(machine))
+    monkeypatch.setattr(local, "PATH", str(mine))
+
+    settings = local.load()
+
+    assert settings.hub_url == "https://mine:8797"
+    assert settings.theme == "dark"
+
+
+def test_a_token_is_read_from_either_store_and_written_to_ours(tmp_path, monkeypatch):
+    """`client pair --local` writes the machine's store as SYSTEM at install time. A user
+    can read that and cannot write it, which is the right way round."""
+    from core import secrets
+
+    machine_store = str(tmp_path / "machine-secrets.dat")
+    user_store = str(tmp_path / "user-secrets.dat")
+    monkeypatch.setattr(secrets, "SECRETS_PATH", machine_store)
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", user_store)
+    url = "https://installed:8797"
+
+    # What the installer left, in the machine's store.
+    secrets.put(local._token_ref(url), "from-the-installer")
+    assert local.token(url) == "from-the-installer"
+
+    # What this user does afterwards goes in theirs, and wins.
+    assert local.set_token(url, "mine") is True
+    assert local.token(url) == "mine"
+    assert secrets.get(local._token_ref(url), path=machine_store) == \
+        "from-the-installer", "overwrote the machine's token"
+
+    # And forgetting is only ever ours to forget.
+    local.forget_token(url)
+    assert local.token(url) == "from-the-installer"

@@ -11,7 +11,7 @@ point of this file:
 Mixing them means five people each believing they can change the theme for everyone, or
 that history retention is somebody else's problem.
 
-`client.json` sits beside `services.json` and is **not a second config**: it holds
+`client.json` is **not a second config**: it holds
 nothing about any service, and losing it costs a re-pairing and nothing else. The token
 is not in it — that goes in the DPAPI store with every other secret, because this file is
 a document somebody may open and a bearer token in a text file is a password in a text
@@ -30,9 +30,18 @@ from . import secrets
 
 log = applog.get("local")
 
-#: Beside services.json. A module-level default rather than a call, so a test can point
-#: it somewhere else in one line.
-PATH = os.path.join(cfg_mod.APP_DIR, "client.json")
+#: This user's copy — the one that is written. A module-level default rather than a
+#: call, so a test can point it somewhere else in one line.
+PATH = os.path.join(cfg_mod.USER_DIR, "client.json")
+#: The machine-wide copy, which is *read* when this user has none of their own. It is what
+#: `ServiceOfficerHub.exe client pair --local` leaves behind at install time, and what a
+#: deployment tool can drop next to services.json: a second person logging into the same
+#: server finds the hub already configured instead of being asked to pair again.
+#:
+#: Two paths rather than one because the two have different owners. APP_DIR belongs to the
+#: machine and, with a hub installed, to a LocalSystem service — readable by everyone,
+#: writable only by administrators — and the tray application no longer runs elevated.
+MACHINE_PATH = os.path.join(cfg_mod.APP_DIR, "client.json")
 
 
 @dataclass
@@ -60,18 +69,26 @@ def _token_ref(url: str) -> str:
 def load() -> Settings:
     """The settings, or defaults.
 
+    This user's file first, then the machine-wide one: a fresh user on a machine that was
+    installed with a hub inherits the pairing rather than being asked for a token nobody
+    has. Once they change anything it is theirs (see `save`), and the machine copy stops
+    mattering to them.
+
     A missing file is a fresh install; a broken one is a crash mid-write or a bad hand
     edit. Neither stops the app — a client that will not start because it cannot parse
     its own preferences is worse than one that forgot them.
     """
-    try:
-        with open(PATH, "r", encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except FileNotFoundError:
-        return Settings()
-    except (OSError, ValueError) as exc:
-        log.warning("%s could not be read (%s); using defaults", PATH, exc)
-        return Settings()
+    raw = None
+    for where in (PATH, MACHINE_PATH):
+        try:
+            with open(where, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            break
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            log.warning("%s could not be read (%s); using defaults", where, exc)
+            return Settings()
     if not isinstance(raw, dict):
         return Settings()
     # Unknown keys are dropped rather than raising — a newer client may have written
@@ -100,12 +117,25 @@ def save(settings: Settings) -> bool:
 # the token, which does not live in the file
 # ---------------------------------------------------------------------------
 def token(url: str) -> str:
-    return secrets.get(_token_ref(url))
+    """This user's token for that hub, or the machine's.
+
+    The machine's is what `client pair --local` writes at install time, as SYSTEM. A user
+    can read it and cannot write it, which is the right way round: they inherit a working
+    pairing and cannot quietly replace anybody else's.
+    """
+    ref = _token_ref(url)
+    return (secrets.get(ref, path=secrets.USER_SECRETS_PATH)
+            or secrets.get(ref))
 
 
 def set_token(url: str, value: str) -> bool:
-    return secrets.put(_token_ref(url), value)
+    """Always this user's own store — the machine's is not writable without elevation,
+    and one person pairing must not repoint everybody who logs into this computer."""
+    return secrets.put(_token_ref(url), value, path=secrets.USER_SECRETS_PATH)
 
 
 def forget_token(url: str) -> bool:
-    return secrets.forget(_token_ref(url))
+    """Only this user's. The machine-wide one belongs to whoever installed it, and
+    removing it needs the rights that put it there — `hub.exe client revoke` is the way to
+    make a token stop working for everybody."""
+    return secrets.forget(_token_ref(url), path=secrets.USER_SECRETS_PATH)

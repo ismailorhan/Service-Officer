@@ -547,3 +547,43 @@ def test_the_dot_agrees_with_the_word_beside_it(application):
     category, word, pixel = dot_and_word()
     assert (category, word) == ("stopped", "not responding")
     assert pixel.lower() == theme.chip("stopped")[0].lower(), pixel
+
+
+def test_a_client_that_cannot_write_the_machines_log_keeps_its_own(tmp_path,
+                                                                  monkeypatch):
+    """The installer takes `Write` away from everyone but administrators, because the hub
+    reads services.json as LocalSystem. An unelevated tray application then cannot write
+    the machine's log — and a client with no log is a client nobody can troubleshoot."""
+    import logging
+
+    from core import applog
+
+    refused = tmp_path / "refused" / "service-officer.log"
+    mine = tmp_path / "mine" / "service-officer.log"
+    monkeypatch.setattr(applog, "LOG_PATH", str(refused))
+    monkeypatch.setattr(applog, "USER_LOG_PATH", str(mine))
+    monkeypatch.setattr(applog, "_configured", False)
+    monkeypatch.setattr(applog, "log_path", str(refused))
+    real_makedirs = applog.os.makedirs
+
+    def refuse_the_machines(path, exist_ok=False):
+        if str(refused.parent) == str(path):
+            raise PermissionError(13, "Access is denied")
+        return real_makedirs(path, exist_ok=exist_ok)
+
+    monkeypatch.setattr(applog.os, "makedirs", refuse_the_machines)
+
+    log = applog.setup()
+    log.info("something worth keeping")
+    for handler in log.handlers:
+        handler.flush()
+
+    assert applog.log_path == str(mine)
+    assert mine.exists(), "the client logged nowhere at all"
+    assert "something worth keeping" in mine.read_text(encoding="utf-8")
+    # Only the one this test added: the suite's own handler is on the same logger, and
+    # taking it away would leave every later test logging nowhere.
+    for handler in list(log.handlers):
+        if getattr(handler, "baseFilename", None) == str(mine):
+            handler.close()
+            log.removeHandler(handler)

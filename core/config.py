@@ -30,6 +30,22 @@ _PROGRAM_DATA = os.environ.get("ProgramData", r"C:\ProgramData")
 #: Named as the product is named, spaces and all, so it sits next to the other
 #: vendors' folders and matches the Start-menu entry and the install directory.
 APP_DIR = os.path.join(_PROGRAM_DATA, "Service Officer")
+
+#: Where *this user's* copy of a client lives. Separate from APP_DIR because the two have
+#: different owners now: APP_DIR belongs to the machine and, once a hub is installed, to a
+#: LocalSystem service — so it is readable by everyone and writable only by
+#: administrators. A tray application that no longer runs elevated still has to keep its
+#: own pairing, its own token and its own log somewhere, and that somewhere is here.
+USER_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA")
+    or os.path.join(os.path.expanduser("~"), "AppData", "Local"),
+    "Service Officer")
+
+
+def in_user_dir(name: str) -> str:
+    """A path under USER_DIR, computed now rather than at import — the same reason
+    in_app_dir exists."""
+    return os.path.join(USER_DIR, name)
 #: Where data has lived before, newest first. Each is only ever read from, and
 #: only to move data forwards — an upgrade must not be why settings vanish.
 LEGACY_DIRS = (
