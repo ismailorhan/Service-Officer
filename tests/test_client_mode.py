@@ -318,3 +318,30 @@ def test_the_hover_card_reads_a_remote_store(qapp, monkeypatch):
 
     assert built.store.health_of("AppEngine") == st.UNHEALTHY
     built.hover.hide()
+
+
+def test_quitting_a_client_does_not_raise(qapp, monkeypatch):
+    """`self.engine` is None on a client, and quit() stopped it unconditionally. It never
+    got noticed because the app closed anyway — the reader is a daemon thread — but an
+    AttributeError on the way out is still an AttributeError, and it skipped the hub's own
+    clean close."""
+    built = _connected_app(monkeypatch)
+    built.tray.hide = lambda: None
+    built.qt.quit = lambda: None
+
+    built.quit()                      # raised AttributeError before
+
+    assert built.hub.started is False, "the hub connection was left open"
+
+
+def test_quitting_an_embedded_install_still_stops_the_engine(qapp, monkeypatch):
+    monkeypatch.setattr(cfg_mod, "load", lambda path=None: cfg_mod.Config())
+    built = app_mod.Application([])
+    stopped = []
+    built.engine.stop = lambda: stopped.append(True)
+    built.tray.hide = lambda: None
+    built.qt.quit = lambda: None
+
+    built.quit()
+
+    assert stopped == [True]

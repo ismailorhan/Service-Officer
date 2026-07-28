@@ -43,44 +43,57 @@ touch a service manager themselves.
 
 ## Installing
 
-One installer. It asks one question first — **Installation method**:
+One installer. It asks two questions, and keeps them apart.
 
-| | What it does |
+**Setup type** — what this computer does:
+
+| | |
 |---|---|
-| **Install a new Service Officer Hub on this computer** | This computer does the work. Also the answer for *upgrading* a hub that is already here — the wizard preselects it when it finds the service. |
-| **Connect to an existing hub** | Another computer does the work. A second page asks for its **address** and the **token** it printed. |
+| **Hub (service) and Client (tray)** | This computer does the work and has the panel. A single-machine install, and the first server. |
+| **Hub (service) only** | A server nobody logs into: no tray icon. |
+| **Client (tray) only** | The work happens elsewhere. |
 
-The address is checked before the installation continues, and there are two ways for it to
-be wrong that would otherwise be silent:
+There is no component list to work out afterwards — the answer decides it.
 
-- **It turns out to be this computer.** Then a hub belongs here, and installing only a
-  client would leave a panel reading a hub nobody upgraded. The wizard says so — *"that
-  address is this computer, the hub installed here will be upgraded to 2.2.2"* — and ticks
-  the hub component when you agree.
-- **It is another computer running a different version.** A client and its hub must match;
-  the protocol check would otherwise refuse everything after the connection succeeded. The
-  wizard names both versions and will not continue. Upgrade the hub first.
+**Hub port** — only when a Hub is being installed, and only when there is not already one
+here. Default 8797; change it if something else has the port. A hub that is already
+serving keeps its port, because its clients have it stored; move that one with
 
-If the address does not answer at all, that is allowed with the uncertainty stated: a
-workstation is often imaged before the server exists. Nothing is checked, so nothing is
-claimed — the address and the token are stored and used on the first launch.
+```bat
+ServiceOfficerHub.exe port 9100
+sc.exe stop ServiceOfficerHub && sc.exe start ServiceOfficerHub
+```
 
-The address is filled in from whatever this computer was paired with last, and can be
-changed.
+**Hub address** — whenever a Client is being installed, *including* when the Hub is being
+installed here. A hub on this computer is still a hub the Client connects to: there is no
+mode anywhere in this product, there is an address, and `localhost` is an address. The
+field is filled in from what this computer was paired with last, or with this computer's
+own name, and can be changed.
 
-Behind that question the components are still there, and can be changed on the next page:
+The address is checked before the installation continues, because every way of getting it
+wrong is quiet:
 
-- **Client only** — the tray application. What a workstation gets.
-- **Hub only** — the Windows service. What a server nobody logs into gets: untick the tray
-  application after choosing *new hub*.
-- **Both** — this machine serves and reads. Comes out of the installer already paired,
-  with no token to carry anywhere.
+| What is entered | What happens |
+|---|---|
+| this computer, and a Hub is being installed | nothing to ask: the installation pairs the Client here and no token is needed |
+| this computer, a Hub is already here, Client only | accepted — it uses the pairing already on the machine |
+| this computer, but no Hub here and none being installed | says so, and lets you continue: the Client installs with nothing to read, and the address can be corrected in **Settings → General** |
+| another computer, same version | accepted; the token is required and the certificate is pinned |
+| another computer, **different version** | **stops.** A client and its hub must match, or the connection succeeds and then refuses everything |
+| an address that does not answer | says what could not be checked, and lets you continue — a workstation is often imaged before its server exists |
+
+**An upgrade is not an answer to any of that.** The installer knows what is already here
+and says so on the summary page — *"Hub (service): 2.2.2 will be upgraded to 2.2.3"* —
+instead of hiding it in the wording of a choice.
 
 Silently:
 
 ```bat
 :: a server: the hub, no tray icon
 ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=hub
+
+:: ...on a different port
+ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=hub /HUBPORT=9100
 
 :: a workstation, already pointed at its hub
 ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=client /HUBURL=https://ctl052:8797 /HUBTOKEN=xxxxxxxx
@@ -95,8 +108,24 @@ client.
 
 A token on an installer command line is visible in the process list while the installer
 runs, and in whatever log a deployment tool keeps. The alternative is to install without
-it and pass `--token` once on the first launch. Neither is worse than the other; what
-matters is that nobody is surprised by it.
+it and type it into **Settings → General** afterwards. Neither is worse than the other;
+what matters is that nobody is surprised by it.
+
+### Changing it afterwards
+
+**Settings → General → HUB**, in the panel:
+
+- **Address** — empty means this computer watches its own services. Anything else is a
+  hub to read. `ctl052` is enough; `:port` only if it is not the default.
+- **Token** — stored in this user's own DPAPI store. It says whether one is already saved,
+  and a new one replaces it.
+- **Test** asks that address who it is and what version it runs, without committing to it.
+- **Apply and restart** stores it and offers to restart, because whether this process runs
+  an engine of its own is settled when it starts.
+
+Pointing at a different hub drops the certificate that was pinned for the old one — a pin
+belongs to the hub it came from, and keeping it would refuse the new one for ever while
+reporting a certificate change that never happened.
 
 ### The service account
 

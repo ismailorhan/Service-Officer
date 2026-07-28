@@ -7,6 +7,8 @@
     hub.exe client revoke N  stop that client
     hub.exe client pair --local   pair this machine's own client, unattended
     hub.exe --fingerprint    the certificate's fingerprint, to give a client
+    hub.exe port             which port it serves on
+    hub.exe port 9000        serve on that port instead (restart it afterwards)
 
 Why a service rather than a scheduled task or a tray app: it starts before anybody logs
 in, Windows restarts it if it dies, and it can run as a domain service account — which is
@@ -147,6 +149,43 @@ def _client_command(argv) -> int | None:
     return 0
 
 
+def _port_command(argv) -> int | None:
+    """`hub.exe port [N]` — read or set the port, for the installer and for a person.
+
+    It lives here rather than in the config file people hand-edit because the installer
+    has to be able to set it without parsing JSON, and because a port that is out of range
+    should be refused where somebody can see the refusal.
+
+    Takes effect when the service next starts; the installer sets it between registering
+    the service and starting it.
+    """
+    if len(argv) < 2 or argv[1] != "port":
+        return None
+    cfg = cfg_mod.load()
+    if len(argv) < 3:
+        print(cfg.hub.port)
+        return 0
+    try:
+        wanted = int(argv[2])
+    except ValueError:
+        print(f"not a port number: {argv[2]}")
+        return 1
+    if not 1 <= wanted <= 65535:
+        print(f"a port has to be between 1 and 65535, not {wanted}")
+        return 1
+    if wanted == cfg.hub.port:
+        print(f"already {wanted}")
+        return 0
+    cfg.hub.port = wanted
+    try:
+        cfg_mod.save(cfg)
+    except Exception as exc:
+        print(f"could not save the port: {exc}")
+        return 1
+    print(f"port {wanted} — restart {SERVICE_NAME} for it to take effect")
+    return 0
+
+
 def _console() -> int:
     applog.setup()
     engine, server, fingerprint = build()
@@ -264,6 +303,10 @@ def main() -> int:
         return 0
 
     handled = _client_command(sys.argv)
+    if handled is not None:
+        return handled
+
+    handled = _port_command(sys.argv)
     if handled is not None:
         return handled
 

@@ -2067,3 +2067,88 @@ def test_a_check_that_was_already_configured_still_shows(qapp):
     assert "sc query MSSQLSERVER" in said
     assert "cannot run a command on another Windows machine" in said
     win.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# the hub, on the General page
+# ---------------------------------------------------------------------------
+# This field is what makes the installer's "the address looks wrong, carry on anyway"
+# honest: somebody who gets it wrong, or whose hub moves, needs a place to put the right
+# answer. It is also the only place the panel says which hub it is reading.
+def test_general_shows_and_stores_the_hub_address(qapp, sample, monkeypatch, tmp_path):
+    from core import local, secrets
+
+    monkeypatch.setattr(local, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local, "MACHINE_PATH", str(tmp_path / "machine.json"))
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
+    monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "machine.dat"))
+
+    win = panel_mod.MainPanel(sample)
+    page = win.general_page
+    page.load_from(win.config())
+    told = []
+    page.hub_changed.connect(told.append)
+
+    assert page.hub_url.text() == "", "a fresh install is not a client of anything"
+    assert "own services" in page.hub_state.text()
+
+    # "ctl052" is what a person types; it should not have to be a URL.
+    page.hub_url.setText("ctl052")
+    page.hub_token.setText("a-token")
+    page._apply_hub()
+
+    assert local.load().hub_url == "https://ctl052:8797"
+    assert local.token("https://ctl052:8797") == "a-token"
+    assert told == ["https://ctl052:8797"], "the app was not told to restart"
+    assert page.hub_token.text() == "", "left the token on screen"
+    assert "ctl052" in page.hub_state.text()
+    win.deleteLater()
+
+
+def test_emptying_the_address_goes_back_to_watching_this_computer(qapp, sample,
+                                                                 monkeypatch, tmp_path):
+    """There is no mode to switch: an empty address *is* "do the work here"."""
+    from core import local, secrets
+
+    monkeypatch.setattr(local, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local, "MACHINE_PATH", str(tmp_path / "machine.json"))
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
+    local.save(local.Settings(hub_url="https://ctl052:8797",
+                              hub_fingerprint="SHA256:x"))
+
+    win = panel_mod.MainPanel(sample)
+    page = win.general_page
+    page.load_from(win.config())
+    assert page.hub_url.text() == "https://ctl052:8797"
+
+    page.hub_url.setText("")
+    page._apply_hub()
+
+    assert local.load().hub_url == ""
+    assert "own services" in page.hub_state.text()
+    win.deleteLater()
+
+
+def test_pointing_at_a_different_hub_drops_the_old_pin(qapp, sample, monkeypatch,
+                                                      tmp_path):
+    """A pinned certificate belongs to the hub it came from. Keeping it would refuse the
+    new hub for the rest of time, and the message would name a certificate change that
+    never happened."""
+    from core import local, secrets
+
+    monkeypatch.setattr(local, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local, "MACHINE_PATH", str(tmp_path / "machine.json"))
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
+    local.save(local.Settings(hub_url="https://old:8797",
+                              hub_fingerprint="SHA256:the-old-one"))
+
+    win = panel_mod.MainPanel(sample)
+    page = win.general_page
+    page.load_from(win.config())
+    page.hub_url.setText("new:9000")
+    page._apply_hub()
+
+    settings = local.load()
+    assert settings.hub_url == "https://new:9000"
+    assert settings.hub_fingerprint == ""
+    win.deleteLater()

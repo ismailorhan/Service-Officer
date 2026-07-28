@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLineEdit,
+                               QMessageBox)
 
 from core import config as cfg_mod
 from core import control
+from core import local as local_mod
 from core import version
 
 from ..widgets import button as _button, label as _label
@@ -16,6 +18,10 @@ from .base import _Page, _sentence
 class GeneralPage(_Page):
     changed = Signal()
     theme_changed = Signal(str)      # applied live, so you can see the choice
+    #: The hub address was changed and stored. The application decides what to do about
+    #: it — which is to restart, because whether an engine runs in this process is
+    #: settled when it starts.
+    hub_changed = Signal(str)
 
     def __init__(self, cfg_ref):
         # Scrolls: appearance, startup, notifications and the about block leave
@@ -54,6 +60,9 @@ class GeneralPage(_Page):
             self.root.addWidget(box)
             self.root.addSpacing(4)
 
+        self.root.addSpacing(24)
+        self._build_hub()
+
         self.root.addSpacing(22)
         self.root.addWidget(_label("ABOUT", "section"))
         self.root.addSpacing(9)
@@ -75,6 +84,126 @@ class GeneralPage(_Page):
         row.addStretch(1)
         self.root.addLayout(row)
         self.root.addStretch(1)
+
+    # -- the hub ----------------------------------------------------------
+    def _build_hub(self):
+        """Which hub this panel reads, or nothing at all.
+
+        Empty means this computer does the work itself, which is what a single-machine
+        install is — so this one field is the whole of "client or not". There is no mode
+        to choose anywhere in this product; there is an address.
+        """
+        self.root.addWidget(_label("HUB", "section"))
+        self.root.addSpacing(9)
+        self.hub_state = _label("", "hint", wrap=True)
+        self.root.addWidget(self.hub_state)
+        self.root.addSpacing(8)
+
+        self.hub_url = QLineEdit()
+        self.hub_url.setPlaceholderText("empty — this computer does the work itself")
+        self.hub_url.setMinimumWidth(260)
+        self.root.addWidget(_sentence("Address", self.hub_url))
+        self.root.addWidget(_label(
+            "A host name or IP, with :port if it is not 8797. Leave it empty to watch "
+            "this computer's own services instead.", "hint", wrap=True))
+        self.root.addSpacing(10)
+
+        self.hub_token = QLineEdit()
+        self.hub_token.setEchoMode(QLineEdit.Password)
+        self.hub_token.setMinimumWidth(260)
+        self.root.addWidget(_sentence("Token", self.hub_token))
+        self.hub_token_hint = _label("", "hint", wrap=True)
+        self.root.addWidget(self.hub_token_hint)
+        self.root.addSpacing(10)
+
+        row = QHBoxLayout()
+        row.addWidget(_button("Apply and restart", "primary", self._apply_hub))
+        row.addWidget(_button("Test", "quiet", self._test_hub))
+        row.addStretch(1)
+        self.root.addLayout(row)
+        self.hub_result = _label("", "hint", wrap=True)
+        self.root.addWidget(self.hub_result)
+
+    def _normalised(self, given: str) -> str:
+        """What the user typed, as a URL. "ctl052" is the common case and it should not
+        have to be spelled https://ctl052:8797 to be understood."""
+        host = (given or "").strip()
+        if not host:
+            return ""
+        if "://" in host:
+            host = host.split("://", 1)[1]
+        host = host.split("/", 1)[0].strip()
+        if not host:
+            return ""
+        bracketed = host.startswith("[")
+        if ":" not in (host.split("]", 1)[1] if bracketed else host):
+            host = f"{host}:8797"
+        return f"https://{host}"
+
+    def _test_hub(self):
+        """Ask before committing to it, because the answer names the machine and the
+        version — the two things that make an address wrong in a way nobody notices."""
+        url = self._normalised(self.hub_url.text())
+        if not url:
+            self.hub_result.setText("No address: this computer will do the work itself.")
+            return
+        from core import hub_client
+        self.hub_result.setText(f"Asking {url}…")
+        self.hub_result.repaint()
+        client = hub_client.HubClient(url, self.hub_token.text().strip())
+        try:
+            answer = client.ping()
+        except Exception as exc:
+            self.hub_result.setText(f"{url} did not answer: {exc}")
+            return
+        theirs = str(answer.get("version", "?"))
+        mine = version.short()
+        note = (f"{answer.get('name', '?')} answered — version {theirs}")
+        if theirs.split(".")[:3] != mine.split(".")[:3]:
+            note += (f", which is not this panel's {mine}. A client and its hub have to "
+                     "match; upgrade one of them.")
+        self.hub_result.setText(note)
+
+    def _apply_hub(self):
+        """Store it and restart.
+
+        Restart rather than reconnect: whether this process runs an engine of its own is
+        settled when it starts, and switching between the two live would mean tearing down
+        a poller, a watchdog and a scheduler in place. A restart is honest and takes a
+        second; pretending would be neither.
+        """
+        url = self._normalised(self.hub_url.text())
+        token = self.hub_token.text().strip()
+        settings = local_mod.load()
+        if url and url != settings.hub_url:
+            settings.hub_fingerprint = ""      # a different hub, so the old pin is void
+        settings.hub_url = url
+        if not local_mod.save(settings):
+            QMessageBox.warning(self, "Service Officer",
+                                "Could not save this client's settings.")
+            return
+        if url and token:
+            local_mod.set_token(url, token)
+        self.hub_token.clear()
+        self._describe_hub()
+        self.hub_changed.emit(url)
+
+    def _describe_hub(self):
+        settings = local_mod.load()
+        if settings.hub_url:
+            pinned = settings.hub_fingerprint or "not pinned yet"
+            self.hub_state.setText(
+                f"Reading {settings.hub_url}\nCertificate  {pinned}")
+            self.hub_token_hint.setText(
+                "Stored already — type a new one only to replace it."
+                if local_mod.token(settings.hub_url) else
+                "Needed. On the hub: ServiceOfficerHub.exe client add <a name for this "
+                "computer>")
+        else:
+            self.hub_state.setText(
+                "No hub: this computer watches its own services, and stops watching when "
+                "this app is closed.")
+            self.hub_token_hint.setText("")
 
     def _copy_build(self):
         """One click to paste into a ticket."""
@@ -102,6 +231,11 @@ class GeneralPage(_Page):
         self.changed.emit()
 
     def load_from(self, cfg):
+        settings = local_mod.load()
+        self.hub_url.blockSignals(True)
+        self.hub_url.setText(settings.hub_url)
+        self.hub_url.blockSignals(False)
+        self._describe_hub()
         for box, value in ((self.auto, cfg.auto_start),
                            (self.on_crash, cfg.notifications.on_crash),
                            (self.on_recovery, cfg.notifications.on_recovery),

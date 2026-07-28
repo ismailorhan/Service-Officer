@@ -129,3 +129,51 @@ def test_pair_local_writes_the_machines_copy_not_the_installers(tmp_path, monkey
     assert local.token(settings.hub_url) == "issued-once"
     assert secrets.get(local._token_ref(settings.hub_url),
                        path=str(tmp_path / "user.dat")) == ""
+
+
+# ---------------------------------------------------------------------------
+# the port
+# ---------------------------------------------------------------------------
+def test_the_port_can_be_read_and_set(tmp_path, monkeypatch, capsys):
+    """The installer has to be able to choose the port without parsing JSON, and a person
+    has to be able to ask what it is without opening a file."""
+    from core import config as cfg_mod
+
+    path = str(tmp_path / "services.json")
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", path)
+
+    assert hub._port_command(["hub.exe", "port"]) == 0
+    assert capsys.readouterr().out.strip() == "8797"      # the default
+
+    assert hub._port_command(["hub.exe", "port", "9100"]) == 0
+    assert "9100" in capsys.readouterr().out
+    assert cfg_mod.load().hub.port == 9100
+
+    assert hub._port_command(["hub.exe", "port"]) == 0
+    assert capsys.readouterr().out.strip() == "9100"
+
+
+def test_a_port_out_of_range_is_refused_where_somebody_can_see_it(tmp_path,
+                                                                 monkeypatch, capsys):
+    """Silently clamping would give a hub nobody can find on the port they chose."""
+    from core import config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", str(tmp_path / "services.json"))
+
+    for bad in ("0", "70000", "-1", "eight"):
+        assert hub._port_command(["hub.exe", "port", bad]) == 1, bad
+        assert capsys.readouterr().out.strip() != ""
+    assert cfg_mod.load().hub.port == 8797
+
+
+def test_the_port_command_never_reaches_the_service_framework(routes, tmp_path,
+                                                              monkeypatch):
+    """It is a console command like `client add`, and it has to work on a machine where
+    the service framework is not importable."""
+    from core import config as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", str(tmp_path / "services.json"))
+
+    took = run(routes, "port", "9000")
+
+    assert "commandline" not in took and "dispatch" not in took

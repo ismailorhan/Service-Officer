@@ -523,6 +523,36 @@ class Application(QObject):
         import os
         return os.environ.get("USERNAME", "")
 
+    def _hub_changed(self, url: str) -> None:
+        """The hub address was changed on the General page and stored.
+
+        Restarting is the honest answer. Whether this process runs an engine of its own is
+        settled when it starts: switching live would mean building a poller, a watchdog, a
+        scheduler and an SCM watcher in place — or tearing them down — while the panel is
+        on screen holding references to the store they write to. A second is cheaper than
+        a whole class of bug.
+        """
+        where = url or "this computer's own services"
+        answer = QMessageBox.question(
+            self.panel, "Service Officer",
+            f"Saved. Service Officer will read {where} after a restart.\n\n"
+            "Restart it now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return
+        log.info("restarting to read %s", where)
+        import subprocess
+        program = sys.executable
+        arguments = [] if getattr(sys, "frozen", False) else [sys.argv[0]]
+        try:
+            subprocess.Popen([program, *arguments], close_fds=True)
+        except OSError as exc:
+            QMessageBox.warning(self.panel, "Service Officer",
+                                f"Could not start it again: {exc}\n\n"
+                                "Close it and open it yourself.")
+            return
+        self.quit()
+
     def _action_done(self, name, machine, action, error, announce=True,
                      bulk=False, status=""):
         self.tray.action_finished()
@@ -832,6 +862,7 @@ class Application(QObject):
         win.test_run.connect(self.run_stack)
         win.run_trigger.connect(self.run_trigger)
         win.theme_changed.connect(self.apply_theme)
+        win.hub_changed.connect(self._hub_changed)
         # The dashboard's controls act on real services, through the same paths
         # as the tray flyout's.
         win.action_requested.connect(self.do_action)
@@ -890,8 +921,19 @@ class Application(QObject):
         ctypes.windll.shell32.ShellExecuteW(None, "open", "services.msc", None, None, 1)
 
     def quit(self):
+        """Whichever of the two this process has, stop it.
+
+        `self.engine` is None when this is a client of a hub — so this used to raise
+        AttributeError on the way out, on every client, every time. Nothing noticed
+        because a daemon thread dies with the process anyway and the exception went to a
+        Qt slot; the app still closed. It is still wrong, and the hub connection deserves
+        the clean close it now gets in well under a second.
+        """
         log.info("quitting")
-        self.engine.stop()
+        if self.engine is not None:
+            self.engine.stop()
+        if self.hub is not None:
+            self.hub.stop()
         self.tray.hide()
         self.qt.quit()
 
