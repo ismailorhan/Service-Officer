@@ -83,6 +83,11 @@ class ServiceRow(QWidget):
         kill.setEnabled(False)
         kill.clicked.connect(lambda: self.act.emit(
             "kill", self.service.name, self.service.machine))
+        #: Whether a process can be ended on this service's machine. True on this computer;
+        #: on another it takes a transport that can, so whoever builds the row says. Set
+        #: before the first set_status() — a row with nobody to tell it offers nothing,
+        #: which is the safe way round.
+        self.can_kill = not self.service.machine
         self.buttons["kill"] = kill
         lay.addSpacing(6)
         lay.addWidget(kill)
@@ -129,14 +134,14 @@ class ServiceRow(QWidget):
 
     def _set_buttons(self, cat: str, busy_label: str) -> None:
         # Kill stays available while anything is running or stuck mid-transition —
-        # that stuck case is exactly what it is for — but never for a remote
-        # service, where terminating a process isn't something we can do.
-        local = not self.service.machine
+        # that stuck case is exactly what it is for. On this computer always; on
+        # another only where something can carry it, which is `can_kill`.
+        able = self.can_kill
         allowed = {
-            "running": {"start": False, "stop": True, "restart": True, "kill": local},
+            "running": {"start": False, "stop": True, "restart": True, "kill": able},
             "stopped": {"start": True, "stop": False, "restart": True, "kill": False},
-            "paused":  {"start": False, "stop": True, "restart": True, "kill": local},
-            "pending": {"start": False, "stop": False, "restart": False, "kill": local},
+            "paused":  {"start": False, "stop": True, "restart": True, "kill": able},
+            "pending": {"start": False, "stop": False, "restart": False, "kill": able},
         }.get(cat, {"start": False, "stop": False, "restart": False, "kill": False})
         for action, b in self.buttons.items():
             enabled = bool(allowed.get(action))

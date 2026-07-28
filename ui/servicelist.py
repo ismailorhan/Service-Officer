@@ -32,6 +32,25 @@ COLUMNS = (("SERVICE", 0, Qt.AlignLeft),
            ("ACTIONS", theme.COL_ACTIONS_W, Qt.AlignRight))
 
 
+def _can_kill(cfg, machine: str) -> bool:
+    """Can a process be ended on that machine?
+
+    On this computer, always. On another it takes a transport that carries a kill, and for
+    Windows that is WinRM — a switch per machine, off by default, because every call it makes
+    writes a logon record to that machine's Security log. Linux over SSH always can.
+
+    Read from the switch rather than probed: probing costs a PowerShell process and a row is
+    drawn far more often than a machine changes. The switch is the decision anyway — Test
+    connection sets it from a real probe.
+    """
+    if not machine:
+        return True
+    found = cfg.machine(machine)
+    if found is None:
+        return False
+    return bool(found.is_linux or getattr(found, "winrm", False))
+
+
 class ServiceListMixin:
     """Grouping, visibility and selection for a list of ServiceRows.
 
@@ -104,6 +123,7 @@ class ServiceListMixin:
                 add(bar)
             for svc in members:
                 row = ServiceRow(svc)
+                row.can_kill = _can_kill(cfg, svc.machine)
                 row.category = name
                 row.act.connect(self.action_requested)
                 row.picked.connect(self._selection_changed)

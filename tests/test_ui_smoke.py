@@ -2530,3 +2530,57 @@ def test_no_page_spreads_itself_over_the_window(qapp, sample):
     finally:
         win.close()
 
+
+
+def test_kill_is_offered_where_something_can_carry_it(qapp):
+    """`Abilities.kill` was added, the connector routes a kill over WinRM, and the switch on
+    the Machines page promises in as many words that this machine's process "can be
+    terminated". The row never asked: it computed `local = not service.machine` and
+    hard-coded the button off for every remote service, so the whole WinRM kill path shipped
+    with no way to reach it. Found on 2026-07-29 by looking at the button.
+    """
+    from core import config as cfg_mod, state as st
+    from ui import rows as rows_mod
+    from ui.servicelist import _can_kill
+
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),                                              # this computer
+        cfg_mod.Machine(name="sc-sql", address="10.77.3.112", winrm=True),
+        cfg_mod.Machine(name="sc-sap", address="10.77.3.110", winrm=False),
+        cfg_mod.Machine(name="hanadev", address="10.0.0.9", kind="linux"),
+    ])
+
+    assert _can_kill(cfg, "") is True, "on this computer it has always worked"
+    assert _can_kill(cfg, "sc-sql") is True, "WinRM is on, and WinRM carries a kill"
+    assert _can_kill(cfg, "sc-sap") is False, "switched off is off — no process is started"
+    assert _can_kill(cfg, "hanadev") is True, "SSH runs commands, so it can end one"
+    assert _can_kill(cfg, "gone") is False, "a machine that is not configured offers nothing"
+
+    # And the row obeys it, for running and for wedged mid-transition — which is the case
+    # kill exists for.
+    for able in (True, False):
+        row = rows_mod.ServiceRow(cfg_mod.Service(name="B1ServerTools64", machine="sc-sql"))
+        row.can_kill = able
+        for status in (st.RUNNING, "Stopping"):
+            row.set_status(status)
+            assert row.buttons["kill"].isEnabled() is able,                 f"can_kill={able} but the button says {row.buttons['kill'].isEnabled()} "                 f"at {status}"
+
+    # Stopped stays off whatever the machine can do: there is no process to end.
+    row = rows_mod.ServiceRow(cfg_mod.Service(name="B1ServerTools64", machine="sc-sql"))
+    row.can_kill = True
+    row.set_status(st.STOPPED)
+    assert row.buttons["kill"].isEnabled() is False
+
+
+def test_a_row_nobody_told_offers_no_remote_kill(qapp):
+    """The safe way round: a row built without being told falls back to this computer only."""
+    from core import config as cfg_mod, state as st
+    from ui import rows as rows_mod
+
+    row = rows_mod.ServiceRow(cfg_mod.Service(name="X", machine="sc-sql"))
+    row.set_status(st.RUNNING)
+    assert row.buttons["kill"].isEnabled() is False
+
+    here = rows_mod.ServiceRow(cfg_mod.Service(name="X"))
+    here.set_status(st.RUNNING)
+    assert here.buttons["kill"].isEnabled() is True
