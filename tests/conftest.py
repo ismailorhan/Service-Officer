@@ -37,6 +37,9 @@ applog.LOG_PATH = str(_SANDBOX / "service-officer.log")
 # The fallback as well: a process that cannot write the first one must not reach the real
 # profile — see applog.setup.
 applog.USER_LOG_PATH = str(_SANDBOX / "user" / "service-officer.log")
+# And the record of which one was used: it is set by setup(), and until something calls
+# that it still holds the real installation's path from import time.
+applog.log_path = applog.LOG_PATH
 
 from core import db, history                               # noqa: E402
 history.HISTORY_PATH = str(_SANDBOX / "history.db")

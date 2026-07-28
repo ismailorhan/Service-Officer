@@ -23,7 +23,7 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "2.2.3"
+#define MyAppVersion     "2.2.4"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyHubExeName     "ServiceOfficerHub.exe"
@@ -289,8 +289,11 @@ var
   //: That address is this computer — so no token is needed and `client pair --local`
   //: does the pairing.
   HubIsLocal: Boolean;
-  //: The port already in use here, read at startup. Empty on a first install.
+  //: The port already in use here. Empty on a first install — and unknown until
+  //: {app} exists, which is why it is not read in InitializeWizard: that runs before the
+  //: directory page, and expanding {app} there is a runtime error. See EnsureExistingPort.
   ExistingPort: String;
+  ExistingPortKnown: Boolean;
   ExistingHubVersion: String;
 
 function ParamValue(Name: String): String;
@@ -474,6 +477,12 @@ begin
   Result := TypePage.SelectedValueIndex <> TypeClientOnly;
 end;
 
+// Called from the first page that comes *after* the directory page, and from
+// ShouldSkipPage, because both are places where {app} is guaranteed to exist. Doing this
+// in InitializeWizard raised "an attempt was made to expand the app constant before it was
+// initialized" — which is a runtime error, so nothing but running the installer finds it.
+procedure EnsureExistingPort(); forward;
+
 function InstallingClient(): Boolean;
 begin
   Result := TypePage.SelectedValueIndex <> TypeHubOnly;
@@ -551,12 +560,28 @@ end;
 // ---------------------------------------------------------------------------
 // the pages
 // ---------------------------------------------------------------------------
+procedure EnsureExistingPort();
+begin
+  if ExistingPortKnown then
+    Exit;
+  ExistingPortKnown := True;
+  ExistingPort := PortAlreadyHere();
+  if (ExistingPort <> '') and (PortPage <> nil) then
+  begin
+    PortPage.Values[0] := ExistingPort;
+    // The client here reads the hub by name, so it has to be told the port that hub
+    // actually serves on rather than the default.
+    if (HubPage <> nil) and LooksLikeThisComputer(HostOfUrl(NormalisedUrl(HubPage.Values[0]))) then
+      HubPage.Values[0] := GetComputerNameString + ':' + ExistingPort;
+  end;
+end;
+
 procedure InitializeWizard();
 var
   Remembered: String;
-  HubName: String;
 begin
-  ExistingPort := PortAlreadyHere();
+  ExistingPort := '';
+  ExistingPortKnown := False;
   ExistingHubVersion := '';
 
   TypePage := CreateInputOptionPage(
@@ -585,8 +610,6 @@ begin
   if HubInstalledHere() then
   begin
     TypePage.SelectedValueIndex := TypeBoth;
-    if ExistingPort <> '' then
-      PortPage.Values[0] := ExistingPort;
     HubPage.Values[0] := GetComputerNameString;
   end
   else if Remembered <> '' then
@@ -599,12 +622,13 @@ begin
     TypePage.SelectedValueIndex := TypeBoth;
     HubPage.Values[0] := GetComputerNameString;
   end;
-  HubName := '';
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  // Safe here: every page this is asked about comes after the directory page.
+  EnsureExistingPort();
   // The components page is gone: the setup type says which components, and a list of two
   // parts is a worse question than "what should this computer do".
   if PageID = wpSelectComponents then
@@ -619,6 +643,8 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if CurPageID = TypePage.ID then
+    EnsureExistingPort();
   if (HubPage <> nil) and (CurPageID = HubPage.ID) then
   begin
     // The token is not needed for a hub on this computer, and saying so is better than
