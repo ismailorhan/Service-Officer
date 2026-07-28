@@ -99,7 +99,11 @@ def test_export_matches_what_is_on_screen(tmp_path):
     assert text[0] == "sep=\t"
     # The time column names the zone once, because the times in it are local.
     assert text[1].split("\t") == [f"Time ({clock.offset_label()})", "Service",
-                                   "Kind", "Event", "Detail", "Level", "Source"]
+                                   "Kind", "Event", "Detail", "Level", "Source",
+                                   # In the file whether or not anybody filled it: a
+                                   # CSV is read by something, and a column that comes
+                                   # and goes is worse than an empty one.
+                                   "Asked by"]
     assert "A" in text[2] and "B" not in text[2]
 
 

@@ -158,3 +158,22 @@ def test_a_client_that_cannot_act_still_reads(system, monkeypatch):
 
     assert client.connected is True
     assert client.store.status_of("AppEngine") == st.RUNNING
+
+
+def test_the_hubs_history_says_which_person_asked(system, tmp_path, monkeypatch):
+    """The reason the column exists. Five clients act on one landscape and the hub is
+    the only place that sees all of it — so "who stopped AppEngine at 03:00" has to be
+    answerable from the hub's own history, not from asking five people."""
+    from core import history
+
+    client, engine, _server, _states, holder = system
+    path = str(tmp_path / "history.db")
+    monkeypatch.setattr(history, "HISTORY_PATH", path)
+    holder["cfg"].history.enabled = True
+
+    client.act("stop", "AppEngine", actor="CT\ismail.orhan")
+    assert engine.wait_for_actions(timeout=10)
+
+    asked = [r for r in history.read(path=path) if r.get("action") == "stop"]
+    assert asked, "the action was never recorded"
+    assert asked[0]["actor"] == "CT\ismail.orhan"

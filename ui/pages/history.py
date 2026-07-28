@@ -38,7 +38,10 @@ class _TimeCell(QTableWidgetItem):
 class HistoryPage(_Page):
     changed = Signal()
 
-    COLUMNS = ("Time", "Service", "Event", "Detail", "Source")
+    # "Asked by" is last and hidden unless something in view fills it: on a
+    # single-machine install nothing ever does, and an always-empty column would
+    # only take width away from Detail.
+    COLUMNS = ("Time", "Service", "Event", "Detail", "Source", "Asked by")
     RANGES = (("Last hour", 1), ("Last 8 hours", 8), ("Last 24 hours", 24),
               ("Last 7 days", 24 * 7), ("Last 30 days", 24 * 30), ("Everything", 0))
     #: which cause produced the row. "observed" covers anything we didn't do —
@@ -156,6 +159,10 @@ class HistoryPage(_Page):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)   # event
         header.setSectionResizeMode(3, QHeaderView.Stretch)            # detail
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)   # source
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)   # asked by
+        # Hidden until a loaded row fills it (see reload). An empty table has nobody
+        # to attribute, and the page is built long before it is first read.
+        self.table.setColumnHidden(self.COLUMNS.index("Asked by"), True)
         self.root.addWidget(self.table, 1)
 
         self.count = _label("", "hint")
@@ -301,7 +308,8 @@ class HistoryPage(_Page):
             self.table.insertRow(row)
             stored = r.get("ts", "")
             cells = [clock.local_text(stored), r.get("label") or r.get("service", ""),
-                     r.get("event", ""), r.get("detail", ""), r.get("source", "")]
+                     r.get("event", ""), r.get("detail", ""), r.get("source", ""),
+                     r.get("actor", "")]
             for col, text in enumerate(cells):
                 item = (_TimeCell(text, stored) if col == 0
                         else QTableWidgetItem(text))
@@ -317,6 +325,9 @@ class HistoryPage(_Page):
                     item.setToolTip(text)           # messages can be long
                 self.table.setItem(row, col, item)
         self.table.setSortingEnabled(True)
+        self.table.setColumnHidden(
+            self.COLUMNS.index("Asked by"),
+            not any(r.get("actor") for r in rows))
 
         shown = len(rows)
         extra = sum(1 for r in rows if r.get("kind") == "windows")

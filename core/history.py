@@ -73,6 +73,18 @@ def _read_failed(exc: Exception) -> None:
 _KINDS = (("run", "run"), ("health", "health"), ("action", "action"))
 
 
+def _column(row, name: str):
+    """A column's value, or None if this file is older than the column.
+
+    Rows read from a database written by an older build simply do not have it, and
+    the app has to keep working against one — a downgrade must not crash the page.
+    """
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
 def _to_row(rec: dict) -> tuple:
     """A record dict as the columns of `events`, in db.COLUMNS order."""
     kind = next((k for key, k in _KINDS if rec.get(key)), "state")
@@ -82,13 +94,14 @@ def _to_row(rec: dict) -> tuple:
         # column, and it keeps one index serving both.
         return (rec.get("ts"), "", rec.get("name", ""), "run", rec.get("run"),
                 None, None, rec.get("source"), rec.get("outcome"), None,
-                rec.get("seconds"), rec.get("detail"), extra)
+                rec.get("seconds"), rec.get("detail"), extra,
+                rec.get("actor", ""))
     event = rec.get("action") if kind == "action" else None
     state = rec.get("health") if kind == "health" else rec.get("to")
     detail = rec.get("detail") if kind == "health" else rec.get("note")
     return (rec.get("ts"), rec.get("machine", "") or "", rec.get("service", ""),
             kind, event, state, rec.get("from"), rec.get("source"), None,
-            rec.get("exit_code"), None, detail, extra)
+            rec.get("exit_code"), None, detail, extra, rec.get("actor", ""))
 
 
 def _to_record(row) -> dict:
@@ -101,6 +114,11 @@ def _to_record(row) -> dict:
     """
     kind = row["kind"]
     out = {"ts": row["ts"], "source": row["source"]}
+    # Omitted when empty, like every other key here: the History page shows the
+    # column only when something in view fills it, and an always-present ""
+    # would make every watchdog restart look like a record we lost.
+    if _column(row, "actor"):
+        out["actor"] = row["actor"]
     if kind == "run":
         out.update({"run": row["event"], "name": row["service"],
                     "outcome": row["outcome"],
@@ -257,20 +275,28 @@ def record_health(service: str, verdict: str, detail: str = "",
 
 
 def record_action(service: str, action: str, source: str, machine: str = "",
-                  note: str = "", path: str = None) -> None:
+                  note: str = "", actor: str = "", path: str = None) -> None:
     """Log that an action was *asked for*, separately from the state changes it
     causes. Without this the timeline shows a service stopping with no hint that
-    somebody pressed the button."""
+    somebody pressed the button.
+
+    `actor` is who asked, when a person did: `source` says the panel, `actor` says
+    which panel. Left empty for the watchdog and the scheduler, which have nobody
+    behind them and would be libelled by a name.
+    """
     path = path or HISTORY_PATH
     line = {"ts": _now_iso(), "service": service, "machine": machine,
             "action": action, "source": source}
     if note:
         line["note"] = note
+    if actor:
+        line["actor"] = actor
     _append(line, path)
 
 
 def record_run(kind: str, name: str, outcome: str, seconds: float = 0.0,
-               detail: str = "", source: str = "", path: str = None) -> None:
+               detail: str = "", source: str = "", actor: str = "",
+               path: str = None) -> None:
     """A whole run: a stack, or a trigger firing. Outcome is success / failed /
     skipped / cancelled. Kept in the same file as everything else so one export
     tells the entire story."""
@@ -278,6 +304,8 @@ def record_run(kind: str, name: str, outcome: str, seconds: float = 0.0,
     line = {"ts": _now_iso(), "run": kind, "name": name, "outcome": outcome,
             "seconds": round(float(seconds), 1), "detail": detail,
             "source": source or kind}
+    if actor:
+        line["actor"] = actor
     _append(line, path)
 
 
@@ -433,8 +461,12 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
     # the Windows event log can be limited separately below.
     for rec in _select(where, args, limit, path):
         name = rec.get("service", "")
+        # `actor` in the common part rather than per-branch: a state change caused
+        # by somebody's restart carries it too, and that is exactly the row a person
+        # reading the timeline is trying to attribute.
         common = {"ts": rec.get("ts", ""), "service": name,
-                  "label": label_of.get(name, name), "level": ""}
+                  "label": label_of.get(name, name), "level": "",
+                  "actor": rec.get("actor", "")}
         if rec.get("run"):
             # A whole run — shown in the timeline too, so a stack's outcome sits
             # among the state changes it caused. (A service filter has already
@@ -542,13 +574,16 @@ def export_csv(dest: str, rows=None, path: str = None, service: str = None,
         if for_excel:
             f.write(f"sep={delimiter}\n")
         w = csv.writer(f, delimiter=delimiter)
+        # "Asked by" always in the file even when every row is blank: a CSV goes
+        # into a ticket, and a column that comes and goes breaks whatever reads it.
         w.writerow([f"Time ({clock.offset_label()})", "Service", "Kind", "Event",
-                    "Detail", "Level", "Source"])
+                    "Detail", "Level", "Source", "Asked by"])
         for r in rows:
             w.writerow([clock.local_text(r.get("ts", ""), clock.EXPORT),
                         r.get("label") or r.get("service", ""),
                         r.get("kind", ""), r.get("event", ""), r.get("detail", ""),
-                        r.get("level", ""), r.get("source", "")])
+                        r.get("level", ""), r.get("source", ""),
+                        r.get("actor", "")])
     return len(rows)
 
 

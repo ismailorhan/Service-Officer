@@ -79,6 +79,8 @@ class Engine:
         #: watchdog, the health restart, a stack step and a trigger alike, because
         #: all of them come through act().
         self._acting: dict = {}
+        #: Who asked for the stack that is running, for the rows it writes.
+        self._stack_actor = ""
         self._acting_lock = threading.RLock()
         #: set while a trigger's action is in flight, so its outcome is recorded
         self._pending_trigger = None
@@ -356,10 +358,8 @@ class Engine:
 
         action_id = self._next_id()
         if self._config().history.enabled:
-            # `actor` travels on the callback and will land in the history in Task 10,
-            # when the events table gains the column; recording it here would need a
-            # schema that does not exist yet.
-            history.record_action(service, action, st.SRC_PANEL, machine=machine)
+            history.record_action(service, action, st.SRC_PANEL, machine=machine,
+                                  actor=actor)
 
         def work():
             error = None
@@ -416,7 +416,8 @@ class Engine:
             self._acting[key] = {"actor": actor, "action": "kill", "at": time.time()}
         action_id = self._next_id()
         if self._config().history.enabled:
-            history.record_action(service, "kill", st.SRC_PANEL, machine=machine)
+            history.record_action(service, "kill", st.SRC_PANEL, machine=machine,
+                                  actor=actor)
 
         def work():
             error = None
@@ -461,6 +462,10 @@ class Engine:
             return False
         if self.runner.busy:
             return False
+        # One stack runs at a time (the guard above), so the actor can be held on the
+        # engine rather than threaded through the runner's callbacks — which belong to
+        # the stack's own steps and have no room for it.
+        self._stack_actor = actor
         machine_for = {s.name: s.machine for s in cfg.services}
 
         def work():
@@ -482,7 +487,7 @@ class Engine:
         likely to be unchanged."""
         if phase == "begin" and self._config().history.enabled:
             history.record_action(service, action, st.SRC_STACK,
-                                  note="stack step")
+                                  note="stack step", actor=self._stack_actor)
         elif phase == "ok" and action in ("start", "restart"):
             machine = next((s.machine for s in self._config().services
                             if s.name == service), "")
@@ -495,7 +500,8 @@ class Engine:
                    else "success" if result.ok else "failed")
         history.record_run("stack", result.stack, outcome,
                            seconds=sum(s.seconds for s in result.steps),
-                           detail=result.summary(), source=st.SRC_STACK)
+                           detail=result.summary(), source=st.SRC_STACK,
+                           actor=self._stack_actor)
         return outcome
 
     # -- config ------------------------------------------------------------

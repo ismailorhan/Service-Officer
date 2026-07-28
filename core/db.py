@@ -31,7 +31,7 @@ import os
 import sqlite3
 import threading
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Applied in order to bring a file up to SCHEMA_VERSION. The key is the version
 #: the step produces.
@@ -83,11 +83,23 @@ _STEPS = {
         )
         """,
     ),
+    3: (
+        # Who asked. `source` already says *what kind* of thing asked — the panel, a
+        # trigger, the watchdog — which was enough while one person sat at one
+        # computer. With clients on five desks "the panel" no longer identifies
+        # anybody, so the name travels with the action.
+        #
+        # Empty, not NULL, for rows written before this column existed: the History
+        # page distinguishes "nobody was asked" (the watchdog) from "we never
+        # recorded it" by what it can see in view, not by a sentinel here.
+        "ALTER TABLE events ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
+    ),
 }
 
 #: The columns of `events`, in order, for INSERT.
 COLUMNS = ("ts", "machine", "service", "kind", "event", "state", "from_state",
-           "source", "outcome", "exit_code", "seconds", "detail", "extra")
+           "source", "outcome", "exit_code", "seconds", "detail", "extra",
+           "actor")
 
 _lock = threading.RLock()
 _conns: dict = {}

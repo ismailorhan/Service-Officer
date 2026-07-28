@@ -266,3 +266,86 @@ def test_two_connections_can_read_while_one_writes(tmp_path):
         assert reader.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     finally:
         reader.close()
+
+
+# ---------------------------------------------------------------------------
+# who asked
+# ---------------------------------------------------------------------------
+def test_an_action_records_who_asked_for_it(tmp_path):
+    """With five clients, "who restarted AppEngine at 03:00" stops being a rhetorical
+    question. With one operator it was answerable from memory; with five it is
+    answerable only from the record."""
+    path = str(tmp_path / "history.db")
+    history.record_action("AppEngine", "restart", st.SRC_PANEL, machine="",
+                          actor=r"CT\ismail.orhan", path=path)
+
+    row = history.read(path=path, limit=1)[0]
+
+    assert row["actor"] == r"CT\ismail.orhan"
+
+
+def test_an_action_with_no_actor_says_nothing_rather_than_nobody(tmp_path):
+    """The watchdog and the scheduler have no person behind them, and inventing one
+    would be worse than the blank."""
+    path = str(tmp_path / "history.db")
+    history.record_action("AppEngine", "restart", st.SRC_WATCHDOG, path=path)
+
+    row = history.read(path=path, limit=1)[0]
+
+    assert "actor" not in row
+
+
+def test_a_run_records_who_started_it(tmp_path):
+    """A stack somebody ran by hand and one a trigger fired look identical in the
+    timeline otherwise."""
+    path = str(tmp_path / "history.db")
+    history.record_run("stack", "SAP stack", "success", seconds=12.0,
+                       source=st.SRC_PANEL, actor="ayse", path=path)
+
+    row = history.runs(path=path, limit=1)[0]
+
+    assert row["actor"] == "ayse"
+
+
+def test_an_old_database_gains_the_column(tmp_path):
+    """Somebody upgrading has months of history in the file already, and the column
+    has to arrive without asking them to throw that away."""
+    import sqlite3
+
+    path = str(tmp_path / "history.db")
+    # A genuine v2 file: the steps as they were, not today's connect().
+    old = sqlite3.connect(path)
+    for version in (1, 2):
+        for statement in db._STEPS[version]:
+            old.execute(statement)
+    old.execute("PRAGMA user_version = 2")
+    old.execute("INSERT INTO events (ts, service, kind, event, source) "
+                "VALUES ('2026-01-01T00:00:00Z', 'AppEngine', 'action', "
+                "'restart', 'panel')")
+    old.commit()
+    old.close()
+
+    # Opening it is the migration, and writing through it proves the file still works.
+    history.record_action("AppEngine", "stop", st.SRC_PANEL, actor="ayse", path=path)
+    rows = history.read(path=path, limit=10)
+    conn = db.connect(path)
+
+    assert len(rows) == 2, "the row that was already there did not survive"
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    fresh = [r for r in rows if r.get("action") == "stop"][0]
+    was_there = [r for r in rows if r.get("action") == "restart"][0]
+    assert fresh["actor"] == "ayse"
+    assert "actor" not in was_there, "an old row was given an actor it never had"
+    db.close(path)
+
+
+def test_the_timeline_carries_the_actor_through(tmp_path):
+    """query() is what the History page reads, and a column that only existed in
+    read() would show blanks on the page that matters."""
+    path = str(tmp_path / "history.db")
+    history.record_action("AppEngine", "restart", st.SRC_PANEL,
+                          actor="ismail", path=path)
+
+    rows = history.query(service_names=["AppEngine"], path=path)
+
+    assert any(r.get("actor") == "ismail" for r in rows)

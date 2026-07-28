@@ -503,12 +503,42 @@ def test_history_page_builds_a_grid_with_filters(qapp, sample):
 
     assert [page.table.horizontalHeaderItem(i).text()
             for i in range(page.table.columnCount())] == \
-        ["Time", "Service", "Event", "Detail", "Source"]
+        ["Time", "Service", "Event", "Detail", "Source", "Asked by"]
+    # ...but on screen it is hidden until a row fills it, so a single-machine install
+    # never loses width to a column that will always be empty.
+    assert page.table.isColumnHidden(page.COLUMNS.index("Asked by"))
     # The service filter offers the configured services, not free text.
     assert page.service_filter.count() == 1 + len(sample.services)
     assert page.service_filter.itemData(0) is None            # "All services"
     assert page.range_filter.count() == len(page.RANGES)
     assert page.include_windows.isChecked() is False
+    win.deleteLater()
+
+
+def test_history_shows_who_asked_once_a_row_says_so(qapp, sample, monkeypatch):
+    """The column earns its width. Hidden on the single-machine install everybody has
+    today; there the moment a hub records a name."""
+    win = panel_mod.MainPanel(sample)
+    page = win.history_page
+    page.load_from(win.config())
+    column = page.COLUMNS.index("Asked by")
+
+    monkeypatch.setattr(page, "_current_rows", lambda: [
+        {"ts": "2026-07-28T09:00:00Z", "service": "AppEngine", "label": "AppEngine",
+         "kind": "action", "event": "restart requested", "detail": "",
+         "source": "panel", "actor": "CT-ismail.orhan"}])
+    page.reload()
+
+    assert page.table.isColumnHidden(column) is False
+    assert page.table.item(0, column).text() == "CT-ismail.orhan"
+
+    # And gone again when the filters land on rows that name nobody.
+    monkeypatch.setattr(page, "_current_rows", lambda: [
+        {"ts": "2026-07-28T09:01:00Z", "service": "AppEngine", "label": "AppEngine",
+         "kind": "action", "event": "restart requested", "source": "watchdog"}])
+    page.reload()
+
+    assert page.table.isColumnHidden(column) is True
     win.deleteLater()
 
 
