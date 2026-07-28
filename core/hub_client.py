@@ -176,12 +176,17 @@ class RemoteStore:
                     for key, row in self._services.items()}
 
     def counts(self) -> tuple:
-        """(running, stopped, other), the way the local store counts them."""
+        """(running, total) — exactly what `Store.counts()` answers.
+
+        It used to return (running, stopped, other), with a docstring claiming it was
+        "the way the local store counts them". It was not, and the tray unpacks two:
+        `running, total = self._store.counts()` raised ValueError the instant the app
+        was launched as a client. Every contract test passed, because they only asked
+        whether the method existed — see the shape tests in tests/test_store_contract.py.
+        """
         with self._lock:
             rows = list(self._services.values())
-        running = sum(1 for r in rows if r.get("status") == st.RUNNING)
-        stopped = sum(1 for r in rows if r.get("status") == st.STOPPED)
-        return running, stopped, len(rows) - running - stopped
+        return sum(1 for r in rows if r.get("status") == st.RUNNING), len(rows)
 
     def any_pending(self) -> bool:
         with self._lock:

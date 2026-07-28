@@ -210,7 +210,11 @@ def test_a_client_added_by_another_process_is_accepted(tmp_path, monkeypatch):
          "from core import secrets, hub_auth;"
          f" secrets.SECRETS_PATH = r'{secrets.SECRETS_PATH}';"
          " print(hub_auth.add_client('added-later'))"],
-        cwd=root, capture_output=True, text=True, timeout=120)
+        cwd=root, capture_output=True, text=True, timeout=120,
+        # ProgramData redirected as well as the store: without it the child writes
+        # "client added-later paired" into the real installation's log, which is the
+        # file somebody reads when they are trying to work out what happened.
+        env={**os.environ, "ProgramData": str(tmp_path / "programdata")})
     assert added.returncode == 0, added.stderr
     token = added.stdout.strip().splitlines()[-1]
 

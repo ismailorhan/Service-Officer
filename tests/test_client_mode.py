@@ -235,3 +235,86 @@ def test_pairing_on_the_command_line_counts_as_being_a_client(monkeypatch):
 
     assert app_mod.needs_elevation(
         ["ServiceOfficer.exe", "--connect", "https://hub:8797"]) is False
+
+
+# ---------------------------------------------------------------------------
+# the real interface, against a real RemoteStore
+# ---------------------------------------------------------------------------
+# The FakeHub above carries a *local* Store, which is what let a real crash through: the
+# remote store answered counts() with three values where the local one answers two, and
+# `running, total = self._store.counts()` in the tray raised ValueError the moment the app
+# started as a client — on a machine that had just been installed.
+#
+# So this drives the actual widgets with the actual RemoteStore, filled the way the hub
+# fills it, through the same calls startup makes.
+class RemoteHub(FakeHub):
+    """A hub client with the real RemoteStore behind it, holding real rows."""
+
+    def __init__(self, url, token, fingerprint="", on_event=None, on_connected=None):
+        super().__init__(url, token, fingerprint, on_event, on_connected)
+        from core import hub_client, wire
+        self.store = hub_client.RemoteStore()
+        services = [cfg_mod.Service(name="AppEngine", label="CompuTec AppEngine"),
+                    cfg_mod.Service(name="WMSServer", label="CompuTec WMS"),
+                    cfg_mod.Service(name="webclient.service", machine="sd",
+                                    label="SAP Web Client")]
+        source = st.Store()
+        source.update("AppEngine", st.RUNNING)
+        source.update("WMSServer", st.STOPPED)
+        source.update("webclient.service", st.RUNNING, machine="sd")
+        source.set_health("AppEngine", st.UNHEALTHY, "connection refused")
+        source.note_machine("sd", True, "")
+        self.store.apply_snapshot({
+            "services": [wire.service_row(s, source) for s in services],
+            "machines": [wire.machine_row(m, source) for m in
+                         (cfg_mod.Machine(),
+                          cfg_mod.Machine(name="sd", kind="linux"))],
+        })
+
+
+def _connected_app(monkeypatch):
+    cfg = cfg_mod.Config(
+        machines=[cfg_mod.Machine(), cfg_mod.Machine(name="sd", kind="linux")],
+        services=[cfg_mod.Service(name="AppEngine", label="CompuTec AppEngine"),
+                  cfg_mod.Service(name="WMSServer", label="CompuTec WMS"),
+                  cfg_mod.Service(name="webclient.service", machine="sd",
+                                  label="SAP Web Client")])
+    monkeypatch.setattr(cfg_mod, "load", lambda path=None: cfg)
+    monkeypatch.setattr(app_mod.hub_client, "HubClient", RemoteHub)
+    return app_mod.Application(["--connect", "https://hub:8797", "--token", "t"])
+
+
+def test_the_tray_paints_from_a_remote_store(qapp, monkeypatch):
+    """The exact line that crashed: the tray unpacks counts() and colours the icon."""
+    built = _connected_app(monkeypatch)
+
+    built.tray.apply_state()          # raised ValueError before counts() was fixed
+
+    assert built.store.counts() == (2, 3)
+
+
+def test_everything_that_shows_a_state_survives_a_remote_store(qapp, monkeypatch):
+    """The whole of _refresh_lists, which is what every event calls — with the flyout and
+    the dashboard made visible so none of them is skipped by an `isVisible()` guard."""
+    built = _connected_app(monkeypatch)
+    built.flyout.popup()
+    built.open_panel()
+
+    built._refresh_lists()
+
+    assert built.flyout.isVisible()
+    assert built.panel is not None
+    built.panel.close()
+    built.flyout.hide()
+
+
+def test_the_hover_card_reads_a_remote_store(qapp, monkeypatch):
+    """It asks per service rather than in bulk — health, start type, the machine's own
+    reachability — so it touches the most of the read API."""
+    built = _connected_app(monkeypatch)
+
+    built.hover.refresh()
+    built.hover._render()        # what request() gets to once the pointer settles
+
+    assert built.store.health_of("AppEngine") == st.UNHEALTHY
+    built.hover.hide()
