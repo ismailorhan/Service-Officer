@@ -32,7 +32,7 @@ class MachinesPage(QWidget):
     #: an address resolved on a worker thread; redraw on the GUI thread
     address_found = Signal()
 
-    def __init__(self, cfg_ref, store=None):
+    def __init__(self, cfg_ref, store=None, hub=None):
         super().__init__()
         self.cfg = cfg_ref
         self.store = store
@@ -61,7 +61,7 @@ class MachinesPage(QWidget):
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
 
-        self.detail = MachineDetail()
+        self.detail = MachineDetail(hub)
         self.detail.back.connect(self._show_list)
         self.detail.changed.connect(self._refresh_and_signal)
 
@@ -323,9 +323,12 @@ class MachineDetail(_Page):
                      ("User name and password", "password"))
     AUTHS = AUTHS_LINUX          # kept as a name; the list in use follows the kind
 
-    def __init__(self):
+    def __init__(self, hub=None):
         super().__init__("", "", scroll=True)
         self.machine = None
+        #: Set when this panel talks to a hub rather than watching by itself. Only used to
+        #: say whose reach a connection test proved — see _run_test.
+        self._hub = hub
 
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
@@ -831,7 +834,12 @@ class MachineDetail(_Page):
         except Exception as exc:
             self.tested.emit(f"{type(exc).__name__}: {exc}")
             return
-        said = [f"{machine.where()} answered."]
+        # Whose reach was just proved. With a hub, the chip on the machine shows what the
+        # *hub* found, and this test ran here, as whoever is signed in — two different
+        # subjects, and saying only "answered" invites the reading that they are one. Seen
+        # on 2026-07-28: sc-sql answered a test while its chip said `waiting`.
+        whose = " (from this computer)" if self._hub is not None else ""
+        said = [f"{machine.where()} answered{whose}."]
         if machine.auth == "password" and not machine.is_linux:
             said.append(f"Signed in as {machine.username}.")
         said.append("Services can be started and stopped." if can.control

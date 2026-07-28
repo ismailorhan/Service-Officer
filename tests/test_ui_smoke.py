@@ -2384,3 +2384,37 @@ def test_testing_a_connection_decides_the_switch(qapp, sample, monkeypatch):
     assert machine.winrm is False
     assert "switched off" in said and "winrm quickconfig" in said
     win.deleteLater()
+
+
+def test_a_connection_test_says_whose_reach_it_proved(qapp, tmp_path, monkeypatch):
+    """With a hub, the chip on a machine shows what the *hub* found, and Test connection runs
+    here as whoever is signed in. Two subjects — and on 2026-07-28 sc-sql answered a test
+    while its own chip said `waiting`, which read as a contradiction rather than as two
+    different questions."""
+    from core import config as cfg_mod, connectors
+    from ui.pages import machines as machines_mod
+
+    machine = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
+    cfg = cfg_mod.Config(machines=[machine])
+
+    class Answers:
+        def reachable(self): return True
+        def abilities(self): return connectors.Abilities(control=True)
+
+    monkeypatch.setattr(connectors, "for_machine", lambda name, record=None: Answers())
+    monkeypatch.setattr(connectors, "forget", lambda name=None: None)
+
+    alone = machines_mod.MachineDetail()
+    with_hub = machines_mod.MachineDetail(object())
+    for page in (alone, with_hub):
+        page.machine = machine
+        monkeypatch.setattr(page, "_test_winrm", lambda m: "")
+
+    said = []
+    alone.tested.connect(said.append)
+    with_hub.tested.connect(said.append)
+    alone._run_test(machine)
+    with_hub._run_test(machine)
+
+    assert "from this computer" not in said[0], "watching alone, there is no other computer"
+    assert "from this computer" in said[1], "did not say whose reach answered"

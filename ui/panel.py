@@ -113,7 +113,7 @@ class MainPanel(QDialog):
         self.schedule_page = SchedulePage(get)
         # The store, because a machine's row says whether it is answering — which is
         # live, not a setting.
-        self.machines_page = MachinesPage(get, self._store)
+        self.machines_page = MachinesPage(get, self._store, self._hub)
         self.history_page = HistoryPage(get)
         self.clients_page = ClientsPage(self._hub)
         self.general_page = GeneralPage(get)
