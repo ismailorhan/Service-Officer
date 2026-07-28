@@ -182,3 +182,38 @@ def test_revoking_takes_effect_through_the_cache():
     hub_auth.revoke("cached")
 
     assert hub_auth.check(token) == ""
+
+
+def test_a_client_added_by_another_process_is_accepted(tmp_path, monkeypatch):
+    """`ServiceOfficerHub.exe client add` is a console command, and the hub is a
+    *service* — two processes. If the running hub only ever read the client list once,
+    every token issued after it started would be refused, and the only cure would be
+    restarting the hub in the middle of setting up a client.
+
+    A real second interpreter, because the whole point is that it is not this process.
+    """
+    import os
+    import subprocess
+    import sys
+
+    from core import secrets
+
+    # This process' hub, with a warm cache: one client, read and remembered.
+    first = hub_auth.add_client("already-here")
+    assert hub_auth.check(first) == "already-here"
+
+    # The console command, elsewhere. Same machine, same store — DPAPI machine scope
+    # is what makes that work, and the store is found through ProgramData.
+    root = os.path.dirname(os.path.dirname(os.path.abspath(secrets.__file__)))
+    added = subprocess.run(
+        [sys.executable, "-c",
+         "from core import secrets, hub_auth;"
+         f" secrets.SECRETS_PATH = r'{secrets.SECRETS_PATH}';"
+         " print(hub_auth.add_client('added-later'))"],
+        cwd=root, capture_output=True, text=True, timeout=120)
+    assert added.returncode == 0, added.stderr
+    token = added.stdout.strip().splitlines()[-1]
+
+    assert hub_auth.check(token) == "added-later", \
+        "the running hub never saw a client added beside it"
+    assert hub_auth.check(first) == "already-here", "and lost the one it had"

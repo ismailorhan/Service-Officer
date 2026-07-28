@@ -18,6 +18,7 @@ The shape:
     PUT  /api/v1/config      the config, its etag, and an actor -> 204 or 409
     GET  /api/v1/history     rows, filtered by the usual query parameters
     GET  /api/v1/machines/<name>/services   what that machine has installed
+    GET  /                   one page, for a browser (core/hub_pages/index.html)
 
 Three rules learned elsewhere and applied here:
 
@@ -35,10 +36,13 @@ Three rules learned elsewhere and applied here:
 from __future__ import annotations
 
 import json
+import os
 import socket
 import ssl
+import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import applog, hub_auth, history, version, wire
@@ -54,6 +58,37 @@ KEEPALIVE_SECONDS = 20
 #: and the memory is ours.
 HISTORY_LIMIT = 2000
 ACTIONS = ("start", "stop", "restart", "kill")
+
+
+def _pages_dir() -> str:
+    """Where index.html is. Frozen, PyInstaller unpacks data next to `_MEIPASS`; from
+    source it is beside this file."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return os.path.join(base, "core", "hub_pages")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub_pages")
+
+
+def redacted(line: str) -> str:
+    """A request line with any `token=...` value taken out, and the rest of the line
+    left intact — "GET /api/v1/events?token=[redacted] HTTP/1.1" is still useful, and
+    the token is a credential that must not reach a log people paste into tickets."""
+    head, marker, rest = line.partition("token=")
+    if not marker:
+        return line
+    _value, space, tail = rest.partition(" ")
+    return f"{head}token=[redacted]{space}{tail}"
+
+
+def page(name: str = "index.html") -> bytes:
+    """The page, read fresh. Not cached: it is asked for once per browser tab, and a
+    cached copy is one more thing to be wrong after an upgrade."""
+    try:
+        with open(os.path.join(_pages_dir(), name), "rb") as fh:
+            return fh.read()
+    except OSError as exc:
+        log.warning("cannot read the hub page: %s", exc)
+        return b""
 
 
 class _Listener:
@@ -193,11 +228,22 @@ def _make_handler(hub: HubServer):
         def log_message(self, fmt, *args):
             # Every request in the app's own log rather than on stderr, at debug: the
             # interesting ones are logged explicitly with their actor.
-            log.debug("%s %s", self.address_string(), fmt % args)
+            #
+            # The event stream carries its token on the query string (EventSource
+            # cannot send a header), so the line is redacted before it is written:
+            # a token in a log file is a credential in a log file, and the log is the
+            # thing people paste into tickets.
+            log.debug("%s %s", self.address_string(), redacted(fmt % args))
 
-        def _client(self) -> str:
+        def _client(self, query: str = "") -> str:
             header = self.headers.get("Authorization", "")
             token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+            if not token and query:
+                # Only the event stream passes `query`. A browser's EventSource has no
+                # way to set a header, so the one endpoint a browser must reach without
+                # JavaScript's fetch() accepts it here — over TLS, and redacted out of
+                # the log above.
+                token = urllib.parse.parse_qs(query).get("token", [""])[0].strip()
             return hub_auth.check(token)
 
         def _send(self, status: int, payload=None) -> None:
@@ -223,12 +269,21 @@ def _make_handler(hub: HubServer):
         # -- routing ---------------------------------------------------
         def do_GET(self):
             path, _, query = self.path.partition("?")
+            if path in ("/", "/index.html"):
+                self._page()
+                return
+            if not path.startswith("/api/v1/"):
+                # One page and one API, not a web server. Answered before the token
+                # check on purpose: "no such path" tells a stranger nothing, and a 401
+                # here would imply there is something behind it.
+                self._refuse(404, f"no such path: {path}")
+                return
             if path == "/api/v1/ping":
                 self._send(200, {"protocol": wire.PROTOCOL,
                                  "version": version.short(),
                                  "name": socket.gethostname()})
                 return
-            who = self._client()
+            who = self._client(query if path == "/api/v1/events" else "")
             if not who:
                 self._refuse(401, "a valid token is needed")
                 return
@@ -424,6 +479,25 @@ def _make_handler(hub: HubServer):
                 return True
             except Exception:
                 return False        # a TLS socket with nothing to give yet
+
+        def _page(self) -> None:
+            """The one page a browser gets without a token.
+
+            The HTML is not a secret — it contains no data, only the URLs it will ask
+            for, and those need a token like everything else. no-store because an
+            upgraded hub serving last month's page from a cache would look like a
+            missing feature.
+            """
+            body = page()
+            if not body:
+                self._refuse(404, "no page is installed")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def _events(self, who: str) -> None:
             """An SSE stream: one `data:` line per event, a comment as a keepalive.

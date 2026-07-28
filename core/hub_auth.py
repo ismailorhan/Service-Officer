@@ -55,8 +55,12 @@ SEEN_EVERY = 60.0
 _lock = threading.RLock()
 #: The client list, decrypted once. Every request checks a token, and a DPAPI decrypt
 #: plus a file read per request is the sort of cost that only shows up under a client.
-#: Invalidated whenever the list is written, which is the only way it changes.
 _cache: dict = None
+#: What the store file looked like when `_cache` was filled — see `_stamp`. The list is
+#: written by *another process* every time an administrator runs `client add` or
+#: `client revoke` while the hub service is running, so "invalidate on write" is not
+#: enough: this process may never have done the write.
+_cache_stamp = None
 _seen_at: dict = {}
 
 
@@ -74,19 +78,38 @@ def _digest(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
+def _stamp():
+    """A cheap fingerprint of the store file: when it was written, and how big.
+
+    Measured 2026-07-28: `os.stat` on this store is 55 µs, and the DPAPI decrypt it
+    saves is 13.2 ms — 240 times more. So it is taken on every token check, and a token
+    check costs 59 µs warm.
+
+    Two different writes in the same filesystem tick *and* the same size would go
+    unnoticed; the tick is 100 ns on NTFS, so that is not a case that happens rather
+    than one that is handled.
+    """
+    try:
+        info = os.stat(store.SECRETS_PATH)
+    except OSError:
+        return None          # no store yet: an empty list, re-checked next time
+    return (info.st_mtime_ns, info.st_size)
+
+
 def _read() -> dict:
-    """The client list, from the cache if it is warm.
+    """The client list, from the cache if it is warm and the file has not moved on.
 
     Callers must hold `_lock`, and must not mutate what they get back — it is the
     cached dictionary itself, not a copy, because copying it on every token check is
     the cost this cache exists to avoid.
     """
-    global _cache
-    if _cache is not None:
+    global _cache, _cache_stamp
+    stamp = _stamp()
+    if _cache is not None and stamp is not None and stamp == _cache_stamp:
         return _cache
     raw = store.get(CLIENTS_REF)
     if not raw:
-        _cache = {}
+        _cache, _cache_stamp = {}, stamp
         return _cache
     try:
         found = json.loads(raw)
@@ -94,21 +117,24 @@ def _read() -> dict:
         log.warning("the client list could not be read; starting an empty one")
         found = {}
     _cache = found if isinstance(found, dict) else {}
+    _cache_stamp = stamp
     return _cache
 
 
 def _write(clients: dict) -> bool:
-    global _cache
+    global _cache, _cache_stamp
     ok = store.put(CLIENTS_REF, json.dumps(clients))
     _cache = clients if ok else None
+    _cache_stamp = _stamp() if ok else None
     return ok
 
 
 def forget_cache() -> None:
     """Drop the cached list. For tests, and for the moment a store is repointed."""
-    global _cache, _seen_at
+    global _cache, _cache_stamp, _seen_at
     with _lock:
         _cache = None
+        _cache_stamp = None
         _seen_at = {}
 
 

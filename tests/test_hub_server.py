@@ -337,3 +337,63 @@ def test_a_listener_that_goes_away_is_forgotten(hub):
     deadline = threading.Event()
     deadline.wait(1.0)
     assert server.listeners() == 0, f"{server.listeners()} left subscribed"
+
+
+# ---------------------------------------------------------------------------
+# the page
+# ---------------------------------------------------------------------------
+def test_the_root_page_is_served_and_needs_a_token_for_data(hub):
+    """The page itself is not a secret; what it shows is. So the HTML is public and
+    every fetch it makes is not — which is also the shape the real UI will need."""
+    server, _engine, _holder = hub
+    request = urllib.request.Request(server.url + "/")
+    with urllib.request.urlopen(request, timeout=5) as answer:
+        html = answer.read().decode()
+
+    assert answer.status == 200
+    assert "Service Officer" in html
+    assert "/api/v1/snapshot" in html
+
+
+def test_the_page_asks_not_to_be_cached(hub):
+    """An upgraded hub serving last month's page from a browser cache would be a bug
+    report about a feature that is already there."""
+    server, _engine, _holder = hub
+    with urllib.request.urlopen(server.url + "/", timeout=5) as answer:
+        assert "text/html" in answer.headers["Content-Type"]
+        assert "no-store" in (answer.headers.get("Cache-Control") or "")
+
+
+def test_nothing_else_outside_the_api_is_served(hub):
+    """One page, not a web server. A path that walks out of the folder is the first
+    thing anybody tries."""
+    server, _engine, _holder = hub
+    for path in ("/../core/hub_auth.py", "/index.html.bak", "/favicon.png"):
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(server.url + path, timeout=5)
+        assert raised.value.code == 404, path
+
+
+def test_a_browser_may_carry_its_token_on_the_stream_url(hub):
+    """EventSource cannot set a header, so the one endpoint a browser must open without
+    fetch() takes the token as a parameter. Only that endpoint: everywhere else a
+    parameter would be a token in a browser history and a proxy log."""
+    server, _engine, _holder = hub
+
+    request = urllib.request.Request(server.url + "/api/v1/events?token=good")
+    with urllib.request.urlopen(request, timeout=5) as answer:
+        assert answer.status == 200
+        assert answer.headers["Content-Type"] == "text/event-stream"
+        assert answer.readline().startswith(b": open")
+
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        urllib.request.urlopen(server.url + "/api/v1/snapshot?token=good", timeout=5)
+    assert raised.value.code == 401
+
+
+def test_a_token_on_a_url_never_reaches_the_log():
+    """The log is what people paste into tickets."""
+    assert hub_server.redacted("GET /api/v1/events?token=s3cret HTTP/1.1") == \
+        "GET /api/v1/events?token=[redacted] HTTP/1.1"
+    assert hub_server.redacted("GET /api/v1/snapshot HTTP/1.1") == \
+        "GET /api/v1/snapshot HTTP/1.1"

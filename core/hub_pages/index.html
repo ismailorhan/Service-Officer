@@ -1,0 +1,261 @@
+<!doctype html>
+<!--
+  One page, served by the hub, to prove the API is enough for a browser UI.
+
+  It is not the browser UI. It reads /api/v1/snapshot once and then follows
+  /api/v1/events, which is the whole contract the real one will need — so the next
+  person starts from something that answers instead of from a promise that it would.
+
+  No framework and no build step, for the same reason as the rest of this project:
+  it has to be readable by whoever is holding the pager, on a server, over RDP.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Service Officer</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8; --card: #fff; --fg: #16181d; --fg2: #6b7280;
+    --line: #e3e5ea;
+    --run: #157347; --run-bg: #e6f4ec;
+    --stop: #b02a37; --stop-bg: #fbeaec;
+    --pend: #8a6100; --pend-bg: #fdf3e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --card: #1e2127; --fg: #e8eaed; --fg2: #9aa0a6;
+      --line: #2c3038;
+      --run: #6ddc9b; --run-bg: #16301f;
+      --stop: #f2929c; --stop-bg: #32191c;
+      --pend: #e8c37a; --pend-bg: #302819;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 18px 20px 14px; border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  #where, #count { color: var(--fg2); font-size: 12px; }
+  #link { margin-left: auto; font-size: 12px; }
+  main { padding: 16px 20px 40px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+       color: var(--fg2); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.where { color: var(--fg2); }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 10px;
+          font-size: 12px; font-weight: 600; }
+  /* The names st.category() and st.effective() use, and nothing else: the hub says
+     which one a row is in, so there is no second opinion to disagree with it. */
+  .running   { color: var(--run);  background: var(--run-bg); }
+  .stopped   { color: var(--stop); background: var(--stop-bg); }
+  .pending   { color: var(--pend); background: var(--pend-bg); }
+  .paused    { color: var(--pend); background: var(--pend-bg); }
+  .none      { color: var(--fg2);  background: var(--bg); }
+  form { display: flex; gap: 8px; flex-wrap: wrap; max-width: 460px; }
+  input, button { font: inherit; padding: 7px 11px; border-radius: 6px;
+                  border: 1px solid var(--line); background: var(--card);
+                  color: var(--fg); }
+  input { flex: 1 1 240px; }
+  button { cursor: pointer; font-weight: 600; }
+  p.note { color: var(--fg2); max-width: 460px; }
+  #problem { color: var(--stop); }
+</style>
+
+<header>
+  <h1>Service Officer</h1>
+  <span id="where"></span>
+  <span id="count"></span>
+  <a id="link" href="#" hidden>Forget this token</a>
+</header>
+
+<main>
+  <div id="ask" hidden>
+    <p class="note">
+      This page needs a token. On the hub, run
+      <code>ServiceOfficerHub.exe client add &lt;a name for this browser&gt;</code>
+      and paste what it prints. It is kept in this tab only.
+    </p>
+    <form id="tokenform">
+      <input id="token" type="password" placeholder="Token" autocomplete="off"
+             spellcheck="false" required>
+      <button type="submit">Connect</button>
+    </form>
+  </div>
+  <p id="problem"></p>
+  <table id="grid" hidden>
+    <thead>
+      <tr><th>Service</th><th>Where</th><th>State</th><th>Health</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</main>
+
+<script>
+"use strict";
+// sessionStorage, not localStorage: closing the tab forgets the token. A token is
+// as good as an account, and this page is opened on machines that are not the
+// reader's own.
+const KEY = "service-officer-token";
+const grid = document.querySelector("#grid");
+const body = grid.querySelector("tbody");
+const ask = document.querySelector("#ask");
+const problem = document.querySelector("#problem");
+const rows = new Map();          // "machine service" -> a row as the hub described it
+let stream = null;
+
+function token() { return sessionStorage.getItem(KEY) || ""; }
+
+function head() { return { "Authorization": "Bearer " + token() }; }
+
+function key(machine, service) { return (machine || "") + " " + service; }
+
+// st.category(), and only that: what a *raw* status is worth on its own. A status
+// event carries the status and nothing about health, so a row updated from the stream
+// is coloured by this and put right by the next snapshot — health is the one thing
+// this cannot know, and it arrives as its own event.
+const CATEGORY = {
+  "Running": "running", "Stopped": "stopped", "Paused": "paused",
+  "Start pending": "pending", "Stop pending": "pending",
+  "Starting": "pending", "Stopping": "pending",
+};
+
+// The verdict, when there is one. "unknown" is the store's word for "nothing has
+// checked" and reads as blank — but a verdict that exists is always shown, even for a
+// service whose checks have since been switched off: a page that hid "not responding"
+// because of a flag would be hiding the one thing worth reading.
+function healthText(row) {
+  if (row.health === "unhealthy") return "not responding";
+  if (row.health === "healthy") return "responding";
+  return "";
+}
+
+function draw() {
+  const ordered = [...rows.entries()].sort((a, b) =>
+    (a[1].machine || "").localeCompare(b[1].machine || "") ||
+    (a[1].label || "").localeCompare(b[1].label || ""));
+  body.replaceChildren(...ordered.map(([, row]) => {
+    const tr = document.createElement("tr");
+    const bucket = row.category || "none";      // decided by the hub
+    for (const cell of [row.label, row.machine || "this server", null,
+                        healthText(row)]) {
+      const td = document.createElement("td");
+      if (cell === null) {
+        const pill = document.createElement("span");
+        pill.className = "pill " + bucket;
+        pill.textContent = row.label_state || row.status || "unknown";
+        td.append(pill);
+      } else {
+        td.textContent = cell;
+      }
+      if (cell === row.machine || cell === "this server") td.className = "where";
+      tr.append(td);
+    }
+    return tr;
+  }));
+  // Counted from the category, not from the raw status: a service that is Running and
+  // failing its checks is drawn "Not responding", and "3 of 4 running" beside it would
+  // contradict the row next to it. The same mistake was made in the tray panel and
+  // fixed there for the same reason.
+  const running = [...rows.values()].filter(r => r.category === "running").length;
+  document.querySelector("#count").textContent =
+    rows.size ? `${running} of ${rows.size} running` : "nothing configured";
+  grid.hidden = rows.size === 0;
+}
+
+async function load() {
+  const answer = await fetch("/api/v1/snapshot", { headers: head() });
+  if (answer.status === 401) throw new Error("unauthorised");
+  if (!answer.ok) throw new Error("the hub answered " + answer.status);
+  const snapshot = await answer.json();
+  rows.clear();
+  for (const service of snapshot.services || []) {
+    rows.set(key(service.machine, service.name), {
+      label: service.label || service.name,
+      machine: service.machine || "",
+      status: service.status || "",
+      label_state: service.state_label || service.status || "",
+      category: service.state_category || "none",
+      health: service.health || "",
+    });
+  }
+  document.querySelector("#where").textContent =
+    location.host + " · " + (snapshot.version || "");
+  draw();
+}
+
+function follow() {
+  // EventSource cannot send an Authorization header, so the token goes on the
+  // query string for this one request — over TLS, to the hub that issued it, and
+  // the hub does not log it (see hub_server.log_message).
+  stream = new EventSource("/api/v1/events?token=" + encodeURIComponent(token()));
+  stream.onmessage = (message) => {
+    let fact;
+    try { fact = JSON.parse(message.data); } catch { return; }
+    if (fact.kind === "status" && fact.service) {
+      const at = key(fact.machine, fact.service);
+      const row = rows.get(at)
+        || { label: fact.service, machine: fact.machine || "", watched: false };
+      row.status = fact.status || row.status;
+      row.label_state = fact.status || row.label_state;
+      row.category = CATEGORY[fact.status] || "none";
+      rows.set(at, row);
+      draw();
+    } else if (fact.kind === "config" || fact.kind === "health") {
+      // A service added, removed, or its health verdict changed: the snapshot is
+      // the only thing that carries either, so re-read rather than guess.
+      load().catch(complain);
+    }
+  };
+  // A dropped stream is EventSource's own problem — it reconnects — but the page
+  // may have missed changes while it was gone, so re-read on every reopen.
+  stream.onopen = () => { problem.textContent = ""; load().catch(complain); };
+  stream.onerror = () => { problem.textContent = "reconnecting…"; };
+}
+
+function complain(error) {
+  if (String(error.message) === "unauthorised") {
+    sessionStorage.removeItem(KEY);
+    show();
+    problem.textContent = "That token was refused.";
+    return;
+  }
+  problem.textContent = String(error.message || error);
+}
+
+function show() {
+  const have = !!token();
+  ask.hidden = have;
+  grid.hidden = !have;
+  document.querySelector("#link").hidden = !have;
+  if (!have) {
+    if (stream) { stream.close(); stream = null; }
+    rows.clear();
+    document.querySelector("#count").textContent = "";
+    return;
+  }
+  load().then(follow).catch(complain);
+}
+
+document.querySelector("#tokenform").addEventListener("submit", (event) => {
+  event.preventDefault();
+  sessionStorage.setItem(KEY, document.querySelector("#token").value.trim());
+  problem.textContent = "";
+  show();
+});
+
+document.querySelector("#link").addEventListener("click", (event) => {
+  event.preventDefault();
+  sessionStorage.removeItem(KEY);
+  show();
+});
+
+show();
+</script>

@@ -173,3 +173,22 @@ def test_a_state_event_becomes_a_wire_event_and_back():
     assert back.status == st.RUNNING
     assert back.state.pid == 4242
     assert back.previous == caught[0].previous
+
+
+def test_a_row_carries_the_verdict_rather_than_the_raw_status_alone():
+    """A service that is Running and failing its checks is *not responding*, and every
+    surface has to say so identically. `st.effective()` exists because three of them
+    once worked it out separately and disagreed at the same moment about the same
+    service; a browser reading this API would have been the fourth, so the answer goes
+    on the wire."""
+    from core import config as cfg_mod
+
+    store = st.Store()
+    store.update("AppEngine", st.RUNNING)
+    store.set_health("AppEngine", st.UNHEALTHY, "connection refused")
+
+    row = wire.service_row(cfg_mod.Service(name="AppEngine"), store)
+
+    assert row["status"] == st.RUNNING           # what the SCM says, unchanged
+    assert row["state_label"] == st.LABEL_UNHEALTHY
+    assert row["state_category"] == "stopped"    # so it is not drawn green

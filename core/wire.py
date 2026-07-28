@@ -37,17 +37,30 @@ PROTOCOL = 1
 # rows
 # ---------------------------------------------------------------------------
 def service_row(svc, store) -> dict:
-    """One service as a row a client can draw without asking anything else."""
+    """One service as a row a client can draw without asking anything else.
+
+    `state_label` and `state_category` are `st.effective()` already applied — what to
+    write and which colour to use, once health is taken into account. They are on the
+    wire rather than left to each client because that function exists for a reason
+    recorded in its own docstring: three surfaces once worked it out separately and
+    disagreed with each other about the same service at the same moment. A browser
+    reading this API would have been the fourth.
+    """
     machine = svc.machine or ""
+    health = store.health_of(svc.name, machine)
+    status = store.status_of(svc.name, machine)
+    state_label, state_category = st.effective(status, health)
     return {
         "name": svc.name,
         "machine": machine,
         "label": svc.display(),
         "category": svc.category,
-        "status": store.status_of(svc.name, machine),
+        "status": status,
+        "state_label": state_label,
+        "state_category": state_category,
         "start_type": store.start_type(svc.name, machine),
         "disabled": store.is_disabled(svc.name, machine),
-        "health": store.health_of(svc.name, machine),
+        "health": health,
         "health_detail": store.health_detail(svc.name, machine),
         "watched": bool(svc.health.active),
     }
