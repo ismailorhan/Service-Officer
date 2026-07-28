@@ -203,28 +203,37 @@ def test_a_port_read_from_outside_is_validated_before_it_is_used(script):
                 f"{name} uses a line of external output unvalidated"
 
 
-def test_a_first_install_is_decided_by_the_registry_not_by_a_readable_port(script):
-    """The port page appeared on a machine that had been running a hub for two days.
+def test_an_installed_hubs_port_is_shown_but_not_editable(script):
+    """A port page appeared on a machine that had been running a hub for two days, because
+    it was skipped only when the port could be *read* — and there neither source could
+    answer (an exe predating the `port` command, a config written before there was a "hub"
+    section in it). Two unknowns, taken for "nothing is installed here".
 
-    It was skipped only when the port could be *read*, and there neither source could
-    answer — the exe under {app} was a release that predates the `port` command, and
-    services.json had been written before there was a "hub" section in it. Two unknowns,
-    read as "nothing is installed here".
-
-    Whether a hub exists is a fact in the service registry. What port it uses is a detail.
-    Only the first may decide whether somebody is asked.
+    Host and port are now one page, so the question is not whether to show it but whether
+    the port may be changed. That is decided by the service registry — Windows' own record,
+    the only one that cannot be out of date — and never by whether a port could be read.
     """
     routines = _routines(script)
-    assert "ShouldSkipPage" in routines
-    decision = [line for line in routines["ShouldSkipPage"].splitlines()
-                if "PortPage.ID" in line or "Result := (not InstallingHub())" in line]
-    joined = "\n".join(decision)
-    assert "HubInstalledHere()" in joined, (
-        "the port page's skip rule does not consult the service registry: "
-        f"{joined.strip()!r}")
-    assert "ExistingPort" not in joined, (
-        "the port page's skip rule still depends on whether a port could be read, which "
-        "is a different question and answers 'first install' when it simply does not know")
+    changed = routines.get("CurPageChanged", "")
+    assert changed, "CurPageChanged is gone"
+    assert "HubInstalledHere()" in changed, (
+        "nothing consults the service registry when deciding whether the port may be "
+        "changed")
+    assert "ReadOnly := True" in changed, (
+        "an installed hub's port is editable, and moving it leaves every client that has "
+        "it stored looking at nothing")
+
+
+def test_the_token_field_is_hidden_for_a_hub_on_this_computer(script):
+    """It was shown with "not needed for a hub on this computer" written underneath, which
+    is a field and an instruction to ignore it. Asked for and reported as confusing."""
+    routines = _routines(script)
+    assert "ShowTokenOnlyIfNeeded" in routines, "nothing decides whether to show it"
+    body = routines["ShowTokenOnlyIfNeeded"]
+    assert "LooksLikeThisComputer" in body
+    assert "TokenEdit.Visible" in body and "TokenCaption.Visible" in body
+    # And it has to be re-decided as the address is typed, not only once.
+    assert "ShowTokenOnlyIfNeeded" in routines.get("AddressTyped", ""),         "typing a different address does not bring the token field back"
 
 
 def test_the_firewall_rule_is_replaced_rather_than_appended(script):

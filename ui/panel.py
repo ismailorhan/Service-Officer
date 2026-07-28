@@ -29,8 +29,8 @@ from core import state as st
 from . import icons
 from .widgets import button as _button, label as _label
 from .dashboard import DashboardPage
-from .pages import (CategoriesPage, GeneralPage, HistoryPage, MachinesPage,
-                    SchedulePage, ServicesPage, StacksPage)
+from .pages import (CategoriesPage, ClientsPage, GeneralPage, HistoryPage,
+                    MachinesPage, SchedulePage, ServicesPage, StacksPage)
 
 
 # ── the window ─────────────────────────────────────────────────────────────
@@ -52,12 +52,17 @@ class MainPanel(QDialog):
     refresh_requested = Signal()
     open_services_mmc = Signal()
 
-    def __init__(self, cfg, parent=None, store=None, live_config=None):
+    def __init__(self, cfg, parent=None, store=None, live_config=None,
+                 hub=None):
         super().__init__(parent)
         # Without a running app behind it (tests, a screenshot) the dashboard
         # falls back to what it was handed, and to the global store.
         self._store = store if store is not None else st.store
         self._live = live_config or (lambda: self._cfg)
+        #: The hub this panel reads, or None when it runs its own engine. A callable so the
+        #: Clients page can ask again rather than hold a reference to something that was
+        #: None when the window was built.
+        self._hub = hub if callable(hub) else (lambda: hub)
         # No version here: the title bar is read every time the window opens, and
         # a build number is something you go and look up once. It lives in
         # General → About, with the commit and a copy button.
@@ -110,6 +115,7 @@ class MainPanel(QDialog):
         # live, not a setting.
         self.machines_page = MachinesPage(get, self._store)
         self.history_page = HistoryPage(get)
+        self.clients_page = ClientsPage(self._hub)
         self.general_page = GeneralPage(get)
         self.services_page.changed.connect(self.stacks_page.refresh)
         self.services_page.changed.connect(self.schedule_page.refresh)
@@ -143,6 +149,7 @@ class MainPanel(QDialog):
                     ("History", "history", self.history_page),
                     ("Infrastructure", None, None),
                     ("Machines", "machines", self.machines_page),
+                    ("Clients", "clients", self.clients_page),
                     ("Settings", None, None),
                     ("General", "general", self.general_page)]
         for text, kind, page in sections:
@@ -166,6 +173,11 @@ class MainPanel(QDialog):
             self._by_name[kind] = page
             self._buttons_by_name[kind] = b
         nl.addStretch(1)
+        # No hub, nobody to pair: the page and its button are not there rather than
+        # there and empty. A panel that runs its own engine has no clients by
+        # definition — it is the only thing reading itself.
+        if self._hub() is None:
+            self._buttons_by_name["clients"].setVisible(False)
 
         body.addWidget(nav)
         body.addWidget(self.pages, 1)
@@ -195,6 +207,10 @@ class MainPanel(QDialog):
         self.pages.setCurrentWidget(page)
         for b in self._nav_buttons:
             b.setChecked(b is button)
+        # Asked for when it is looked at, not when the window opens: this one is a request
+        # over a network, and most times the panel is opened nobody goes near it.
+        if page is self.clients_page:
+            page.refresh()
 
     def go_to(self, name: str) -> bool:
         """Open a named section — the tray menu offers them directly."""

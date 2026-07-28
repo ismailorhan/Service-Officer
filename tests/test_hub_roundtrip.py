@@ -38,7 +38,7 @@ def system(monkeypatch):
     monkeypatch.setattr(engine_mod.control, "restart_service",
                         lambda name, machine="": states.update({name: st.RUNNING}))
     monkeypatch.setattr(hub_server.hub_auth, "check", lambda token: "tests")
-    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name: None)
+    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name, host="": None)
 
     engine = engine_mod.Engine(lambda: holder["cfg"], store=st.Store(),
                                on_config_saved=lambda config:
@@ -177,3 +177,86 @@ def test_the_hubs_history_says_which_person_asked(system, tmp_path, monkeypatch)
     asked = [r for r in history.read(path=path) if r.get("action") == "stop"]
     assert asked, "the action was never recorded"
     assert asked[0]["actor"] == "CT\ismail.orhan"
+
+
+# ---------------------------------------------------------------------------
+# issuing a client's token from the panel
+# ---------------------------------------------------------------------------
+# The hub has to do this rather than the panel: the client list is in a DPAPI store the
+# installer leaves writable by administrators only, and the panel does not run elevated.
+# A token is returned *once*, with the command to run on the machine it is for; after that
+# there is nothing to show, because the store keeps a SHA-256 and nothing else.
+def test_a_token_is_issued_once_and_then_only_described(system, monkeypatch):
+    from core import hub_auth
+
+    client, _engine, _server, _states, _holder = system
+    issued = {}
+
+    def add(name, description=""):
+        issued[name] = description
+        return "a-real-token"
+
+    monkeypatch.setattr(hub_auth, "add_client", add)
+    monkeypatch.setattr(hub_auth, "clients",
+                        lambda: [{"name": name, "description": note,
+                                  "added": "2026-07-28T09:00:00Z",
+                                  "last_seen": "", "host": ""}
+                                 for name, note in issued.items()])
+
+    made = client.add_client("ismail-laptop", "the laptop on my desk")
+
+    assert made["token"] == "a-real-token"
+    assert made["name"] == "ismail-laptop"
+    assert made["url"].startswith("http")
+    assert "--connect" in made["command"] and "a-real-token" in made["command"]
+    assert issued["ismail-laptop"] == "the laptop on my desk"
+
+    # And afterwards: a label, why it exists, when it was issued, when it was last used,
+    # and where from. No token — the hub keeps a SHA-256 of it and nothing else.
+    listed = client.clients()
+    assert [c["name"] for c in listed["clients"]] == ["ismail-laptop"]
+    assert set(listed["clients"][0]) == {"name", "description", "added",
+                                        "last_seen", "host"}
+    assert "token" not in listed["clients"][0]
+
+
+def test_a_client_reports_which_machine_it_is(system, monkeypatch):
+    """The name on a token is a label somebody typed. The host name arrives with the
+    connection — so the list can say what a token was *meant* for and what it is actually
+    being used from, which are not always the same sentence.
+
+    It identifies; it does not authenticate. The token does that.
+    """
+    import socket
+
+    from core import hub_auth
+
+    client, _engine, _server, _states, _holder = system
+    seen = []
+    monkeypatch.setattr(hub_auth, "note_seen",
+                        lambda name, host="": seen.append((name, host)))
+
+    client.refresh_now()
+
+    assert seen, "the hub never recorded the request"
+    assert seen[-1][1] == socket.gethostname()
+
+
+def test_a_nameless_client_is_refused(system):
+    """The name is the only thing that will identify it afterwards."""
+    client, _engine, _server, _states, _holder = system
+
+    with pytest.raises(RuntimeError) as raised:
+        client.add_client("   ")
+    assert "name" in str(raised.value)
+
+
+def test_revoking_says_whether_there_was_anything_to_revoke(system, monkeypatch):
+    from core import hub_auth
+
+    client, _engine, _server, _states, _holder = system
+    monkeypatch.setattr(hub_auth, "revoke", lambda name: name == "ismail-laptop")
+
+    assert client.revoke_client("ismail-laptop") is True
+    assert client.revoke_client("nobody") is False, \
+        "a name that was never paired should be an answer, not an exception"

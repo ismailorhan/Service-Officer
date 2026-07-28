@@ -38,7 +38,7 @@ def hub(monkeypatch):
                                   holder.update(cfg=config))
     monkeypatch.setattr(hub_server.hub_auth, "check",
                         lambda token: "tests" if token == "good" else "")
-    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name: None)
+    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name, host="": None)
     server = hub_server.HubServer(built, host="127.0.0.1", port=0, insecure=True)
     server.start()
     yield server, built, holder
@@ -417,7 +417,7 @@ def test_it_answers_on_both_address_families(monkeypatch):
     from core import state as st
 
     monkeypatch.setattr(hub_server.hub_auth, "check", lambda token: "tests")
-    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name: None)
+    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name, host="": None)
     engine = engine_mod.Engine(lambda: cfg_mod.Config(), store=st.Store())
     # host="" is what hub.py passes when the config's `bind` is blank: every address.
     server = hub_server.HubServer(engine, host="", port=0, insecure=True)

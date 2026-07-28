@@ -51,8 +51,22 @@ class FakeHub:
 
 @pytest.fixture
 def qapp(monkeypatch):
+    """One QApplication, and no stylesheet applied to it.
+
+    `Application.__init__` calls `setStyleSheet`, which walks every widget alive in the
+    process. `deleteLater()` needs an event loop and these tests do not run one, so the 95
+    windows test_ui_smoke builds are all still there — and each Application built here then
+    restyled the lot.
+
+    Measured 2026-07-28: these tests take 0.1–0.4 s alone and **20–85 seconds each** after
+    test_ui_smoke; the two files together went from 16 s to 9 minutes 38 s. Nothing here is
+    about the stylesheet, so it is not applied. (Draining Qt's delete queue between tests
+    was the other candidate and it crashed the interpreter — the tests still hold Python
+    references to what it deletes.)
+    """
     existing = QApplication.instance() or QApplication([])
     monkeypatch.setattr(app_mod, "QApplication", lambda _argv: existing)
+    monkeypatch.setattr(existing, "setStyleSheet", lambda _sheet: None)
     return existing
 
 

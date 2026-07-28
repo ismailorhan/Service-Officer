@@ -18,6 +18,9 @@ The shape:
     PUT  /api/v1/config      the config, its etag, and an actor -> 204 or 409
     GET  /api/v1/history     rows, filtered by the usual query parameters
     GET  /api/v1/machines/<name>/services   what that machine has installed
+    GET    /api/v1/clients   who is paired: name, when issued, when last used
+    POST   /api/v1/clients   {name, description} -> 201 {token, url, ...} — once
+    DELETE /api/v1/clients/<name>   revoke, effective immediately
     GET  /                   one page, for a browser (core/hub_pages/index.html)
 
 Three rules learned elsewhere and applied here:
@@ -221,6 +224,27 @@ class HubServer:
         host = "127.0.0.1" if self.host in ("", "0.0.0.0") else self.host
         return f"{scheme}://{host}:{self.port}"
 
+    def public_url(self) -> str:
+        """The address a *client* should use, which is not `url`.
+
+        `url` says 127.0.0.1 when the hub listens on every address, because that is what is
+        true for whoever is asking locally. A client on another computer needs this
+        computer's name — and the certificate is issued for that name, so a client pinning
+        anything else would fail its own check.
+        """
+        return f"https://{socket.gethostname()}:{self.port}"
+
+    def fingerprint(self) -> str:
+        """What a client should expect to see. Empty when serving plain HTTP, which only
+        the tests do."""
+        if not self.certfile:
+            return ""
+        try:
+            return hub_auth.fingerprint_of(self.certfile)
+        except Exception as exc:
+            log.warning("could not read the certificate's fingerprint: %s", exc)
+            return ""
+
     def listeners(self) -> int:
         """How many event streams are open. For the tests, and for a log line when
         somebody wonders whether a client is really connected."""
@@ -269,6 +293,14 @@ def _make_handler(hub: HubServer):
             # a token in a log file is a credential in a log file, and the log is the
             # thing people paste into tickets.
             log.debug("%s %s", self.address_string(), redacted(fmt % args))
+
+        def _host(self) -> str:
+            """Which machine the request came from, as it says itself. A label, not a
+            credential: the token is what authenticates. Bounded and stripped of anything
+            that is not a host name, because it is read off the network and ends up in a
+            store and on a screen."""
+            said = (self.headers.get("X-Client-Host") or "").strip()[:64]
+            return "".join(c for c in said if c.isalnum() or c in "-._")
 
         def _client(self, query: str = "") -> str:
             header = self.headers.get("Authorization", "")
@@ -322,11 +354,15 @@ def _make_handler(hub: HubServer):
             if not who:
                 self._refuse(401, "a valid token is needed")
                 return
-            hub_auth.note_seen(who)
+            hub_auth.note_seen(who, self._host())
             if path == "/api/v1/snapshot":
                 self._send(200, hub.engine.snapshot())
             elif path == "/api/v1/config":
                 self._send(200, wire.config_payload(hub.engine.config()))
+            elif path == "/api/v1/clients":
+                self._send(200, {"clients": hub_auth.clients(),
+                                 "url": hub.public_url(),
+                                 "fingerprint": hub.fingerprint()})
             elif path == "/api/v1/history":
                 self._history(query)
             elif path == "/api/v1/events":
@@ -345,7 +381,7 @@ def _make_handler(hub: HubServer):
             if not who:
                 self._refuse(401, "a valid token is needed")
                 return
-            hub_auth.note_seen(who)
+            hub_auth.note_seen(who, self._host())
             try:
                 body = self._body()
             except ValueError as exc:
@@ -361,6 +397,8 @@ def _make_handler(hub: HubServer):
             elif path == "/api/v1/refresh":
                 hub.engine.refresh(body.get("machine") or None)
                 self._send(204)
+            elif path == "/api/v1/clients":
+                self._issue_token(body, who)
             elif path in ("/api/v1/snapshot", "/api/v1/config", "/api/v1/events"):
                 self._refuse(405, "that path takes a GET")
             else:
@@ -371,7 +409,7 @@ def _make_handler(hub: HubServer):
             if not who:
                 self._refuse(401, "a valid token is needed")
                 return
-            hub_auth.note_seen(who)
+            hub_auth.note_seen(who, self._host())
             try:
                 body = self._body()
             except ValueError as exc:
@@ -382,7 +420,62 @@ def _make_handler(hub: HubServer):
                 return
             self._save_config(body, who)
 
+        def do_DELETE(self):
+            who = self._client()
+            if not who:
+                self._refuse(401, "a valid token is needed")
+                return
+            hub_auth.note_seen(who, self._host())
+            path = self.path.partition("?")[0]
+            if not path.startswith("/api/v1/clients/"):
+                self._refuse(404, f"no such path: {path}")
+                return
+            name = urllib.parse.unquote(path[len("/api/v1/clients/"):])
+            if not name:
+                self._refuse(400, "which client?")
+                return
+            gone = hub_auth.revoke(name)
+            log.info("%s revoked %s%s", who, name, "" if gone else " (not paired)")
+            if gone:
+                self._send(204)
+            else:
+                self._refuse(404, f"no client called {name!r}")
+
         # -- handlers --------------------------------------------------
+        def _issue_token(self, body: dict, who: str) -> None:
+            """A new token, returned once and never again.
+
+            Adding a name that already exists replaces its token, which is how a lost one
+            is dealt with — so it is not an error, but it is worth a line in the log
+            saying whose access just changed.
+            """
+            name = str(body.get("name") or "").strip()
+            description = str(body.get("description") or "").strip()[:200]
+            if not name:
+                self._refuse(400, "a client needs a name")
+                return
+            if len(name) > 64:
+                self._refuse(400, "that name is too long to be useful (64 characters)")
+                return
+            existed = any(c["name"] == name for c in hub_auth.clients())
+            token = hub_auth.add_client(name, description)
+            if not token:
+                self._refuse(500, "the client list could not be written")
+                return
+            log.info("%s %s a token for %s", who,
+                     "replaced" if existed else "issued", name)
+            url = hub.public_url()
+            self._send(201, {
+                "name": name,
+                "token": token,
+                "url": url,
+                "fingerprint": hub.fingerprint(),
+                "replaced": existed,
+                # The whole thing to run on that machine, so nobody has to assemble it
+                # from three fields.
+                "command": f'ServiceOfficer.exe --connect {url} --token {token}',
+            })
+
         def _action(self, body: dict, who: str) -> None:
             action = str(body.get("action") or "")
             service = str(body.get("service") or "")

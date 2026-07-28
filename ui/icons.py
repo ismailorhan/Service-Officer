@@ -181,6 +181,11 @@ def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:
         p.drawRect(QRectF(s * 0.16, s * 0.56, s * 0.68, s * 0.24))
         p.drawPoint(QPointF(s * 0.72, s * 0.32))
         p.drawPoint(QPointF(s * 0.72, s * 0.68))
+    elif kind == "clients":                      # a key: what a client is given
+        p.drawEllipse(QRectF(s * 0.16, s * 0.34, s * 0.3, s * 0.3))
+        p.drawLine(QPointF(s * 0.45, s * 0.49), QPointF(s * 0.86, s * 0.49))
+        p.drawLine(QPointF(s * 0.7, s * 0.49), QPointF(s * 0.7, s * 0.66))
+        p.drawLine(QPointF(s * 0.82, s * 0.49), QPointF(s * 0.82, s * 0.62))
     elif kind == "close":                        # an X, drawn so no font can
         m = s * 0.3                              # fail to provide the glyph
         p.drawLine(QPointF(m, m), QPointF(s - m, s - m))

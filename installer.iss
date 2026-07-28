@@ -66,13 +66,12 @@ Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
 [CustomMessages]
 english.AutoStartTask=Start &Service Officer automatically when Windows starts
 english.DesktopIconTask=Create a &desktop shortcut
-english.TypeClient=Client only — the tray application
-english.TypeHub=Hub only — the Windows service, for a server
-english.TypeFull=Both, on this machine
+english.TypeClient=Client (tray) only
+english.TypeHub=Hub (service) only
+english.TypeFull=Hub and Client
 english.TypeCustom=Choose
 english.CompClient=Service Officer (tray application)
 english.CompHub=Service Officer Hub (Windows service)
-english.PickOne=Choose at least one: the tray application, the hub service, or both.
 english.RegisteringHub=Registering the hub service...
 english.PairingLocal=Pairing this computer with its hub...
 english.SecuringData=Setting permissions on the data folder...
@@ -81,16 +80,16 @@ english.TypeBody=What should this computer do?
 english.TypeBoth=Hub (service) and Client (tray) — this computer does the work
 english.TypeHubOnly=Hub (service) only — a server nobody logs into
 english.TypeClientOnly=Client (tray) only — read a hub on another computer
-english.PortCaption=Hub port
-english.PortBody=The port the Hub listens on for its clients. Leave it unless something else is using it.
-english.PortField=Port
-english.PortBad=A port has to be a number between 1 and 65535.
-english.PortKept=The Hub here already serves on port %1, and that is kept — clients have it stored. Change it with "ServiceOfficerHub.exe port <n>" and restart the service.
-english.HubCaption=Hub address
+english.HubCaption=The hub
 english.HubBody=Which hub should the Client read? A hub on this computer counts — the address is checked either way.
-english.HubAddress=Address (host name or IP, and :port if it is not the default)
-english.HubToken=Token (from "ServiceOfficerHub.exe client add" on the hub)
-english.HubTokenLocal=Not needed for a hub on this computer — one is issued during the installation.
+english.HubHostField=Host name or IP
+english.HubPortField=Port
+english.HubToken=Token
+english.HubTokenWhy=Issued on the hub with "ServiceOfficerHub.exe client add <a name for this computer>", and printed once.
+english.HubPortNew=The port the Hub will listen on. Leave it unless something else is using it.
+english.HubPortLocked=The Hub here already serves on this port and its clients have it stored. Change it afterwards with "ServiceOfficerHub.exe port <n>" and restart the service.
+english.HubLocalNote=A hub on this computer: no token is needed, one is issued during the installation.
+english.PortBad=A port has to be a number between 1 and 65535.
 english.HubNeedAddress=Enter the hub's host name or IP address.
 english.HubNeedToken=Enter the token the hub printed for this computer. Without it the Client can reach the hub but not read anything.
 english.HubIsThisPC=That address is this computer, and the Hub here will be upgraded to version %1.%n%nThe services it watches keep running; the Hub is stopped and started again during the installation.%n%nContinue?
@@ -98,26 +97,36 @@ english.HubNotHere=That address is this computer, but no Hub is installed here.%
 english.HubVersionClash=That hub is version %1 and this installer is version %2.%n%nA client and its hub have to be the same version — the connection would succeed and then refuse everything. Upgrade that hub first, or install the matching version here.
 english.HubSilent=%1 did not answer.%n%nNothing about it can be checked — its version, or whether it is this computer. The address and the token will be stored and used on the first launch, and can be changed in Settings %+ General.%n%nInstall anyway?
 english.ReadyHubUpgrade=Hub (service): %1 will be upgraded to %2, keeping port %3
-english.ReadyHubNew=Hub (service): a new hub on port %1
 english.ReadyHubKept=Hub (service): upgraded to %1, keeping port %2
+english.ReadyHubNew=Hub (service): a new hub on port %1
 english.ReadyClientLocal=Client (tray): reads the hub on this computer
-english.ReadyClientRemote=Client (tray): reads %1%n%nInstall anyway?
+english.ReadyClientRemote=Client (tray): reads %1
+turkish.AutoStartTask=Windows ba&şladığında Service Officer'ı otomatik başlat
+turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
+turkish.TypeClient=Yalnızca Client (tepsi)
+turkish.TypeHub=Yalnızca Hub (servis)
+turkish.TypeFull=Hub ve Client
+turkish.TypeCustom=Seç
+turkish.CompClient=Service Officer (tepsi uygulaması)
+turkish.CompHub=Service Officer Hub (Windows hizmeti)
+turkish.RegisteringHub=Hub hizmeti kaydediliyor...
+turkish.PairingLocal=Bu makine hub'ına eşleştiriliyor...
 turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
 turkish.TypeCaption=Kurulum türü
 turkish.TypeBody=Bu bilgisayar ne yapsın?
 turkish.TypeBoth=Hub (servis) ve Client (tepsi) — işi bu bilgisayar yapar
 turkish.TypeHubOnly=Yalnızca Hub (servis) — kimsenin oturum açmadığı bir sunucu
 turkish.TypeClientOnly=Yalnızca Client (tepsi) — başka bir bilgisayardaki hub'ı okur
-turkish.PortCaption=Hub portu
-turkish.PortBody=Hub'ın istemcileri için dinlediği port. Başka bir şey kullanmıyorsa olduğu gibi bırakın.
-turkish.PortField=Port
-turkish.PortBad=Port 1 ile 65535 arasında bir sayı olmalı.
-turkish.PortKept=Buradaki hub zaten %1 portunda hizmet veriyor ve bu korunuyor — istemcilerde kayıtlı. Değiştirmek için "ServiceOfficerHub.exe port <n>" komutunu kullanıp servisi yeniden başlatın.
-turkish.HubCaption=Hub adresi
+turkish.HubCaption=Hub
 turkish.HubBody=Client hangi hub'ı okusun? Bu bilgisayardaki bir hub da sayılır — adres her durumda denetlenir.
-turkish.HubAddress=Adres (makine adı veya IP, varsayılan değilse :port ile)
-turkish.HubToken=Token (hub üzerinde "ServiceOfficerHub.exe client add" komutundan)
-turkish.HubTokenLocal=Bu bilgisayardaki bir hub için gerekmiyor — kurulum sırasında bir tane üretilir.
+turkish.HubHostField=Makine adı veya IP
+turkish.HubPortField=Port
+turkish.HubToken=Token
+turkish.HubTokenWhy=Hub üzerinde "ServiceOfficerHub.exe client add <bu bilgisayar için bir isim>" ile üretilir ve bir kez yazdırılır.
+turkish.HubPortNew=Hub'ın dinleyeceği port. Başka bir şey kullanmıyorsa olduğu gibi bırakın.
+turkish.HubPortLocked=Buradaki Hub zaten bu portta hizmet veriyor ve istemcilerinde kayıtlı. Sonradan "ServiceOfficerHub.exe port <n>" ile değiştirip servisi yeniden başlatın.
+turkish.HubLocalNote=Bu bilgisayardaki bir hub: token gerekmiyor, kurulum sırasında bir tane üretilir.
+turkish.PortBad=Port 1 ile 65535 arasında bir sayı olmalı.
 turkish.HubNeedAddress=Hub'ın makine adını veya IP adresini girin.
 turkish.HubNeedToken=Hub'ın bu bilgisayar için yazdırdığı token'ı girin. O olmadan Client hub'a ulaşır ama hiçbir şey okuyamaz.
 turkish.HubIsThisPC=Bu adres bu bilgisayarı gösteriyor ve buradaki Hub %1 sürümüne yükseltilecek.%n%nİzlediği servisler çalışmaya devam eder; kurulum sırasında Hub durdurulup yeniden başlatılır.%n%nDevam edilsin mi?
@@ -125,21 +134,10 @@ turkish.HubNotHere=Bu adres bu bilgisayarı gösteriyor ama burada kurulu bir Hu
 turkish.HubVersionClash=O hub %1 sürümünde, bu kurulum ise %2 sürümünde.%n%nİstemci ile hub aynı sürümde olmak zorunda — bağlantı kurulur ama her isteği reddeder. Önce o hub'ı yükseltin ya da buraya eşleşen sürümü kurun.
 turkish.HubSilent=%1 yanıt vermedi.%n%nHakkında hiçbir şey denetlenemiyor — sürümü de, bu bilgisayar olup olmadığı da. Adres ve token kaydedilip ilk açılışta kullanılacak, Ayarlar %+ Genel bölümünden değiştirilebilir.%n%nYine de kurulsun mu?
 turkish.ReadyHubUpgrade=Hub (servis): %1 sürümü %2 sürümüne yükseltilecek, port %3 korunuyor
-turkish.ReadyHubNew=Hub (servis): %1 portunda yeni bir hub
 turkish.ReadyHubKept=Hub (servis): %1 sürümüne yükseltilecek, port %2 korunuyor
+turkish.ReadyHubNew=Hub (servis): %1 portunda yeni bir hub
 turkish.ReadyClientLocal=Client (tepsi): bu bilgisayardaki hub'ı okur
 turkish.ReadyClientRemote=Client (tepsi): %1 okur
-turkish.AutoStartTask=Windows ba&şladığında Service Officer'ı otomatik başlat
-turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
-turkish.TypeClient=Yalnızca istemci — sistem tepsisi uygulaması
-turkish.TypeHub=Yalnızca hub — sunucu için Windows hizmeti
-turkish.TypeFull=İkisi de, bu makinede
-turkish.TypeCustom=Seç
-turkish.CompClient=Service Officer (tepsi uygulaması)
-turkish.CompHub=Service Officer Hub (Windows hizmeti)
-turkish.PickOne=En az birini seçin: tepsi uygulaması, hub hizmeti ya da ikisi.
-turkish.RegisteringHub=Hub hizmeti kaydediliyor...
-turkish.PairingLocal=Bu makine hub'ına eşleştiriliyor...
 
 [Types]
 Name: "client"; Description: "{cm:TypeClient}"
@@ -271,9 +269,9 @@ Type: files; Name: "{userappdata}\Microsoft\Windows\Start Menu\Programs\Startup\
 // Two questions, kept apart, because one radio cannot answer three things:
 //
 //   Setup type    what is installed here — the Hub service, the Client tray app, or both
-//   Hub address   which hub the Client reads. A hub on *this* computer is still a hub it
-//                 connects to: there is no mode anywhere in this product, there is an
-//                 address, and localhost is an address.
+//   The hub       host, port, and a token when one is needed. A hub on *this* computer is
+//                 still a hub the Client connects to: there is no mode anywhere in this
+//                 product, there is an address, and localhost is an address.
 //
 // An upgrade is a state, not an answer. The installer knows what is already here, so it
 // says so on the summary page instead of hiding it in the wording of a choice.
@@ -289,20 +287,31 @@ const
 
 var
   TypePage: TInputOptionWizardPage;
-  PortPage: TInputQueryWizardPage;
-  HubPage: TInputQueryWizardPage;
+  //: Built by hand rather than with CreateInputQueryPage, for two reasons: that helper
+  //: stacks full-width fields and the host and port belong side by side, and the token has
+  //: to be able to disappear — a field shown with "leave this empty" under it is worse than
+  //: no field at all.
+  HubPage: TWizardPage;
+  HostEdit, PortEdit: TNewEdit;
+  //: TPasswordEdit, not TNewEdit with a flag: TNewEdit has no Password property, and this
+  //: is the class Inno's own CreateInputQueryPage uses for a masked field.
+  TokenEdit: TPasswordEdit;
+  HostCaption, PortCaption, TokenCaption, PortNote, TokenNote: TNewStaticText;
   //: The address given, normalised, once it has passed its checks.
   CheckedHubUrl: String;
-  //: That address is this computer — so no token is needed and `client pair --local`
-  //: does the pairing.
+  //: That address is this computer — so no token is needed and `client pair --local` does
+  //: the pairing.
   HubIsLocal: Boolean;
-  //: The port already in use here. Empty on a first install — and unknown until
-  //: {app} exists, which is why it is not read in InitializeWizard: that runs before the
-  //: directory page, and expanding {app} there is a runtime error. See EnsureExistingPort.
+  //: The port a hub here already serves on. Empty on a first install, and unknown until
+  //: {app} exists — which is why it is not read in InitializeWizard: that runs before the
+  //: directory page, and expanding {app} there is a runtime error.
   ExistingPort: String;
   ExistingPortKnown: Boolean;
   ExistingHubVersion: String;
 
+// ---------------------------------------------------------------------------
+// reading what we were given
+// ---------------------------------------------------------------------------
 function ParamValue(Name: String): String;
 var
   I: Integer;
@@ -318,9 +327,6 @@ begin
   end;
 end;
 
-// ---------------------------------------------------------------------------
-// reading and normalising an address
-// ---------------------------------------------------------------------------
 // One value out of a small flat JSON object. Not a parser: the two files this reads —
 // client.json and the hub's own ping answer — are written by this product and are one
 // level deep. Anything more would be a library, and there is none here.
@@ -335,8 +341,7 @@ begin
   if Start = 0 then
     Exit;
   Start := Start + Length(Needle);
-  while (Start <= Length(Body))
-        and ((Body[Start] = ' ') or (Body[Start] = '"')) do
+  while (Start <= Length(Body)) and ((Body[Start] = ' ') or (Body[Start] = '"')) do
     Start := Start + 1;
   Finish := Start;
   while (Finish <= Length(Body)) and (Body[Finish] <> '"')
@@ -345,33 +350,16 @@ begin
   Result := Trim(Copy(Body, Start, Finish - Start));
 end;
 
-// "ctl052" and "https://ctl052:8797/" and "10.77.3.50" all mean the same thing, and a
-// person typing an address should not have to know which one this wants.
-function NormalisedUrl(Given: String): String;
+// A port, or ''. Never anything else — which is the whole lesson of PortAlreadyHere.
+function AsPort(Given: String): String;
 var
-  Host: String;
-  Scheme: Integer;
-  Colon: Integer;
+  Number: Integer;
 begin
-  Result := '';
-  Host := Trim(Given);
-  Scheme := Pos('://', Host);
-  if Scheme > 0 then
-    Host := Copy(Host, Scheme + 3, Length(Host));
-  if Pos('/', Host) > 0 then
-    Host := Copy(Host, 1, Pos('/', Host) - 1);
-  Host := Trim(Host);
-  if Host = '' then
-    Exit;
-  // An IPv6 address is full of colons, so the port is only looked for after the
-  // brackets it has to be written in.
-  if Copy(Host, 1, 1) = '[' then
-    Colon := Pos(']:', Host)
+  Number := StrToIntDef(Trim(Given), -1);
+  if (Number >= 1) and (Number <= 65535) then
+    Result := IntToStr(Number)
   else
-    Colon := Pos(':', Host);
-  if Colon = 0 then
-    Host := Host + ':{#MyHubPort}';
-  Result := 'https://' + Host;
+    Result := '';
 end;
 
 function HostOfUrl(Url: String): String;
@@ -382,20 +370,23 @@ begin
   Host := Url;
   if Pos('://', Host) > 0 then
     Host := Copy(Host, Pos('://', Host) + 3, Length(Host));
+  if Pos('/', Host) > 0 then
+    Host := Copy(Host, 1, Pos('/', Host) - 1);
+  // An IPv6 address is full of colons, so a port is only looked for after the brackets it
+  // has to be written in.
   if Copy(Host, 1, 1) = '[' then
     Colon := Pos(']:', Host)
   else
     Colon := Pos(':', Host);
   if Colon > 0 then
     Host := Copy(Host, 1, Colon - 1);
-  Result := Host;
+  Result := Trim(Host);
 end;
 
-// Is that address this computer? Asked because "connect to an existing hub" pointed at
-// this one means the person wants a hub here, and a client-only install would leave them
-// reading a hub nobody upgraded. The hub's own ping answers this better than any name
-// comparison can — it says which computer it is running on — and this is the fallback for
-// when it does not answer at all.
+// Is that address this computer? Asked because "connect to a hub" pointing at this one
+// means a hub belongs here, and a client-only install would leave somebody reading a hub
+// nobody upgraded. The hub's own ping answers it better — it says which computer it runs on
+// — and this is what there is when nothing answers.
 function LooksLikeThisComputer(Host: String): Boolean;
 var
   Mine: String;
@@ -406,11 +397,10 @@ begin
             or (Host = '[::1]') or (Host = Mine) or (Pos(Mine + '.', Host) = 1);
 end;
 
-// The hub's name and version, from the one endpoint that needs no token. Certificate
-// errors are ignored here on purpose: the hub is self-signed and it is the *client* that
-// pins it, on every connection. Nothing secret crosses this request — it is a version
-// number and a computer name — and refusing to read it would only mean asking the person
-// to check by hand.
+// The hub's name and version, from the one endpoint that needs no token. Certificate errors
+// are ignored here on purpose: the hub is self-signed and it is the *client* that pins it,
+// on every connection. Nothing secret crosses this request — a version number and a
+// computer name — and refusing to read it would only mean asking somebody to check by hand.
 function AskHub(Url: String; var HubName, HubVersion: String): Boolean;
 var
   Http: Variant;
@@ -437,7 +427,7 @@ begin
   end;
 end;
 
-// A running hub reports 2.2.2.7 — release, then the build number, which counts builds on
+// A running hub reports 2.2.6.7 — release, then the build number, which counts builds on
 // the machine that made it. Only the release part is a compatibility question.
 function ReleasePart(Version: String): String;
 var
@@ -455,56 +445,6 @@ begin
         Exit;
       end;
     end;
-end;
-
-// What this computer was paired with last time, so somebody reinstalling does not have to
-// remember. This user's own copy first, then the machine's — the same order the client
-// itself reads them in.
-function StoredHubUrl(): String;
-var
-  Body: AnsiString;
-  Path: String;
-begin
-  Result := '';
-  Path := ExpandConstant('{localappdata}\Service Officer\client.json');
-  if not FileExists(Path) then
-    Path := ExpandConstant('{commonappdata}\{#MyDataDir}\client.json');
-  if FileExists(Path) and LoadStringFromFile(Path, Body) then
-    Result := JsonValue(String(Body), 'hub_url');
-end;
-
-function HubInstalledHere(): Boolean;
-begin
-  Result := RegKeyExists(HKEY_LOCAL_MACHINE,
-                         'SYSTEM\CurrentControlSet\Services\{#MyHubService}');
-end;
-
-function InstallingHub(): Boolean;
-begin
-  Result := TypePage.SelectedValueIndex <> TypeClientOnly;
-end;
-
-// Called from the first page that comes *after* the directory page, and from
-// ShouldSkipPage, because both are places where {app} is guaranteed to exist. Doing this
-// in InitializeWizard raised "an attempt was made to expand the app constant before it was
-// initialized" — which is a runtime error, so nothing but running the installer finds it.
-procedure EnsureExistingPort(); forward;
-
-function InstallingClient(): Boolean;
-begin
-  Result := TypePage.SelectedValueIndex <> TypeHubOnly;
-end;
-
-// A port, or ''. Never anything else — which is the whole lesson of this function.
-function AsPort(Given: String): String;
-var
-  Number: Integer;
-begin
-  Number := StrToIntDef(Trim(Given), -1);
-  if (Number >= 1) and (Number <= 65535) then
-    Result := IntToStr(Number)
-  else
-    Result := '';
 end;
 
 // The port out of the config the hub reads. The "hub" section is located first: a health
@@ -531,7 +471,7 @@ begin
   Result := AsPort(JsonValue(Copy(Section, At, Length(Section)), 'port'));
 end;
 
-// The port the hub here already serves on.
+// The port a hub here already serves on.
 //
 // Asked of the hub itself first, because it is the thing that knows — but *validated*,
 // because during an upgrade the exe still under {app} is the previous release. One that
@@ -558,23 +498,76 @@ begin
     Result := PortFromConfig();
 end;
 
+// What this computer was paired with last time, so nobody has to remember. This user's own
+// copy first, then the machine's — the order the client itself reads them in.
+function StoredHubUrl(): String;
+var
+  Body: AnsiString;
+  Path: String;
+begin
+  Result := '';
+  Path := ExpandConstant('{localappdata}\Service Officer\client.json');
+  if not FileExists(Path) then
+    Path := ExpandConstant('{commonappdata}\{#MyDataDir}\client.json');
+  if FileExists(Path) and LoadStringFromFile(Path, Body) then
+    Result := JsonValue(String(Body), 'hub_url');
+end;
+
+// Whether a hub is installed here is a fact in Windows' own record, and the only one that
+// cannot be out of date. What port it uses is a detail; not knowing that is not evidence
+// of anything, and reading it as "nothing is installed" is what put a port page in front of
+// a machine that had been running a hub for two days.
+function HubInstalledHere(): Boolean;
+begin
+  Result := RegKeyExists(HKEY_LOCAL_MACHINE,
+                         'SYSTEM\CurrentControlSet\Services\{#MyHubService}');
+end;
+
+function InstallingHub(): Boolean;
+begin
+  Result := TypePage.SelectedValueIndex <> TypeClientOnly;
+end;
+
+function InstallingClient(): Boolean;
+begin
+  Result := TypePage.SelectedValueIndex <> TypeHubOnly;
+end;
+
 // ---------------------------------------------------------------------------
 // what the [Run] entries ask
 // ---------------------------------------------------------------------------
+// The port for the firewall rule, for `hub.exe port`, and for the address the client is
+// given. A port a hub here already serves on wins: its clients have it stored, and moving
+// it would leave every one of them looking at nothing.
+function GetHubPort(Param: String): String;
+begin
+  Result := AsPort(ParamValue('HUBPORT'));
+  if Result = '' then
+    Result := AsPort(ExistingPort);
+  if (Result = '') and (PortEdit <> nil) then
+    Result := AsPort(PortEdit.Text);
+  if Result = '' then
+    Result := '{#MyHubPort}';
+end;
+
 function GetHubUrl(Param: String): String;
 begin
   Result := ParamValue('HUBURL');
   if Result <> '' then
-    Result := NormalisedUrl(Result)
-  else
-    Result := CheckedHubUrl;
+  begin
+    // A command line may carry the port inside the address; take it as given.
+    if Pos('://', Result) = 0 then
+      Result := 'https://' + Result;
+    Exit;
+  end;
+  Result := CheckedHubUrl;
 end;
 
 function GetHubToken(Param: String): String;
 begin
   Result := ParamValue('HUBTOKEN');
-  if (Result = '') and (HubPage <> nil) then
-    Result := Trim(HubPage.Values[1]);
+  if (Result = '') and (TokenEdit <> nil) then
+    Result := Trim(TokenEdit.Text);
 end;
 
 // Only when the hub is somewhere else. A hub on this computer pairs its own client with
@@ -584,49 +577,141 @@ begin
   Result := (GetHubUrl('') <> '') and (not HubIsLocal);
 end;
 
-// The port for the firewall rule and for `hub.exe port`. A port already in use here wins:
-// clients have it stored, and moving it would leave every one of them looking at nothing.
-function GetHubPort(Param: String): String;
-begin
-  Result := AsPort(ParamValue('HUBPORT'));
-  if Result = '' then
-    Result := AsPort(ExistingPort);
-  if (Result = '') and (PortPage <> nil) then
-    Result := AsPort(PortPage.Values[0]);
-  if Result = '' then
-    Result := '{#MyHubPort}';
-end;
-
-// Writing the port is skipped when it is already what the hub uses — one less thing done
-// to a machine for no reason, and one less way to fail.
+// Writing the port is skipped when it is already what the hub uses — one less thing done to
+// a machine for no reason, and one less way to fail.
 function PortWasChosen(): Boolean;
 begin
   Result := (ExistingPort = '') and (GetHubPort('') <> '{#MyHubPort}');
 end;
 
 // ---------------------------------------------------------------------------
-// the pages
+// the page
 // ---------------------------------------------------------------------------
+// The address as one URL, from the two fields.
+function AddressFromFields(): String;
+var
+  Host, Port: String;
+begin
+  Result := '';
+  Host := HostOfUrl(Trim(HostEdit.Text));
+  if Host = '' then
+    Exit;
+  Port := AsPort(PortEdit.Text);
+  if Port = '' then
+    Port := '{#MyHubPort}';
+  Result := 'https://' + Host + ':' + Port;
+end;
+
+// A token is for a hub somewhere else. Hidden the moment the address stops being one,
+// because a field shown next to "you do not need this" is a question nobody should have to
+// answer twice.
+procedure ShowTokenOnlyIfNeeded();
+var
+  Local: Boolean;
+begin
+  Local := LooksLikeThisComputer(HostOfUrl(Trim(HostEdit.Text)));
+  TokenCaption.Visible := not Local;
+  TokenEdit.Visible := not Local;
+  if Local then
+    TokenNote.Caption := ExpandConstant('{cm:HubLocalNote}')
+  else
+    TokenNote.Caption := ExpandConstant('{cm:HubTokenWhy}');
+end;
+
+procedure AddressTyped(Sender: TObject);
+begin
+  ShowTokenOnlyIfNeeded();
+end;
+
+// Laid out here so the arithmetic is in one place: a wide host, a narrow port beside it,
+// and a token row underneath that is hidden more often than not.
+procedure BuildHubPage();
+var
+  PortWidth, Gap, Row: Integer;
+begin
+  HubPage := CreateCustomPage(TypePage.ID, ExpandConstant('{cm:HubCaption}'),
+                              ExpandConstant('{cm:HubBody}'));
+  PortWidth := ScaleX(70);
+  Gap := ScaleX(12);
+  Row := 0;
+
+  HostCaption := TNewStaticText.Create(HubPage);
+  HostCaption.Parent := HubPage.Surface;
+  HostCaption.Caption := ExpandConstant('{cm:HubHostField}');
+  HostCaption.Top := Row;
+  HostCaption.Left := 0;
+
+  PortCaption := TNewStaticText.Create(HubPage);
+  PortCaption.Parent := HubPage.Surface;
+  PortCaption.Caption := ExpandConstant('{cm:HubPortField}');
+  PortCaption.Top := Row;
+  PortCaption.Left := HubPage.SurfaceWidth - PortWidth;
+
+  Row := Row + HostCaption.Height + ScaleY(4);
+
+  HostEdit := TNewEdit.Create(HubPage);
+  HostEdit.Parent := HubPage.Surface;
+  HostEdit.Top := Row;
+  HostEdit.Left := 0;
+  HostEdit.Width := HubPage.SurfaceWidth - PortWidth - Gap;
+  HostEdit.OnChange := @AddressTyped;
+
+  PortEdit := TNewEdit.Create(HubPage);
+  PortEdit.Parent := HubPage.Surface;
+  PortEdit.Top := Row;
+  PortEdit.Left := HubPage.SurfaceWidth - PortWidth;
+  PortEdit.Width := PortWidth;
+  PortEdit.Text := '{#MyHubPort}';
+
+  Row := Row + HostEdit.Height + ScaleY(6);
+
+  PortNote := TNewStaticText.Create(HubPage);
+  PortNote.Parent := HubPage.Surface;
+  PortNote.WordWrap := True;
+  PortNote.Width := HubPage.SurfaceWidth;
+  PortNote.Top := Row;
+  PortNote.Caption := ExpandConstant('{cm:HubPortNew}');
+  Row := Row + PortNote.Height + ScaleY(22);
+
+  TokenCaption := TNewStaticText.Create(HubPage);
+  TokenCaption.Parent := HubPage.Surface;
+  TokenCaption.Caption := ExpandConstant('{cm:HubToken}');
+  TokenCaption.Top := Row;
+  TokenCaption.Left := 0;
+  Row := Row + TokenCaption.Height + ScaleY(4);
+
+  TokenEdit := TPasswordEdit.Create(HubPage);
+  TokenEdit.Parent := HubPage.Surface;
+  TokenEdit.Top := Row;
+  TokenEdit.Left := 0;
+  TokenEdit.Width := HubPage.SurfaceWidth;
+  Row := Row + TokenEdit.Height + ScaleY(6);
+
+  TokenNote := TNewStaticText.Create(HubPage);
+  TokenNote.Parent := HubPage.Surface;
+  TokenNote.WordWrap := True;
+  TokenNote.Width := HubPage.SurfaceWidth;
+  TokenNote.Top := Row;
+  TokenNote.Caption := ExpandConstant('{cm:HubTokenWhy}');
+end;
+
+// Called from the pages that come *after* the directory page, because {app} does not exist
+// before it. Doing this in InitializeWizard raised "an attempt was made to expand the app
+// constant before it was initialized" — a runtime error, so only running the installer
+// finds it.
 procedure EnsureExistingPort();
 begin
   if ExistingPortKnown then
     Exit;
   ExistingPortKnown := True;
   ExistingPort := PortAlreadyHere();
-  if (ExistingPort <> '') and (PortPage <> nil) then
-  begin
-    PortPage.Values[0] := ExistingPort;
-    // The client here reads the hub by name, so it has to be told the port that hub
-    // actually serves on rather than the default.
-    if (HubPage <> nil) and (AsPort(ExistingPort) <> '')
-       and LooksLikeThisComputer(HostOfUrl(NormalisedUrl(HubPage.Values[0]))) then
-      HubPage.Values[0] := GetComputerNameString + ':' + AsPort(ExistingPort);
-  end;
+  if (AsPort(ExistingPort) <> '') and (PortEdit <> nil) then
+    PortEdit.Text := AsPort(ExistingPort);
 end;
 
 procedure InitializeWizard();
 var
-  Remembered: String;
+  Remembered, Host, Port: String;
 begin
   ExistingPort := '';
   ExistingPortKnown := False;
@@ -639,17 +724,7 @@ begin
   TypePage.Add(ExpandConstant('{cm:TypeHubOnly}'));
   TypePage.Add(ExpandConstant('{cm:TypeClientOnly}'));
 
-  PortPage := CreateInputQueryPage(
-    TypePage.ID, ExpandConstant('{cm:PortCaption}'),
-    ExpandConstant('{cm:PortBody}'), '');
-  PortPage.Add(ExpandConstant('{cm:PortField}'), False);
-  PortPage.Values[0] := '{#MyHubPort}';
-
-  HubPage := CreateInputQueryPage(
-    PortPage.ID, ExpandConstant('{cm:HubCaption}'),
-    ExpandConstant('{cm:HubBody}'), '');
-  HubPage.Add(ExpandConstant('{cm:HubAddress}'), False);
-  HubPage.Add(ExpandConstant('{cm:HubToken}'), True);
+  BuildHubPage();
 
   // Where the wizard starts from, taken from what is already true here rather than from a
   // default nobody chose: a machine with the hub service is doing both, a machine with a
@@ -658,18 +733,28 @@ begin
   if HubInstalledHere() then
   begin
     TypePage.SelectedValueIndex := TypeBoth;
-    HubPage.Values[0] := GetComputerNameString;
+    HostEdit.Text := GetComputerNameString;
   end
   else if Remembered <> '' then
   begin
     TypePage.SelectedValueIndex := TypeClientOnly;
-    HubPage.Values[0] := Remembered;
+    HostEdit.Text := HostOfUrl(Remembered);
+    // The port travels with a remembered address, and it is not always the default.
+    Host := Remembered;
+    if Pos('://', Host) > 0 then
+      Host := Copy(Host, Pos('://', Host) + 3, Length(Host));
+    Port := '';
+    if Pos(':', Host) > 0 then
+      Port := AsPort(Copy(Host, Pos(':', Host) + 1, Length(Host)));
+    if Port <> '' then
+      PortEdit.Text := Port;
   end
   else
   begin
     TypePage.SelectedValueIndex := TypeBoth;
-    HubPage.Values[0] := GetComputerNameString;
+    HostEdit.Text := GetComputerNameString;
   end;
+  ShowTokenOnlyIfNeeded();
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -681,14 +766,6 @@ begin
   // parts is a worse question than "what should this computer do".
   if PageID = wpSelectComponents then
     Result := True
-  // Asked once, on a first install. A hub that is already here keeps the port it serves
-  // on — its clients have that port stored, and moving it would leave every one of them
-  // looking at nothing. Decided by whether the *service exists*, not by whether its port
-  // could be read: on the machine this was found on neither source could answer (an exe
-  // predating the `port` command, and a config written before there was a "hub" section in
-  // it) and the page took both unknowns for "nothing is installed".
-  else if (PortPage <> nil) and (PageID = PortPage.ID) then
-    Result := (not InstallingHub()) or HubInstalledHere()
   else if (HubPage <> nil) and (PageID = HubPage.ID) then
     Result := not InstallingClient();
 end;
@@ -699,12 +776,20 @@ begin
     EnsureExistingPort();
   if (HubPage <> nil) and (CurPageID = HubPage.ID) then
   begin
-    // The token is not needed for a hub on this computer, and saying so is better than
-    // leaving an empty box that looks required.
-    if InstallingHub() then
-      HubPage.SubCaptionLabel.Caption := ExpandConstant('{cm:HubTokenLocal}')
+    EnsureExistingPort();
+    // A hub already serving here keeps its port: its clients have that one stored, so the
+    // field says what it is and does not invite a change that would break them.
+    if InstallingHub() and HubInstalledHere() then
+    begin
+      PortEdit.ReadOnly := True;
+      PortNote.Caption := ExpandConstant('{cm:HubPortLocked}');
+    end
     else
-      HubPage.SubCaptionLabel.Caption := ExpandConstant('{cm:HubBody}');
+    begin
+      PortEdit.ReadOnly := False;
+      PortNote.Caption := ExpandConstant('{cm:HubPortNew}');
+    end;
+    ShowTokenOnlyIfNeeded();
   end;
 end;
 
@@ -721,7 +806,12 @@ begin
   HubIsLocal := False;
   CheckedHubUrl := '';
 
-  Url := NormalisedUrl(HubPage.Values[0]);
+  if AsPort(PortEdit.Text) = '' then
+  begin
+    Complaint := ExpandConstant('{cm:PortBad}');
+    Exit;
+  end;
+  Url := AddressFromFields();
   if Url = '' then
   begin
     Complaint := ExpandConstant('{cm:HubNeedAddress}');
@@ -732,8 +822,8 @@ begin
   if not AskHub(Url, HubName, HubVersion) then
   begin
     Local := LooksLikeThisComputer(Host);
-    // Nothing answered. Two different silences: a hub that is about to be installed here
-    // has not started yet and that is expected, otherwise it is genuinely unknown.
+    // Nothing answered. Two different silences: a hub about to be installed here has not
+    // started yet and that is expected, otherwise it is genuinely unknown.
     if Local and InstallingHub() then
     begin
       HubIsLocal := True;
@@ -752,7 +842,7 @@ begin
     end;
     if MsgBox(FmtMessage(ExpandConstant('{cm:HubSilent}'), [Host]), mbConfirmation, MB_YESNO) <> IDYES then
       Exit;
-    if Trim(HubPage.Values[1]) = '' then
+    if Trim(TokenEdit.Text) = '' then
     begin
       Complaint := ExpandConstant('{cm:HubNeedToken}');
       Exit;
@@ -769,9 +859,8 @@ begin
     ExistingHubVersion := ReleasePart(HubVersion);
     if not InstallingHub() then
     begin
-      // A hub is here and this is a client-only install: perfectly normal, and no token
-      // is needed because `client pair --local` cannot run without the hub component.
-      // The pairing already on this machine is what the client will use.
+      // A hub is here and this is a client-only install: normal, and no token is needed
+      // because the pairing already on this machine is what the client will use.
       HubIsLocal := True;
       CheckedHubUrl := Url;
       Result := True;
@@ -791,7 +880,7 @@ begin
     Exit;
   end;
 
-  if Trim(HubPage.Values[1]) = '' then
+  if Trim(TokenEdit.Text) = '' then
   begin
     Complaint := ExpandConstant('{cm:HubNeedToken}');
     Exit;
@@ -811,9 +900,9 @@ begin
   Lines := '';
   if InstallingHub() then
   begin
-    // Three different things, and the reader deserves to be told which: an upgrade of a
-    // hub that answered a ping, an upgrade of one that did not but is in the registry, and
-    // a hub that does not exist here yet.
+    // Three different things, and the reader deserves to be told which: an upgrade of a hub
+    // that answered a ping, an upgrade of one in the registry that did not, and a hub that
+    // does not exist here yet.
     if ExistingHubVersion <> '' then
       Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubUpgrade}'), [ExistingHubVersion, '{#MyAppVersion}', GetHubPort('')]) + NewLine
     else if HubInstalledHere() then
@@ -843,8 +932,8 @@ begin
   Result := True;
 end;
 
-// An installer that copies over a running service exe fails with "file in use", and
-// this is the ordinary case: every upgrade of a hub.
+// An installer that copies over a running service exe fails with "file in use", and this is
+// the ordinary case: every upgrade of a hub.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
@@ -859,37 +948,19 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Complaint: String;
-  Port: Integer;
 begin
   Result := True;
 
   if CurPageID = TypePage.ID then
   begin
-    // The components are decided here, once, from the answer — there is no components
-    // page left to tick.
+    // The components are decided here, once, from the answer — there is no components page
+    // left to tick.
     if TypePage.SelectedValueIndex = TypeBoth then
       WizardSelectComponents('hub,client')
     else if TypePage.SelectedValueIndex = TypeHubOnly then
       WizardSelectComponents('hub')
     else
       WizardSelectComponents('client');
-    Exit;
-  end;
-
-  if (PortPage <> nil) and (CurPageID = PortPage.ID) then
-  begin
-    Port := StrToIntDef(Trim(PortPage.Values[0]), -1);
-    if (Port < 1) or (Port > 65535) then
-    begin
-      MsgBox(ExpandConstant('{cm:PortBad}'), mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-    // The client on this machine reads the hub through its host name, so the port it is
-    // told about has to be the one just chosen.
-    if (HubPage <> nil) and (AsPort(PortPage.Values[0]) <> '')
-       and LooksLikeThisComputer(HostOfUrl(NormalisedUrl(HubPage.Values[0]))) then
-      HubPage.Values[0] := GetComputerNameString + ':' + AsPort(PortPage.Values[0]);
     Exit;
   end;
 

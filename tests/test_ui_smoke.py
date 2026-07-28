@@ -2152,3 +2152,119 @@ def test_pointing_at_a_different_hub_drops_the_old_pin(qapp, sample, monkeypatch
     assert settings.hub_url == "https://new:9000"
     assert settings.hub_fingerprint == ""
     win.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# clients
+# ---------------------------------------------------------------------------
+class _StubHub:
+    """A hub that answers the three questions the Clients page asks."""
+
+    def __init__(self, clients=None):
+        self.issued = []
+        self.revoked = []
+        self._clients = list(clients or [])
+
+    def clients(self):
+        return {"clients": self._clients, "url": "https://ctl052:8797",
+                "fingerprint": "SHA256:whatever"}
+
+    def add_client(self, name, description=""):
+        self.issued.append((name, description))
+        self._clients.append({"name": name, "description": description,
+                              "added": "2026-07-28T14:00:00", "last_seen": "",
+                              "host": ""})
+        return {"name": name, "token": "a-token", "url": "https://ctl052:8797",
+                "fingerprint": "SHA256:whatever", "replaced": False,
+                "command": "ServiceOfficer.exe --connect https://ctl052:8797 "
+                           "--token a-token"}
+
+    def revoke_client(self, name):
+        self.revoked.append(name)
+        self._clients = [c for c in self._clients if c["name"] != name]
+        return True
+
+
+def test_the_clients_page_is_absent_without_a_hub(qapp, sample):
+    """Nobody to pair with a single-machine install: the page is not there rather than
+    there and empty, and the button with it."""
+    win = panel_mod.MainPanel(sample)
+
+    assert win._buttons_by_name["clients"].isVisible() is False
+    win.deleteLater()
+
+
+def test_the_clients_page_lists_what_the_hub_says(qapp, sample):
+    """Name, why it exists, the host it actually connected from, and the two times. No
+    token: the hub keeps a hash of it, so there is nothing to show."""
+    hub = _StubHub([{"name": "ismail-laptop", "description": "on my desk",
+                     "added": "2026-07-28T09:00:00", "last_seen": "2026-07-28T14:30:00",
+                     "host": "CTL099"},
+                    {"name": "spare", "description": "", "added": "2026-07-28T10:00:00",
+                     "last_seen": "", "host": ""}])
+    win = panel_mod.MainPanel(sample, hub=lambda: hub)
+    page = win.clients_page
+
+    page._fill(hub.clients())          # what the worker thread hands over
+
+    assert page.table.rowCount() == 2
+    assert page.table.item(0, 0).text() == "ismail-laptop"
+    assert page.table.item(0, 1).text() == "on my desk"
+    assert page.table.item(0, 2).text() == "CTL099"
+    # Never connected reads as words, not as an empty cell nobody can interpret.
+    assert page.table.item(1, 4).text() == "never used"
+    assert "2 clients" in page.note.text()
+    win.deleteLater()
+
+
+def test_a_token_is_shown_once_with_the_command_to_run(qapp, sample, monkeypatch):
+    """The only moment it is readable, so it comes with the whole command for the machine
+    it is for — nobody should have to assemble that from three fields."""
+    from ui.pages import clients as clients_mod
+
+    hub = _StubHub()
+    win = panel_mod.MainPanel(sample, hub=lambda: hub)
+    page = win.clients_page
+
+    monkeypatch.setattr(clients_mod._AddDialog, "exec",
+                        lambda self: setattr(self.name, "text_value", None)
+                        or self.name.setText("new-laptop")
+                        or self.description.setText("the spare one")
+                        or clients_mod.QDialog.Accepted)
+    shown = {}
+    monkeypatch.setattr(clients_mod._IssuedDialog, "exec",
+                        lambda self: shown.update(seen=True) or 0)
+    monkeypatch.setattr(clients_mod._IssuedDialog, "__init__",
+                        lambda self, made, parent=None: shown.update(made=made))
+
+    page._add()
+
+    assert hub.issued == [("new-laptop", "the spare one")]
+    assert shown.get("seen") is True, "the token was never put in front of anybody"
+    assert shown["made"]["token"] == "a-token"
+    assert "--connect" in shown["made"]["command"]
+    win.deleteLater()
+
+
+def test_revoking_asks_first_and_then_tells_the_hub(qapp, sample, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from ui.pages import clients as clients_mod
+
+    hub = _StubHub([{"name": "ismail-laptop", "description": "", "added": "",
+                     "last_seen": "", "host": ""}])
+    win = panel_mod.MainPanel(sample, hub=lambda: hub)
+    page = win.clients_page
+    page._fill(hub.clients())
+    page.table.selectRow(0)
+
+    monkeypatch.setattr(clients_mod.QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.No)
+    page._revoke()
+    assert hub.revoked == [], "revoked without being told to"
+
+    monkeypatch.setattr(clients_mod.QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.Yes)
+    page._revoke()
+    assert hub.revoked == ["ismail-laptop"]
+    win.deleteLater()

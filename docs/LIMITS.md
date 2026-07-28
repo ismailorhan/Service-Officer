@@ -90,11 +90,16 @@ What 2.2.0 adds is the *record*: every action carries the name of whoever asked
 "who restarted this at 03:00" is answerable, and "who was allowed to" still is not.
 
 A read-only token is the obvious next step and is not built. Revoking a client is the only
-control there is today:
+control there is today — from the panel's **Clients** page, or:
 
 ```bat
 ServiceOfficerHub.exe client revoke ismail-laptop
 ```
+
+Issuing tokens is on that page too, from any client. That follows from the same fact rather
+than being a separate decision: a client that can put a `command` health check into the
+configuration can already run anything on the hub as LocalSystem, so there is no boundary
+for a hidden button to defend.
 
 ### Notifications
 Windows toasts only, on the machine the app runs on. No mail, no Teams, no webhook.

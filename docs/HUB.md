@@ -234,6 +234,37 @@ ServiceOfficerHub.exe client revoke ismail-laptop
 
 A revoke takes effect immediately, including on a hub that is already running.
 
+### From the panel: Clients
+
+The same thing without a console. **Infrastructure → Clients**, in any panel that is
+reading a hub — on a single-machine install the page is not there, because there is nobody
+to pair.
+
+| Column | What it is |
+|---|---|
+| Name | the label typed when the token was issued |
+| Description | why it exists — whose laptop, which office |
+| Host | the machine name the client **reports** when it connects |
+| Issued | when the token was made |
+| Last used | when that client last spoke, or *never used* |
+
+**Add client…** asks for a name and a description, then shows the token **once**, with the
+whole command to run on the machine it is for and the certificate fingerprint that machine
+should see. Copy it there and then: the hub stores a SHA-256 of the token and nothing else,
+so it cannot be looked up again — a lost one is replaced, not recovered.
+
+Two things worth being precise about:
+
+- **Host is a claim, not proof.** It arrives in a header the client sets; the *token* is
+  what authenticates. It is worth having because a token being used from a machine nobody
+  expected is exactly the thing somebody would want to notice.
+- **Any client of a hub can issue and revoke tokens.** That is deliberate and it matches
+  everything else — a client can already restart services and change the configuration, and
+  a `command` health check in that configuration runs on the hub as LocalSystem. A page that
+  hid this button on remote clients would suggest a boundary that is not there. Read-only
+  tokens are the way to make one, and they do not exist yet: see
+  [LIMITS.md](LIMITS.md).
+
 ## The certificate
 
 Self-signed, made once, kept for ten years, at:

@@ -102,6 +102,12 @@ class Busy(RuntimeError):
         self.actor, self.action = actor, action
 
 
+class NotFound(RuntimeError):
+    """The hub has no such thing — a client name that is not paired, a path that does not
+    exist. Its own class because "there was nothing to remove" is an ordinary answer to a
+    revoke and should not have to be recognised from the text of an error."""
+
+
 class WrongHub(RuntimeError):
     """The certificate is not the one we pinned. Either the hub was rebuilt, or this is
     not the hub."""
@@ -304,7 +310,11 @@ class HubClient:
             data=json.dumps(body).encode("utf-8") if body is not None else None,
             method=method,
             headers={"Authorization": f"Bearer {self.token}",
-                     "Content-Type": "application/json"})
+                     "Content-Type": "application/json",
+                     # Which machine this is. It identifies, it does not authenticate —
+                     # the token does that — and it is what lets the hub's client list say
+                     # where a token is actually being used from.
+                     "X-Client-Host": socket.gethostname()})
         try:
             with urllib.request.urlopen(request, timeout=timeout,
                                         context=self._context()) as answer:
@@ -319,6 +329,8 @@ class HubClient:
             if exc.code == 401:
                 raise Refused(said.get("error") or "the hub refused this token") \
                     from exc
+            if exc.code == 404:
+                raise NotFound(said.get("error") or "the hub has no such thing") from exc
             if exc.code == 409:
                 if said.get("actor") is not None:
                     raise Busy(said.get("error", "already being acted on"),
@@ -385,6 +397,37 @@ class HubClient:
             "GET", f"/api/v1/machines/{urllib.parse.quote(machine)}/services",
             timeout=90)          # enumerating a remote machine is the request
         return (said or {}).get("services", [])
+
+    # -- who may connect ---------------------------------------------------
+    def clients(self) -> dict:
+        """Everybody paired with this hub, and what a new one would need to know.
+
+        No tokens: the hub keeps a SHA-256 of each and nothing else, so there is nothing to
+        show. Names, when each was issued and when it was last used — which is the question
+        somebody actually has.
+        """
+        _status, said = self._ask("GET", "/api/v1/clients")
+        return said or {"clients": []}
+
+    def add_client(self, name: str, description: str = "") -> dict:
+        """Issue a token and return it *once*, with the command to run on that machine.
+
+        The hub does this rather than the panel because the client list lives in a store
+        only administrators can write, and the panel does not run elevated.
+        """
+        _status, said = self._ask("POST", "/api/v1/clients",
+                                  {"name": name, "description": description})
+        return said or {}
+
+    def revoke_client(self, name: str) -> bool:
+        """True if there was one to revoke. Effective immediately, including on a hub that
+        is already running — see hub_auth's cache."""
+        try:
+            status, _said = self._ask(
+                "DELETE", f"/api/v1/clients/{urllib.parse.quote(name)}")
+        except NotFound:
+            return False
+        return status in (200, 204)
 
     # -- the stream --------------------------------------------------------
     def start(self) -> None:
@@ -484,7 +527,8 @@ class HubClient:
         else:
             conn = http.client.HTTPConnection(parsed.hostname, port, timeout=TIMEOUT)
         conn.request("GET", "/api/v1/events",
-                     headers={"Authorization": f"Bearer {self.token}"})
+                     headers={"Authorization": f"Bearer {self.token}",
+                              "X-Client-Host": socket.gethostname()})
         # Taken before getresponse(), which gives the socket away — see _Stream.
         sock = conn.sock
         # No socket timeout while reading: a stream is meant to say nothing for long

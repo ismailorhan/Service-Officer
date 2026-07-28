@@ -857,7 +857,10 @@ class Application(QObject):
             self.panel.activateWindow()
             return
         win = panel_mod.MainPanel(self.cfg, store=self.store,
-                                  live_config=lambda: self.cfg)
+                                  live_config=lambda: self.cfg,
+                                  # A callable, not the object: the Clients page asks
+                                  # each time, and this window outlives a reconnection.
+                                  hub=lambda: self.hub)
         win.saved.connect(self._settings_saved)
         win.test_run.connect(self.run_stack)
         win.run_trigger.connect(self.run_trigger)

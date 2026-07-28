@@ -33,7 +33,7 @@ def pair(monkeypatch):
                                on_config_saved=lambda config:
                                    holder.update(cfg=config))
     monkeypatch.setattr(hub_server.hub_auth, "check", lambda token: "tests")
-    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name: None)
+    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name, host="": None)
     server = hub_server.HubServer(engine, host="127.0.0.1", port=0, insecure=True)
     server.start()
     client = hub_client.HubClient(server.url, "good")

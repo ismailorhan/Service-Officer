@@ -138,19 +138,28 @@ def forget_cache() -> None:
         _seen_at = {}
 
 
-def add_client(name: str) -> str:
+def add_client(name: str, description: str = "") -> str:
     """Issue a token for a client and return it — the only time it is ever readable.
 
     Adding a name that already exists replaces its token, so re-pairing a client that
     lost one does not leave the old one working.
+
+    `description` is whatever the person issuing it wants to remember: whose laptop, which
+    office, why it exists. `host` is not set here — it cannot be known yet, and it arrives
+    with the first connection (see note_seen).
     """
     token = new_token()
     with _lock:
         clients = _read()
+        existing = clients.get(name) or {}
         clients[name] = {
             "hash": _digest(token),
             "added": datetime.datetime.now().isoformat(timespec="seconds"),
             "last_seen": "",
+            "description": description or existing.get("description", ""),
+            # Deliberately cleared: a replaced token may well be going to a different
+            # machine, and last time's host name would be a claim about this one.
+            "host": "",
         }
         if not _write(clients):
             raise RuntimeError(store.last_error()
@@ -172,8 +181,13 @@ def check(token: str) -> str:
     return ""
 
 
-def note_seen(name: str) -> None:
-    """Remember when a client last spoke, so `client list` can say.
+def note_seen(name: str, host: str = "") -> None:
+    """Remember when a client last spoke, and where from, so `client list` can say.
+
+    The host name comes off the request (see hub_server) and is *what the client says it
+    is* — it identifies, it does not authenticate; the token does that. It is worth having
+    anyway: a token being used from a machine nobody expected is exactly the thing somebody
+    would want to notice.
 
     Written at most once a minute per client. Every request meant a DPAPI encrypt and
     an atomic file replace per request — about 35 ms, most of the cost of answering a
@@ -192,6 +206,8 @@ def note_seen(name: str) -> None:
             if name in clients:
                 clients[name]["last_seen"] = datetime.datetime.now().isoformat(
                     timespec="seconds")
+                if host:
+                    clients[name]["host"] = host
                 _write(clients)
     except Exception:
         log.debug("could not record that %s was seen", name, exc_info=True)
@@ -201,8 +217,11 @@ def clients() -> list:
     """Every paired client — name, when it was added, when it last spoke. No hashes:
     this is printed, and a hash on screen invites somebody to try it."""
     with _lock:
-        return [{"name": name, "added": facts.get("added", ""),
-                 "last_seen": facts.get("last_seen", "")}
+        return [{"name": name,
+                 "description": facts.get("description", ""),
+                 "added": facts.get("added", ""),
+                 "last_seen": facts.get("last_seen", ""),
+                 "host": facts.get("host", "")}
                 for name, facts in sorted(_read().items())]
 
 
