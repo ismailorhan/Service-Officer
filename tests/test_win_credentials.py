@@ -350,7 +350,7 @@ def test_a_remote_machine_never_gets_this_computer_s_event_log(wnet, monkeypatch
     monkeypatch.setattr(winrm_windows, "logs",
                         lambda host, service, lines=50, user="", password="":
                             [f"from {host}: {service} started"])
-    conn = scm_windows.WindowsConnector("ctl053", _machine())
+    conn = scm_windows.WindowsConnector("ctl053", _machine(winrm=True))
 
     assert conn.abilities().logs is True, "WinRM can read it, so it is offered"
     assert conn.logs("MSSQLSERVER") == ["from 10.77.3.51: MSSQLSERVER started"]
@@ -366,7 +366,7 @@ def test_a_remote_machine_without_winrm_says_what_to_do(wnet, monkeypatch):
         lambda host, user="", password="", **k: {
             "ok": False, "name": "",
             "why": "On that machine, as an administrator:  winrm quickconfig"})
-    conn = scm_windows.WindowsConnector("ctl053", _machine())
+    conn = scm_windows.WindowsConnector("ctl053", _machine(winrm=True))
 
     can = conn.abilities()
     assert can.logs is False

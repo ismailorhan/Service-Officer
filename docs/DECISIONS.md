@@ -754,3 +754,55 @@ elevated cannot write there either, and it has three things of its own to keep:
 Reading the machine-wide copies is what keeps `client pair --local` working for a second
 person who logs into the same server: they inherit a working pairing and cannot overwrite
 anybody else's. Writing is always their own.
+
+### WinRM: what it cost to open three abilities, 2026-07-28
+
+Researched on 2026-07-27 and deferred as "a transport, not a tweak". Built now, after
+measuring rather than assuming.
+
+**What was measured first.**
+
+| | |
+|---|---|
+`sc-sap-sql` (Windows Server), WinRM identify | **OK** — 5985 open, nothing configured |
+`10.77.3.110` (Windows 11) | no answer: `winrm quickconfig` needed there |
+Kerberos, by name, CT to SC | `0x80090311` — no authenticating authority, i.e. no forest trust |
+NTLM, by IP or by name | needs the target in this computer's TrustedHosts |
+this computer's WinRM service | Stopped, and TrustedHosts cannot even be *read* while it is |
+`powershell.exe` start, trivial script | **103 ms** best, 124 ms average, against 9 ms for a held SCM query |
+
+So: nothing to configure on a Windows Server target, one command on a client target, and two
+settings on the machine doing the watching. The client-side settings are applied
+automatically, one machine at a time, never `*`.
+
+**Three implementation choices, each from something that went wrong the same afternoon.**
+
+*A script file written as UTF-8 with a BOM, not `-EncodedCommand`.* Base64 of UTF-16LE
+cannot be broken by quoting or by a code page, which is why it was the first choice — three
+failures that day came from a `.ps1` read as ANSI, a here-string, and an em-dash. But base64
+PowerShell is a malware indicator to most EDR products, and a management tool that trips the
+customer's security team is a management tool the customer blocks. A BOM buys the same
+correctness without looking like an attack.
+
+*Failures reported on stdout behind a marker.* PowerShell run as a child process wraps
+stderr in CLIXML — progress records and all — and the first probe reported an XML document
+where an error message belonged. CLIXML that arrives anyway is decoded into the sentence
+inside it rather than shown.
+
+*Kill by process id, never by name.* The service manager has already said which process a
+service is; killing by name on a machine running two of them is a different and worse thing.
+
+**A switch, not a detection.** `Machine.winrm`, off by default. Every call authenticates, so
+it writes a logon record to the target's Security log — a check every minute is 1,440 a day.
+Test connection probes and sets the switch, which is how somebody who does not know what
+WinRM is ends up with it right; and with the switch off, `abilities()` starts no process at
+all. Off is off.
+
+**Every refusal is an instruction.** The TrustedHosts command with the machine already in
+it; "give it a user name and password" for a missing forest trust; "use its name" for
+Kerberos against an IP; `winrm quickconfig` for a machine with it switched off; "an account
+in its Administrators group" for a refusal. All five were collected from real attempts, and
+each one is a test.
+
+**What is still not possible:** instant notification from another Windows machine. WinRM
+does not change that — there is no doorbell on a remote service manager.

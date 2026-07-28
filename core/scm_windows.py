@@ -505,11 +505,18 @@ class WindowsConnector:
     def _winrm(self) -> dict:
         """Whether this machine can be reached over WinRM. Asked once, then remembered.
 
-        Deliberately not asked for *this* computer: everything WinRM would provide is
-        already available locally and cheaper.
+        Two things stop it being asked at all:
+
+        * *This* computer. Everything WinRM would provide is already available locally and
+          cheaper.
+        * The machine's own switch being off. That is the point of the switch — with it
+          off, not one PowerShell process is started and not one logon record is written to
+          that machine's Security log. Off is genuinely off, not "quietly try anyway".
         """
         if not self.machine:
             return {"ok": False, "why": ""}
+        if not getattr(self.record, "winrm", False):
+            return {"ok": False, "off": True, "why": ""}
         from . import winrm_windows
         user, password = self._winrm_credentials()
         return winrm_windows.probe(self.host, user, password)
@@ -535,6 +542,13 @@ class WindowsConnector:
         # No WinRM. Control and File still work — they ride the session on IPC$ — and the
         # rest says what is missing *and* what to do about it, because "not supported" is
         # not something anybody can act on.
+        if winrm.get("off"):
+            return Abilities(
+                control=True, kill=False, logs=False, push=False,
+                file_check=True, command_check=False,
+                why="This is another computer: its status is polled, and its process "
+                    "cannot be terminated, its event log read, or a command run on it "
+                    "until WinRM is switched on for it below.")
         missing = winrm.get("why", "")
         return Abilities(
             control=True, kill=False, logs=False, push=False,

@@ -129,6 +129,15 @@ class Machine:
     #: How often to ask, for a machine that cannot tell us on its own. The local
     #: SCM pushes changes; SSH does not, unless the journal is readable.
     poll_seconds: int = 5
+    #: Whether to use WinRM on this Windows machine, which is what makes killing a
+    #: process, reading its event log and running a command possible there.
+    #:
+    #: Off by default, and a decision rather than a detection: every WinRM call
+    #: authenticates, so it writes a logon record to that machine's Security log, and
+    #: nobody should find their SIEM full of those because a tool decided for them. Test
+    #: connection turns it on when the machine answers, so the usual way to get it is to
+    #: press that and see.
+    winrm: bool = False
 
     @property
     def is_local(self) -> bool:
@@ -695,6 +704,9 @@ def _machine_from(raw) -> Machine | None:
         secret_ref=str(raw.get("secret_ref") or ""),
         host_fingerprint=str(raw.get("host_fingerprint") or "").strip(),
         poll_seconds=max(2, min(300, _as_int(raw.get("poll_seconds"), 5))),
+        # Windows only: there is nothing for it to do on a Linux machine, where SSH
+        # already runs commands and reads the journal.
+        winrm=bool(raw.get("winrm")) and kind == "windows" and bool(name),
     )
 
 

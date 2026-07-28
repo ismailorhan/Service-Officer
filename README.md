@@ -58,7 +58,7 @@ each one is reached is a property of that machine rather than a mode of the app:
 | Target | Reached by | Needs on that machine |
 |---|---|---|
 | This computer | the service manager directly | nothing |
-| Another Windows machine | the service manager over RPC, as the signed-in account or as a named one (`DOMAIN\account` and a password kept encrypted here) | the *Remote Service Management* and *File and Printer Sharing (SMB-In)* firewall rules, in the domain profile |
+| Another Windows machine | the service manager over RPC, as the signed-in account or as a named one (`DOMAIN\account` and a password kept encrypted here) | the *Remote Service Management* and *File and Printer Sharing (SMB-In)* firewall rules, in the domain profile. Optionally **WinRM**, which adds killing a process, reading its event log and running a Command check — already on in Windows Server, and a switch per machine so it stays a decision |
 | A Linux machine | `systemctl` and `journalctl` over SSH, by key or password, with the host key pinned | nothing installed — an account, and `sudo` without a password if you want to control rather than only watch |
 
 A Linux service is not a second-class one: the same rows, the same recovery, the

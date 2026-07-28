@@ -12,7 +12,7 @@ import threading
 import time
 
 from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QStackedWidget, QVBoxLayout,
                                QWidget)
@@ -308,6 +308,9 @@ class MachineDetail(_Page):
     changed = Signal()
     #: carries a test's outcome from its worker thread to the label
     tested = Signal(str)
+    #: Test connection worked out whether WinRM is usable, on its own thread. The box and
+    #: the save belong on Qt's.
+    winrm_found = Signal()
 
     KINDS = (("Windows — service manager", "windows"),
              ("Linux — systemd over SSH", "linux"))
@@ -471,6 +474,14 @@ class MachineDetail(_Page):
               "A remote machine cannot tell us on its own.\n"
               "With journal access this is only a safety net.")
 
+        self.winrm = QCheckBox("Use WinRM on this machine")
+        self.winrm.toggled.connect(self._set_winrm)
+        field("winrm", "Extras", self.winrm,
+              "Lets this machine's process be terminated, its event log read and a\n"
+              "command health check run on it. Without it those three are not offered.\n"
+              "Every WinRM call signs in, so it leaves a logon record in that\n"
+              "machine's Security log. Test connection sets this for you.")
+
         self.root.addLayout(form)
         self.root.addSpacing(theme.SP_12)
         self.sudo_note = _label("", "hint", wrap=True)
@@ -493,6 +504,7 @@ class MachineDetail(_Page):
         self.root.addWidget(self.result)
         self.root.addStretch(1)
         self.tested.connect(self._say_result)
+        self.winrm_found.connect(self._winrm_decided)
 
     # -- loading and saving ------------------------------------------------
     def load(self, machine):
@@ -515,6 +527,7 @@ class MachineDetail(_Page):
                       self.fingerprint):
             field.setCursorPosition(0)
         self.poll.setValue(machine.poll_seconds)
+        self._load_winrm(machine)
         held = secrets.has(machine.secret_ref)
         self.password.show_stored(held)
         self.password_state.setText("saved on this computer" if held else "not set")
@@ -560,6 +573,12 @@ class MachineDetail(_Page):
             self.auth.addItem(text)
         self.auth.blockSignals(blocked)
 
+    def _set_winrm(self, on: bool) -> None:
+        if self.machine is None:
+            return
+        self.machine.winrm = bool(on)
+        self._save()
+
     def _kind_changed(self, _index):
         kind = self.KINDS[self.kind.currentIndex()][1]
         self._set_auth_choices(kind)
@@ -572,6 +591,11 @@ class MachineDetail(_Page):
                           if v == wanted), 0)
             self.auth.setCurrentIndex(index)
         self._save()
+
+    def _load_winrm(self, machine) -> None:
+        blocked = self.winrm.blockSignals(True)
+        self.winrm.setChecked(bool(getattr(machine, "winrm", False)))
+        self.winrm.blockSignals(blocked)
 
     def _apply_visibility(self):
         """This computer has nothing to configure — it is reached by being it."""
@@ -593,6 +617,12 @@ class MachineDetail(_Page):
         self._hide_row("password", by_password)
         self._hide_row("key_path", linux and not by_password)
         self._hide_row("poll", not local)
+        # Windows, and not this computer: locally these three already work, and on Linux
+        # SSH runs commands and reads the journal already.
+        #
+        # `_hide_row`'s second argument is *shown*, not hidden — the name reads the other
+        # way round and this was written backwards once because of it.
+        self._hide_row("winrm", not (linux or local))
         # Nothing to set up as root, so the button is not offered — a button whose
         # only answer is "nothing to do" is a question the user has to ask first.
         self.setup_button.setVisible(linux and machine.username != "root")
@@ -791,6 +821,7 @@ class MachineDetail(_Page):
             if not conn.reachable():
                 self.tested.emit(self._why_unreachable(machine))
                 return
+            winrm_said = self._test_winrm(machine)
             can = conn.abilities()
         except RuntimeError as exc:
             # Ours, and already a sentence — the transport's own words, not a
@@ -807,9 +838,47 @@ class MachineDetail(_Page):
                     else "Watching only — no control.")
         said.append("Changes arrive as they happen." if can.push
                     else f"Status is asked for every {machine.poll_seconds}s.")
+        if winrm_said:
+            said.append(winrm_said)
         if can.why:
             said.append(can.why)
         self.tested.emit("  ".join(said))
+
+    def _test_winrm(self, machine) -> str:
+        """Try WinRM and set the switch from the answer. Returns what to say about it.
+
+        This is where the decision gets made for somebody who should not have to know what
+        WinRM is: press Test connection, and the switch ends up right. It is still a switch
+        they can override afterwards — a machine that answers today may be one they would
+        rather not have logon records on.
+
+        Windows only, and never this computer.
+        """
+        if machine.is_local or machine.is_linux:
+            return ""
+        from core import secrets, winrm_windows
+
+        user = machine.username if machine.auth == "password" else ""
+        password = secrets.get(secrets.ref_for_machine(machine.name)) if user else ""
+        winrm_windows.forget(machine.address or machine.name)
+        answer = winrm_windows.probe(machine.address or machine.name, user, password)
+
+        wanted = bool(answer.get("ok"))
+        if wanted != bool(getattr(machine, "winrm", False)):
+            machine.winrm = wanted
+            self.winrm_found.emit()
+        if wanted:
+            return ("WinRM answers, so it is switched on: its process can be terminated, "
+                    "its event log read, and a command run on it.")
+        why = answer.get("why", "")
+        return ("WinRM is not usable, so it is switched off." + (f"  {why}" if why else ""))
+
+    def _winrm_decided(self) -> None:
+        """Test connection set the machine's switch; show it and save it."""
+        if self.machine is None:
+            return
+        self._load_winrm(self.machine)
+        self.changed.emit()
 
     def _why_unreachable(self, machine) -> str:
         """A remote machine that did not answer: say what to open, not just that it

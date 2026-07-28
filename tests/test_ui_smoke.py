@@ -2304,3 +2304,83 @@ def test_the_port_is_its_own_field_and_tolerates_a_pasted_address(qapp, sample,
     assert page._normalised() == "https://elsewhere:9443", \
         "a port pasted with the address should win over the one left in the field"
     win.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# the WinRM switch on a machine
+# ---------------------------------------------------------------------------
+def test_the_winrm_switch_is_offered_only_where_it_means_something(qapp, sample):
+    """Locally those three things already work; on Linux, SSH runs commands and reads the
+    journal. A setting that does nothing is worse than no setting."""
+    from core import config as cfg_mod
+
+    win = panel_mod.MainPanel(sample)
+    page = win.machines_page
+    detail = page.detail
+
+    # isHidden, not isVisible: nothing in an unshown window is "visible", and what is
+    # being checked is whether the row was hidden on purpose.
+    detail.load(cfg_mod.Machine())                      # this computer
+    assert detail.winrm.isHidden() is True
+
+    detail.load(cfg_mod.Machine(name="sd", kind="linux", address="hanadev"))
+    assert detail.winrm.isHidden() is True
+
+    detail.load(cfg_mod.Machine(name="sc-sql", kind="windows", address="10.77.3.112"))
+    assert detail.winrm.isHidden() is False
+    win.deleteLater()
+
+
+def test_the_switch_shows_and_stores_what_the_machine_says(qapp, sample):
+    from core import config as cfg_mod
+
+    win = panel_mod.MainPanel(sample)
+    detail = win.machines_page.detail
+    machine = cfg_mod.Machine(name="sc-sql", kind="windows", address="10.77.3.112")
+
+    detail.load(machine)
+    assert detail.winrm.isChecked() is False, "off until somebody says otherwise"
+
+    detail.winrm.setChecked(True)
+    assert machine.winrm is True
+
+    # And reading a machine back in shows what it holds rather than what was last on
+    # screen.
+    detail.load(cfg_mod.Machine(name="other", kind="windows", address="10.0.0.9"))
+    assert detail.winrm.isChecked() is False
+    detail.load(machine)
+    assert detail.winrm.isChecked() is True
+    win.deleteLater()
+
+
+def test_testing_a_connection_decides_the_switch(qapp, sample, monkeypatch):
+    """Somebody should not have to know what WinRM is to get this right: Test connection
+    tries, and the switch ends up matching what the machine actually answered."""
+    from core import config as cfg_mod
+    from core import winrm_windows
+
+    win = panel_mod.MainPanel(sample)
+    detail = win.machines_page.detail
+    machine = cfg_mod.Machine(name="sc-sql", kind="windows", address="10.77.3.112")
+    detail.load(machine)
+
+    monkeypatch.setattr(winrm_windows, "forget", lambda host="": None)
+    monkeypatch.setattr(winrm_windows, "probe",
+                        lambda host, user="", password="", **k: {"ok": True, "why": "",
+                                                                "name": "SC-SQL"})
+    said = detail._test_winrm(machine)
+
+    assert machine.winrm is True
+    assert "switched on" in said and "terminated" in said
+
+    # And the other way: a machine that does not answer turns it off and says why.
+    monkeypatch.setattr(
+        winrm_windows, "probe",
+        lambda host, user="", password="", **k: {
+            "ok": False, "name": "",
+            "why": "On that machine, as an administrator:  winrm quickconfig"})
+    said = detail._test_winrm(machine)
+
+    assert machine.winrm is False
+    assert "switched off" in said and "winrm quickconfig" in said
+    win.deleteLater()

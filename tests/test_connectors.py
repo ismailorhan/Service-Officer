@@ -281,7 +281,8 @@ def test_a_remote_machine_is_asked_what_it_can_do(monkeypatch):
     monkeypatch.setattr(winrm_windows, "probe",
                         lambda host, user="", password="", **k:
                             asked.append(host) or {"ok": True, "why": "", "name": "SC-SQL"})
-    record = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
+    record = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows",
+                             winrm=True)
     can = scm_windows.WindowsConnector("sc-sql", record).abilities()
 
     assert asked == ["10.77.3.112"], "nothing asked the machine"
@@ -303,7 +304,8 @@ def test_without_winrm_it_says_what_is_missing_and_what_to_do(monkeypatch):
         lambda host, user="", password="", **k: {
             "ok": False, "name": "",
             "why": "On that machine, as an administrator:  winrm quickconfig"})
-    record = cfg_mod.Machine(name="sc-sap", address="10.77.3.110", kind="windows")
+    record = cfg_mod.Machine(name="sc-sap", address="10.77.3.110", kind="windows",
+                             winrm=True)
     can = scm_windows.WindowsConnector("sc-sap", record).abilities()
 
     assert (can.kill, can.logs, can.command_check) == (False, False, False)
@@ -373,3 +375,42 @@ def test_editing_a_machines_credentials_forgets_what_winrm_learned(monkeypatch):
     scm_windows.WindowsConnector("sc-sql", record).forget()
 
     assert forgotten == ["10.77.3.112"]
+
+
+def test_the_winrm_switch_off_means_nothing_is_attempted(monkeypatch):
+    """The point of the switch. Every WinRM call authenticates, so it writes a logon record
+    to that machine's Security log — a check every minute is 1,440 records a day, and
+    somebody's SIEM will ask. Off has to mean *off*, not "quietly try anyway".
+    """
+    from core import config as cfg_mod
+    from core import scm_windows, winrm_windows
+
+    def refuse(*a, **k):
+        raise AssertionError("started a WinRM conversation with the switch off")
+
+    monkeypatch.setattr(winrm_windows, "probe", refuse)
+    record = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows",
+                             winrm=False)
+
+    can = scm_windows.WindowsConnector("sc-sql", record).abilities()
+
+    assert (can.kill, can.logs, can.command_check) == (False, False, False)
+    assert can.control is True and can.file_check is True
+    assert "switched on" in can.why, "it has to say the switch is what is missing"
+
+
+def test_the_switch_is_only_for_windows_machines():
+    """A Linux machine already runs commands and reads its journal over SSH. Storing a
+    WinRM flag for one would be a setting that does nothing."""
+    from core import config as cfg_mod
+
+    loaded = cfg_mod.from_dict({"machines": [
+        {"name": "sd", "kind": "linux", "address": "hanadev", "winrm": True},
+        {"name": "sc-sql", "kind": "windows", "address": "10.77.3.112",
+         "winrm": True}]})
+    # This computer is always in that list, so the machines are found by name.
+    by_name = {m.name: m for m in loaded.machines}
+
+    assert by_name["sd"].winrm is False, "a Linux machine has no use for it"
+    assert by_name["sc-sql"].winrm is True
+    assert by_name[""].winrm is False, "and neither has this computer"

@@ -11,49 +11,35 @@ answers with the wrong machine's data is a bug.**
 
 ## By target
 
-What works depends on how a machine is reached, and that is a property of the machine
-rather than a mode of the app.
+| Target | Watch | Control | Kill | Event log | Command check | File check | Instant |
+|---|---|---|---|---|---|---|---|
+| This computer | yes | yes | yes | yes | yes | yes | **yes** |
+| Another Windows machine | yes | yes | **with WinRM** | **with WinRM** | **with WinRM** | yes | no, polled |
+| A Linux machine over SSH | yes | yes | yes | journal | yes | yes | no, polled |
 
-| | This computer | Another Windows machine | A Linux machine (SSH) |
-|---|---|---|---|
-Read status | **push, ~32 ms** | polled, every `poll_seconds` (5 s) | polled, every `poll_seconds` (5 s) |
-Start / stop / restart | yes | yes | yes, with passwordless `sudo` |
-**Kill** the process | yes | **no** | yes, with `sudo` |
-Start type (Automatic / Manual / Disabled) | read | read | read (`masked` = Disabled) |
-**Change** the start type | **no** | **no** | **no** |
-TCP / HTTP health check | yes | yes | yes |
-Process health check | yes | yes | yes, but `MainPID` is 0 for a `oneshot` unit, so it proves nothing there |
-**File** health check | yes | **yes**, over the admin share (C$) — measured 9 ms | yes |
-**Command** health check | yes | **no** | yes — which is what makes `su - hdbadm -c "HDB info"` a check |
-Read the service's own log | yes, Windows event log | **no** | yes, `journalctl`, with the `systemd-journal` group |
-Needs setting up on that machine | nothing | *Remote Service Management* + *File and Printer Sharing (SMB-In)*, domain profile; an administrator account or stored credentials | an account; `sudo` for control; the host key confirmed here |
+**"With WinRM" is a switch on that machine, off by default.** Kill, reading the event log
+and running a Command health check need a transport that accepts a user name and password:
+`sc`, `schtasks` and the admin shares ride the session on IPC$ and cross a forest boundary,
+but `taskkill`, `tasklist` and WMI authenticate themselves and are refused. WinRM
+authenticates itself too, and takes credentials.
 
-**Why the "no"s for another Windows machine, and why File is not one.** These need to
-reach *into* the machine rather than at it over the service manager's RPC: terminating a
-process, running a command, reading an event log. Measured on 2026-07-27, the mechanisms
-split cleanly by whether they ride the SMB session the app already holds:
+What it needs, measured 2026-07-28:
 
-| Wanted | Mechanism | Rides the IPC$ session? | Result |
-|---|---|---|---|
-File | admin share `\\host\C$\…` | yes | **works, 9 ms** — now built |
-Command | `schtasks /Create` on the target | writes, needs Task Scheduler rights | *Access denied* on the test machine |
-Command / Kill | WinRM (`Invoke-Command`, `Stop-Process`) | separate service, port 5985 | needs enabling + cross-forest TrustedHosts/HTTPS |
-Kill | `taskkill /S` (its own RPC) | **no**, authenticates itself | *the user name or password is incorrect* |
+| Where | What |
+|---|---|
+| a Windows **Server** target | nothing — 5985 is on by default |
+| a Windows **10/11** target | `winrm quickconfig` on that machine |
+| the machine doing the watching | the WinRM service, and the target in TrustedHosts. Done for you, and it needs administrator rights — which the hub has. |
 
-So File was a translation waiting to be written and is done. Command and Kill both need a
-transport the app does not have — **WinRM is the realistic one**, it was open on the SAP
-server tested (5985) and is on by default on Windows Server, and it would be a third
-`Connector` implementation the way SSH is. Until it exists the app says a command cannot be
-run there, rather than running it here and calling it that machine's — which is what it did
-until 2026-07-27.
+**Why it is off by default, and stays a decision.** Every WinRM call authenticates, so it
+writes a logon record to that machine's Security log. A Command health check every minute is
+1,440 records a day, and somebody's SIEM will ask about it. **Test connection** tries and
+sets the switch, so nobody has to know what WinRM is to get it right — and with the switch
+off, not one PowerShell process starts.
 
-**A note on the first connection.** Opening a connection to a remote Windows service
-manager took **21 seconds** on a machine whose dynamic RPC ports are firewalled, because
-Windows tries TCP first and falls back to named pipes after its SYN budget runs out.
-`sc.exe` pays exactly the same. It is paid once per run — the connection is held — and it
-disappears if the *Remote Service Management (RPC)* rule is enabled on the target.
-
----
+**Still not possible on another Windows machine, with or without WinRM:** instant
+notification. Its service manager has no doorbell to ring, so status is polled — 5 seconds
+by default, per machine.
 
 ## By feature
 
