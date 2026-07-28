@@ -43,14 +43,36 @@ touch a service manager themselves.
 
 ## Installing
 
-One installer, with components:
+One installer. It asks one question first — **Installation method**:
 
-```bat
-ServiceOfficerSetup.exe
-```
+| | What it does |
+|---|---|
+| **Install a new Service Officer Hub on this computer** | This computer does the work. Also the answer for *upgrading* a hub that is already here — the wizard preselects it when it finds the service. |
+| **Connect to an existing hub** | Another computer does the work. A second page asks for its **address** and the **token** it printed. |
+
+The address is checked before the installation continues, and there are two ways for it to
+be wrong that would otherwise be silent:
+
+- **It turns out to be this computer.** Then a hub belongs here, and installing only a
+  client would leave a panel reading a hub nobody upgraded. The wizard says so — *"that
+  address is this computer, the hub installed here will be upgraded to 2.2.2"* — and ticks
+  the hub component when you agree.
+- **It is another computer running a different version.** A client and its hub must match;
+  the protocol check would otherwise refuse everything after the connection succeeded. The
+  wizard names both versions and will not continue. Upgrade the hub first.
+
+If the address does not answer at all, that is allowed with the uncertainty stated: a
+workstation is often imaged before the server exists. Nothing is checked, so nothing is
+claimed — the address and the token are stored and used on the first launch.
+
+The address is filled in from whatever this computer was paired with last, and can be
+changed.
+
+Behind that question the components are still there, and can be changed on the next page:
 
 - **Client only** — the tray application. What a workstation gets.
-- **Hub only** — the Windows service. What a server nobody logs into gets.
+- **Hub only** — the Windows service. What a server nobody logs into gets: untick the tray
+  application after choosing *new hub*.
 - **Both** — this machine serves and reads. Comes out of the installer already paired,
   with no token to carry anywhere.
 

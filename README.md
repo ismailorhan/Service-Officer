@@ -97,9 +97,13 @@ Setting one up, the service account, the certificate and the troubleshooting tab
 dist\ServiceOfficerSetup.exe
 ```
 
-One installer, three ways to use it: the **tray application**, the **hub service**,
-or both on one machine. A single-machine install is the first one and needs nothing
-else. Silent commands for the other two are in [docs/HUB.md](docs/HUB.md).
+One installer. It asks how this computer should get its service information — run a
+**new hub here**, or **connect to an existing one** — and for the second it asks for that
+hub's address and token, then checks them: an address that turns out to be this computer
+becomes an upgrade of the hub here, and one on another computer running a different version
+stops the installation rather than producing a client that refuses everything later. A
+single-machine install is the first answer and needs nothing else. Silent commands are in
+[docs/HUB.md](docs/HUB.md).
 
 Two optional tasks in the wizard: start automatically when Windows starts
 (checked), and a desktop shortcut (unchecked). Auto-start can be changed later

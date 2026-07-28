@@ -23,7 +23,7 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "2.2.1"
+#define MyAppVersion     "2.2.2"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyHubExeName     "ServiceOfficerHub.exe"
@@ -73,6 +73,37 @@ english.PickOne=Choose at least one: the tray application, the hub service, or b
 english.RegisteringHub=Registering the hub service...
 english.PairingLocal=Pairing this computer with its hub...
 english.SecuringData=Setting permissions on the data folder...
+english.MethodCaption=Installation method
+english.MethodBody=How should this computer get its service information?
+english.MethodNew=Install a new Service Officer Hub on this computer
+english.MethodNewHint=This computer does the work: it watches the services, restarts them and keeps the history. Choose this for the first installation, and to upgrade a hub that is already here.
+english.MethodJoin=Connect to an existing hub
+english.MethodJoinHint=Another computer already does the work. This one reads it and asks it to act.
+english.HubCaption=The hub to connect to
+english.HubBody=Which hub should this computer read? The address is checked before the installation continues.
+english.HubAddress=Address (host name or IP, and :port if it is not 8797)
+english.HubToken=Token (from "ServiceOfficerHub.exe client add" on the hub)
+english.HubNeedAddress=Enter the hub's host name or IP address.
+english.HubNeedToken=Enter the token the hub printed for this computer. Without it this computer can reach the hub but not read anything.
+english.HubIsThisPC=That address is this computer.%n%nThe hub installed here will be upgraded to version %1. The services it watches keep running; it is stopped and started again during the upgrade.%n%nContinue?
+english.HubVersionClash=That hub is version %1 and this installer is version %2.%n%nA client and its hub have to be the same version. Upgrade the hub first, or install the matching version here.
+english.HubSilent=%1 did not answer.%n%nNothing about it can be checked — its version, or whether it is this computer. The address and the token will be stored and used on the first launch.%n%nInstall anyway?
+turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
+turkish.MethodCaption=Kurulum yöntemi
+turkish.MethodBody=Bu bilgisayar servis bilgilerini nasıl alsın?
+turkish.MethodNew=Bu bilgisayara yeni bir Service Officer Hub kur
+turkish.MethodNewHint=İşi bu bilgisayar yapar: servisleri izler, yeniden başlatır ve geçmişi tutar. İlk kurulum için ve buradaki hub'ı yükseltmek için bunu seçin.
+turkish.MethodJoin=Mevcut bir hub'a bağlan
+turkish.MethodJoinHint=İşi başka bir bilgisayar yapıyor. Bu bilgisayar onu okur ve ondan işlem yapmasını ister.
+turkish.HubCaption=Bağlanılacak hub
+turkish.HubBody=Bu bilgisayar hangi hub'ı okusun? Adres, kuruluma devam edilmeden önce denetlenir.
+turkish.HubAddress=Adres (makine adı veya IP, 8797 değilse :port ile)
+turkish.HubToken=Token (hub üzerinde "ServiceOfficerHub.exe client add" komutundan)
+turkish.HubNeedAddress=Hub'ın makine adını veya IP adresini girin.
+turkish.HubNeedToken=Hub'ın bu bilgisayar için yazdırdığı token'ı girin. O olmadan bu bilgisayar hub'a ulaşır ama hiçbir şey okuyamaz.
+turkish.HubIsThisPC=Bu adres bu bilgisayarı gösteriyor.%n%nBuradaki hub %1 sürümüne yükseltilecek. İzlediği servisler çalışmaya devam eder; yükseltme sırasında hub durdurulup yeniden başlatılır.%n%nDevam edilsin mi?
+turkish.HubVersionClash=O hub %1 sürümünde, bu kurulum ise %2 sürümünde.%n%nİstemci ile hub aynı sürümde olmak zorunda. Önce hub'ı yükseltin ya da buraya eşleşen sürümü kurun.
+turkish.HubSilent=%1 yanıt vermedi.%n%nHakkında hiçbir şey denetlenemiyor — sürümü de, bu bilgisayar olup olmadığı da. Adres ve token kaydedilip ilk açılışta kullanılacak.%n%nYine de kurulsun mu?
 turkish.AutoStartTask=Windows ba&şladığında Service Officer'ı otomatik başlat
 turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
 turkish.TypeClient=Yalnızca istemci — sistem tepsisi uygulaması
@@ -84,7 +115,6 @@ turkish.CompHub=Service Officer Hub (Windows hizmeti)
 turkish.PickOne=En az birini seçin: tepsi uygulaması, hub hizmeti ya da ikisi.
 turkish.RegisteringHub=Hub hizmeti kaydediliyor...
 turkish.PairingLocal=Bu makine hub'ına eşleştiriliyor...
-turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
 
 [Types]
 Name: "client"; Description: "{cm:TypeClient}"
@@ -187,7 +217,7 @@ Filename: "{app}\{#MyHubService}\{#MyHubExeName}"; Parameters: "client pair --lo
 ; appears in the middle of an install, and the first real launch is already connected.
 Filename: "{app}\{#MyAppExeName}"; \
   Parameters: "--connect ""{code:GetHubUrl}"" --token ""{code:GetHubToken}"" --store-only"; \
-  Components: client; Check: HaveHubDetails; Flags: runhidden waituntilterminated
+  Components: client; Check: PairingWithARemoteHub; Flags: runhidden waituntilterminated
 
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; \
   Components: client; Flags: shellexec nowait postinstall skipifsilent
@@ -204,6 +234,29 @@ Type: files; Name: "{userstartup}\{#MyAppName}.lnk"
 Type: files; Name: "{userappdata}\Microsoft\Windows\Start Menu\Programs\Startup\Service Officer.lnk"
 
 [Code]
+// The wizard asks one question before anything else: does this computer do the work, or
+// read a computer that does? Everything else follows from the answer — which components
+// are installed, whether an address is asked for, and whether the hub here is upgraded.
+//
+// The address is *checked* rather than trusted, because the two ways of getting it wrong
+// are both quiet. An address that turns out to be this computer means the person wants a
+// hub here after all, and installing only a client would leave them with a panel reading
+// a hub that nobody upgraded. An address on another computer running a different version
+// means a client that connects and then refuses everything — see wire.PROTOCOL.
+const
+  MethodNewHub = 0;
+  MethodExistingHub = 1;
+
+var
+  MethodPage: TInputOptionWizardPage;
+  HubPage: TInputQueryWizardPage;
+  //: The address given, normalised, once it has passed the checks.
+  CheckedHubUrl: String;
+  //: The address given points at this computer, so the hub component is installed too
+  //: and the hub here is upgraded rather than left behind.
+  UpgradingLocalHub: Boolean;
+  ComponentsPreset: Boolean;
+
 function ParamValue(Name: String): String;
 var
   I: Integer;
@@ -219,22 +272,318 @@ begin
   end;
 end;
 
+// ---------------------------------------------------------------------------
+// reading and normalising an address
+// ---------------------------------------------------------------------------
+// One value out of a small flat JSON object. Not a parser: the two files this reads —
+// client.json and the hub's own ping answer — are written by this product and are one
+// level deep. Anything more would be a library, and there is none here.
+function JsonValue(Body, Key: String): String;
+var
+  Start, Finish: Integer;
+  Needle: String;
+begin
+  Result := '';
+  Needle := '"' + Key + '":';
+  Start := Pos(Needle, Body);
+  if Start = 0 then
+    Exit;
+  Start := Start + Length(Needle);
+  while (Start <= Length(Body))
+        and ((Body[Start] = ' ') or (Body[Start] = '"')) do
+    Start := Start + 1;
+  Finish := Start;
+  while (Finish <= Length(Body)) and (Body[Finish] <> '"')
+        and (Body[Finish] <> ',') and (Body[Finish] <> '}') do
+    Finish := Finish + 1;
+  Result := Trim(Copy(Body, Start, Finish - Start));
+end;
+
+// "ctl052" and "https://ctl052:8797/" and "10.77.3.50" all mean the same thing, and a
+// person typing an address should not have to know which one this wants.
+function NormalisedUrl(Given: String): String;
+var
+  Host: String;
+  Scheme: Integer;
+  Colon: Integer;
+begin
+  Result := '';
+  Host := Trim(Given);
+  Scheme := Pos('://', Host);
+  if Scheme > 0 then
+    Host := Copy(Host, Scheme + 3, Length(Host));
+  if Pos('/', Host) > 0 then
+    Host := Copy(Host, 1, Pos('/', Host) - 1);
+  Host := Trim(Host);
+  if Host = '' then
+    Exit;
+  // An IPv6 address is full of colons, so the port is only looked for after the
+  // brackets it has to be written in.
+  if Copy(Host, 1, 1) = '[' then
+    Colon := Pos(']:', Host)
+  else
+    Colon := Pos(':', Host);
+  if Colon = 0 then
+    Host := Host + ':{#MyHubPort}';
+  Result := 'https://' + Host;
+end;
+
+function HostOfUrl(Url: String): String;
+var
+  Host: String;
+  Colon: Integer;
+begin
+  Host := Url;
+  if Pos('://', Host) > 0 then
+    Host := Copy(Host, Pos('://', Host) + 3, Length(Host));
+  if Copy(Host, 1, 1) = '[' then
+    Colon := Pos(']:', Host)
+  else
+    Colon := Pos(':', Host);
+  if Colon > 0 then
+    Host := Copy(Host, 1, Colon - 1);
+  Result := Host;
+end;
+
+// Is that address this computer? Asked because "connect to an existing hub" pointed at
+// this one means the person wants a hub here, and a client-only install would leave them
+// reading a hub nobody upgraded. The hub's own ping answers this better than any name
+// comparison can — it says which computer it is running on — and this is the fallback for
+// when it does not answer at all.
+function LooksLikeThisComputer(Host: String): Boolean;
+var
+  Mine: String;
+begin
+  Host := LowerCase(Trim(Host));
+  Mine := LowerCase(GetComputerNameString);
+  Result := (Host = 'localhost') or (Host = '127.0.0.1') or (Host = '::1')
+            or (Host = '[::1]') or (Host = Mine) or (Pos(Mine + '.', Host) = 1);
+end;
+
+// The hub's name and version, from the one endpoint that needs no token. Certificate
+// errors are ignored here on purpose: the hub is self-signed and it is the *client* that
+// pins it, on every connection. Nothing secret crosses this request — it is a version
+// number and a computer name — and refusing to read it would only mean asking the person
+// to check by hand.
+function AskHub(Url: String; var HubName, HubVersion: String): Boolean;
+var
+  Http: Variant;
+  Body: String;
+begin
+  Result := False;
+  HubName := '';
+  HubVersion := '';
+  try
+    Http := CreateOleObject('WinHttp.WinHttpRequest.5.1');
+    Http.SetTimeouts(4000, 4000, 5000, 8000);
+    Http.Open('GET', Url + '/api/v1/ping', False);
+    Http.Option(4) := 13056;
+    Http.Send('');
+    if Http.Status = 200 then
+    begin
+      Body := Http.ResponseText;
+      HubName := JsonValue(Body, 'name');
+      HubVersion := JsonValue(Body, 'version');
+      Result := HubVersion <> '';
+    end;
+  except
+    Result := False;
+  end;
+end;
+
+// A running hub reports 2.2.2.7 — release, then the build number, which counts builds on
+// the machine that made it. Only the release part is a compatibility question.
+function ReleasePart(Version: String): String;
+var
+  I, Dots: Integer;
+begin
+  Result := Version;
+  Dots := 0;
+  for I := 1 to Length(Version) do
+    if Version[I] = '.' then
+    begin
+      Dots := Dots + 1;
+      if Dots = 3 then
+      begin
+        Result := Copy(Version, 1, I - 1);
+        Exit;
+      end;
+    end;
+end;
+
+// What this computer was paired with last time, so somebody reinstalling does not have to
+// remember. This user's own copy first, then the machine's — the same order the client
+// itself reads them in.
+function StoredHubUrl(): String;
+var
+  Body: AnsiString;
+  Path: String;
+begin
+  Result := '';
+  Path := ExpandConstant('{localappdata}\Service Officer\client.json');
+  if not FileExists(Path) then
+    Path := ExpandConstant('{commonappdata}\{#MyDataDir}\client.json');
+  if FileExists(Path) and LoadStringFromFile(Path, Body) then
+    Result := JsonValue(String(Body), 'hub_url');
+end;
+
+function HubInstalledHere(): Boolean;
+begin
+  Result := RegKeyExists(HKEY_LOCAL_MACHINE,
+                         'SYSTEM\CurrentControlSet\Services\{#MyHubService}');
+end;
+
+// ---------------------------------------------------------------------------
+// what the [Run] entries ask
+// ---------------------------------------------------------------------------
 function GetHubUrl(Param: String): String;
 begin
   Result := ParamValue('HUBURL');
+  if Result <> '' then
+    Result := NormalisedUrl(Result)
+  else
+    Result := CheckedHubUrl;
 end;
 
 function GetHubToken(Param: String): String;
 begin
   Result := ParamValue('HUBTOKEN');
+  if (Result = '') and (HubPage <> nil) then
+    Result := Trim(HubPage.Values[1]);
 end;
 
-// Both, or neither: a URL with no token cannot pin a certificate unattended, and a
-// token with no URL has nowhere to go. Half of the pair would fail quietly, which is
-// the worst outcome for something nobody is watching.
-function HaveHubDetails(): Boolean;
+// Only when the hub is somewhere else. A hub on this computer pairs its own client with
+// `client pair --local`, which needs no token to be carried anywhere.
+function PairingWithARemoteHub(): Boolean;
 begin
-  Result := (ParamValue('HUBURL') <> '') and (ParamValue('HUBTOKEN') <> '');
+  Result := (GetHubUrl('') <> '') and (not UpgradingLocalHub);
+end;
+
+// ---------------------------------------------------------------------------
+// the pages
+// ---------------------------------------------------------------------------
+procedure InitializeWizard();
+var
+  Remembered: String;
+begin
+  MethodPage := CreateInputOptionPage(
+    wpSelectDir, ExpandConstant('{cm:MethodCaption}'),
+    ExpandConstant('{cm:MethodBody}'), '', True, False);
+  MethodPage.Add(ExpandConstant('{cm:MethodNew}'));
+  MethodPage.Add(ExpandConstant('{cm:MethodJoin}'));
+
+  HubPage := CreateInputQueryPage(
+    MethodPage.ID, ExpandConstant('{cm:HubCaption}'),
+    ExpandConstant('{cm:HubBody}'), '');
+  HubPage.Add(ExpandConstant('{cm:HubAddress}'), False);
+  HubPage.Add(ExpandConstant('{cm:HubToken}'), True);
+
+  // Where the wizard starts from. A machine that already has the hub service is being
+  // upgraded, whatever else is true; otherwise a remembered address means this was a
+  // client, and it is filled in but still editable.
+  Remembered := StoredHubUrl();
+  if HubInstalledHere() then
+    MethodPage.SelectedValueIndex := MethodNewHub
+  else if Remembered <> '' then
+  begin
+    MethodPage.SelectedValueIndex := MethodExistingHub;
+    HubPage.Values[0] := Remembered;
+  end
+  else
+    MethodPage.SelectedValueIndex := MethodNewHub;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (HubPage <> nil) and (PageID = HubPage.ID)
+            and (MethodPage.SelectedValueIndex <> MethodExistingHub);
+end;
+
+// The components follow from the method, and are preset once rather than on every visit:
+// somebody who unticks the tray application on a server should not have it ticked again
+// by stepping back and forward.
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpSelectComponents) and (not ComponentsPreset) then
+  begin
+    ComponentsPreset := True;
+    if (MethodPage.SelectedValueIndex = MethodNewHub) or UpgradingLocalHub then
+      WizardSelectComponents('hub,client')
+    else
+      WizardSelectComponents('client');
+  end;
+end;
+
+// Everything that has to be true before the address is accepted. Returns False to keep
+// the person on the page; `Complaint` is shown if it is set, and is left empty when the
+// function has already said something itself.
+function AddressIsUsable(var Complaint: String): Boolean;
+var
+  Url, Host, HubName, HubVersion: String;
+begin
+  Result := False;
+  Complaint := '';
+  UpgradingLocalHub := False;
+  CheckedHubUrl := '';
+
+  Url := NormalisedUrl(HubPage.Values[0]);
+  if Url = '' then
+  begin
+    Complaint := ExpandConstant('{cm:HubNeedAddress}');
+    Exit;
+  end;
+  Host := HostOfUrl(Url);
+
+  if not AskHub(Url, HubName, HubVersion) then
+  begin
+    // Not answering is allowed, with the uncertainty said out loud: a workstation is
+    // often imaged before the server it will read exists. Nothing is checked, so
+    // nothing is claimed.
+    if MsgBox(FmtMessage(ExpandConstant('{cm:HubSilent}'), [Host]),
+              mbConfirmation, MB_YESNO) <> IDYES then
+      Exit;
+    UpgradingLocalHub := LooksLikeThisComputer(Host);
+    if (not UpgradingLocalHub) and (Trim(HubPage.Values[1]) = '') then
+    begin
+      Complaint := ExpandConstant('{cm:HubNeedToken}');
+      Exit;
+    end;
+    CheckedHubUrl := Url;
+    Result := True;
+    Exit;
+  end;
+
+  // It answered, and its answer says which computer it is on — better than comparing
+  // names, because a hub can be reached by an address that resolves in ways this
+  // installer cannot see.
+  if (CompareText(HubName, GetComputerNameString) = 0)
+     or LooksLikeThisComputer(Host) then
+  begin
+    if MsgBox(FmtMessage(ExpandConstant('{cm:HubIsThisPC}'), ['{#MyAppVersion}']),
+              mbConfirmation, MB_YESNO) <> IDYES then
+      Exit;
+    UpgradingLocalHub := True;
+    CheckedHubUrl := Url;
+    Result := True;
+    Exit;
+  end;
+
+  if CompareText(ReleasePart(HubVersion), '{#MyAppVersion}') <> 0 then
+  begin
+    // The array stays on this line: Inno reads a line that *starts* with "[" as a
+    // section tag, wherever it is, and says only "Invalid section tag".
+    Complaint := FmtMessage(ExpandConstant('{cm:HubVersionClash}'), [ReleasePart(HubVersion), '{#MyAppVersion}']);
+    Exit;
+  end;
+
+  if Trim(HubPage.Values[1]) = '' then
+  begin
+    Complaint := ExpandConstant('{cm:HubNeedToken}');
+    Exit;
+  end;
+
+  CheckedHubUrl := Url;
+  Result := True;
 end;
 
 function InitializeSetup(): Boolean;
@@ -261,8 +610,17 @@ begin
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Complaint: String;
 begin
   Result := True;
+  if (HubPage <> nil) and (CurPageID = HubPage.ID) then
+  begin
+    Result := AddressIsUsable(Complaint);
+    if (not Result) and (Complaint <> '') then
+      MsgBox(Complaint, mbError, MB_OK);
+    Exit;
+  end;
   if (CurPageID = wpSelectComponents)
      and not (WizardIsComponentSelected('client')
               or WizardIsComponentSelected('hub')) then
