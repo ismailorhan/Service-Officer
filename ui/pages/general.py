@@ -109,8 +109,12 @@ class GeneralPage(_Page):
         self.hub_port.setPlaceholderText("8797")
         self.root.addWidget(_sentence("Host", self.hub_url, "Port", self.hub_port))
         self.root.addWidget(_label(
-            "A host name or IP. Leave the host empty to watch this computer's own "
-            "services instead; leave the port empty for 8797.", "hint", wrap=True))
+            "Which hub this panel reads. A host name or IP; leave the host empty to watch "
+            "this computer's own services instead, and the port empty for 8797.\n"
+            "This is not the port a hub on this computer listens on — that is the hub's "
+            "own setting, stored by every client of it: "
+            "ServiceOfficerHub.exe port <n>, then restart the service.",
+            "hint", wrap=True))
         self.root.addSpacing(10)
 
         self.hub_token = QLineEdit()
