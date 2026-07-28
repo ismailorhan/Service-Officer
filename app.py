@@ -30,12 +30,16 @@ log = applog.get("app")
 class StackSignals(QObject):
     """A stack run happens on a worker thread; these carry it back to the UI."""
     step = Signal(int, int, str, str, str)      # index, total, service, action, phase
-    done = Signal(object)
+    #: the result, and whether a trigger owns this run — see Engine.run_trigger. The flag
+    #: travels with the result rather than living on the app: two triggers at 03:00 would
+    #: share one attribute, which is exactly what `_pending_trigger` got wrong.
+    done = Signal(object, bool)
 
 
 class TriggerSignals(QObject):
-    """A trigger fires on the scheduler's thread; the work belongs on the UI one."""
-    fire = Signal(object)
+    """A trigger fired on the scheduler's thread — or on a hub's — and finished. Only the
+    notification belongs on Qt's thread; the doing is the engine's."""
+    done = Signal(str, str, str)         # name, outcome, detail
 
 
 class HealthSignals(QObject):
@@ -61,6 +65,22 @@ class ActionSignals(QObject):
     #: another machine that is a network round trip, and the window stops redrawing
     #: for the length of it.
     done = Signal(str, str, str, object, bool, bool, str)
+
+
+class _RemoteRun:
+    """A stack result that happened on the hub, in the shape the panel's handlers read.
+
+    The real one carries a record per step, which a client has no use for and JSON has no
+    room for. The summary comes down already worded by the runner, so a client and the hub
+    cannot describe the same run differently.
+    """
+
+    def __init__(self, stack: str, ok: bool, summary: str, cancelled: bool = False):
+        self.stack, self.ok, self.cancelled = stack, ok, cancelled
+        self._summary = summary or stack
+
+    def summary(self) -> str:
+        return self._summary
 
 
 class HubSignals(QObject):
@@ -205,7 +225,6 @@ class Application(QObject):
         self.hub = None
         self.store = st.store
         #: set while a trigger's action is in flight, so its outcome is recorded
-        self._pending_trigger = None
         #: the running bulk action, so one tally is reported instead of N dialogs
         self._bulk = None
         #: whether to put a dialog up for a failure, per service, remembered from
@@ -229,7 +248,7 @@ class Application(QObject):
         self.health_signals.verdict.connect(self._on_health_verdict)
         self.health_signals.act.connect(self._on_health_action)
         self.trigger_signals = TriggerSignals()
-        self.trigger_signals.fire.connect(self.run_trigger)
+        self.trigger_signals.done.connect(self._on_trigger_done)
         self.stack_signals = StackSignals()
         self.stack_signals.step.connect(self._on_stack_step)
         self.stack_signals.done.connect(self._on_stack_done)
@@ -284,8 +303,11 @@ class Application(QObject):
                 on_stack_step=lambda index, total, service, action, phase:
                     self.stack_signals.step.emit(index, total, service, action,
                                                  phase),
-                on_stack_done=lambda result: self.stack_signals.done.emit(result),
-                on_trigger=lambda trigger: self.trigger_signals.fire.emit(trigger),
+                on_stack_done=lambda result, by_trigger=False:
+                    self.stack_signals.done.emit(result, by_trigger),
+                on_trigger=lambda trigger, outcome="", detail="":
+                    self.trigger_signals.done.emit(
+                        getattr(trigger, "name", str(trigger)), outcome, detail),
                 on_error=lambda kind, text: self.tray.notify("Service Officer", text),
             )
 
@@ -387,6 +409,28 @@ class Application(QObject):
         client; this is the repaint, and the notifications that belong to this screen."""
         if payload.get("kind") == "config":
             self._adopt_hub_config()
+        kind = payload.get("kind")
+        if kind == "stack_step":
+            # A stack run by the hub's scheduler, or by somebody at another panel. Invisible
+            # here until now: these four callbacks were wired to nothing at all on a hub.
+            self.stack_signals.step.emit(
+                int(payload.get("index", 0)), int(payload.get("total", 0)),
+                payload.get("service", ""), payload.get("action", ""),
+                payload.get("phase", ""))
+        elif kind == "stack_done":
+            self.stack_signals.done.emit(
+                _RemoteRun(payload.get("stack", ""), bool(payload.get("ok")),
+                           payload.get("summary", ""),
+                           bool(payload.get("cancelled"))),
+                False)
+        elif kind == "trigger":
+            self.trigger_signals.done.emit(
+                payload.get("trigger", ""), payload.get("outcome", ""),
+                payload.get("detail", ""))
+        elif kind == "error":
+            # A hub has no tray. Before this an engine error on a hub was reported nowhere
+            # at all — not to a client, not to a screen, only to its log file.
+            self.tray.notify("Service Officer", payload.get("text", ""))
         if payload.get("kind") == "health":
             # Same signal as the engine's, so a connected panel gets the repaint *and* the
             # toast. Unpublished until now, a service whose checks had been failing for
@@ -647,12 +691,7 @@ class Application(QObject):
             self._bulk_report(name, error)
             return
 
-        pending = self._pending_trigger
-        self._pending_trigger = None
-        if pending is not None:
-            _trigger, finish = pending
-            finish("failed" if error else "success", error or "")
-        elif error and announce:
+        if error and announce:
             QMessageBox.warning(None, "Service Officer",
                                 f"Could not {action} '{name}':\n{error}")
 
@@ -775,49 +814,37 @@ class Application(QObject):
             self._clear_busy(name, machine)
             QMessageBox.information(None, "Service Officer", str(clash))
 
-    def run_trigger(self, trigger):
-        """Do what a trigger says. Shared by the scheduler and its Run now button.
+    def run_trigger(self, trigger_or_name):
+        """Ask for a trigger to be run — here or on the hub. The doing is the engine's.
 
-        A trigger that asks for something already true is *skipped*, not failed:
-        "start AppEngine" at 03:00 when it is already running is the normal case,
-        and it used to raise "service already running" in the user's face.
+        It used to be *this method's*, which is why a hub ran its schedule not at all: the
+        engine handed the trigger to whoever was listening, and on a hub nobody was. Now the
+        engine performs it and tells us how it went, through the same path for both installs.
         """
-        if trigger is None:
+        if trigger_or_name is None:
             return
-        began = time.monotonic()
-
-        def finish(outcome: str, detail: str = ""):
-            history.record_run("trigger", trigger.name, outcome,
-                               seconds=time.monotonic() - began, detail=detail,
-                               source=st.SRC_SCHEDULE)
-            if trigger.wants_notice(outcome):
-                self.tray.notify("Service Officer",
-                                 f"{trigger.name}: {outcome}"
-                                 + (f" — {detail}" if detail else ""))
-
-        if trigger.action == "service":
-            if not trigger.service:
-                finish("failed", "no service chosen")
-                return
-            target = {"start": st.RUNNING, "stop": st.STOPPED}.get(
-                trigger.service_action)
-            current = self.store.status_of(trigger.service, trigger.machine)
-            if target and current == target:
-                log.info("trigger “%s” skipped: %s is already %s",
-                         trigger.name, trigger.service, current.lower())
-                finish("skipped", f"{trigger.service} was already {current.lower()}")
-                return
-            self._pending_trigger = (trigger, finish)
-            self.do_action(trigger.service_action, trigger.service, trigger.machine,
-                           announce_errors=False)
+        name = getattr(trigger_or_name, "name", trigger_or_name)
+        if self.hub is not None:
+            try:
+                self.hub.run_trigger(name, actor=self._actor())
+            except Exception as exc:
+                QMessageBox.warning(None, "Service Officer",
+                                    f"Could not run '{name}':\n{exc}")
             return
+        self.engine.run_trigger(trigger_or_name, actor=self._actor())
 
-        stack = self.cfg.stack(trigger.stack)
-        if not stack or not stack.steps:
-            finish("skipped", "the stack has no steps")
+    def _on_trigger_done(self, name: str, outcome: str, detail: str) -> None:
+        """A trigger fired and finished. The history row is the engine's; this is the toast.
+
+        Whether it is wanted is the trigger's own setting, and the trigger lives in the
+        config — which a client now holds the hub's copy of, so this reads the same either
+        way.
+        """
+        trigger = next((t for t in self.cfg.triggers if t.name == name), None)
+        if trigger is not None and not trigger.wants_notice(outcome):
             return
-        self._pending_trigger = (trigger, finish)
-        self.run_stack(stack)
+        self.tray.notify("Service Officer",
+                         f"{name}: {outcome}" + (f" — {detail}" if detail else ""))
 
     def run_stack(self, stack_or_name, _action=None):
         """Accepts a name (tray menu) or a Stack (a test run from Settings, which
@@ -851,19 +878,18 @@ class Application(QObject):
                             if s.name == service), "")
             self._clear_busy(service, machine)
 
-    def _on_stack_done(self, result):
+    def _on_stack_done(self, result, by_trigger: bool = False):
         self.tray.action_finished()
         self.refresh()
         log.info(result.summary())
-        outcome = (self.engine.record_stack_run(result) if self.engine is not None
-                   else ("success" if getattr(result, "ok", False) else "failed"))
+        if self.engine is not None:
+            self.engine.record_stack_run(result)
 
-        pending = self._pending_trigger
-        self._pending_trigger = None
-        if pending is not None:
-            _trigger, finish = pending
-            finish(outcome, result.summary())
-        else:
+        # A stack run *by* a trigger reports through on_trigger instead, with that
+        # trigger's own notification setting — so this one would be a second toast for the
+        # same run. The fact travels with the result rather than living on this object: two
+        # triggers at 03:00 would share one attribute, which is the bug _pending_trigger was.
+        if not by_trigger:
             self.tray.notify("Service Officer", result.summary())
 
     # -- ui plumbing -------------------------------------------------------

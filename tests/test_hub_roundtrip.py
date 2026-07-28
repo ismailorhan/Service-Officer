@@ -287,12 +287,12 @@ def test_a_machine_that_starts_answering_reaches_the_client(system):
 
 
 def test_the_engines_own_listener_still_hears_it():
-    """`also_on_machine` adds one; a hub that replaced it would have taken the tray's."""
+    """`also_on` adds one; a hub that replaced it would have taken the tray's."""
     from core import engine as engine_mod
 
     heard = []
     engine = engine_mod.Engine(lambda: None, on_machine=lambda **f: heard.append(f))
-    engine.also_on_machine(lambda **f: heard.append({"second": True}))
+    engine.also_on("machine", lambda **f: heard.append({"second": True}))
     engine._call(engine._on_machine, machine="sc-sql", reachable=True, detail="")
 
     assert len(heard) == 2, "one of the two listeners was dropped"
@@ -400,3 +400,140 @@ def test_a_config_change_by_one_client_reaches_another(system):
         lambda: any(e.get("kind") == "config" for e in heard), timeout=10),         "nobody was told the landscape had changed"
     again, _etag = client.config()
     assert any(s.name == "Added" for s in again.services)
+
+
+def test_a_hub_runs_its_own_schedule(system):
+    """It did not. Performing a trigger lived in the Qt layer, reached through the engine's
+    `on_trigger` — and a hub builds its engine with `on_config_saved` and nothing else, so
+    `_call(None)` returned quietly and every scheduled trigger on a hub install did nothing,
+    silently, for ever. A client's Run now did nothing either while the endpoint answered 200.
+
+    Proved on 2026-07-29 before the fix: the hub engine's `_on_trigger` was None, and firing
+    the scheduler's own callback with a stop trigger against a running service stopped
+    nothing.
+    """
+    client, engine, _server, states, holder = system
+
+    holder["cfg"].triggers.append(cfg_mod.Trigger(
+        name="nightly", action="service", service="AppEngine", service_action="stop"))
+    assert states["AppEngine"] == st.RUNNING
+
+    # The scheduler's own path, which is what fires at 03:00.
+    engine.run_trigger("nightly", actor="the schedule")
+
+    assert client.wait_for(lambda: states["AppEngine"] == st.STOPPED, timeout=15),         "the schedule fired and nothing happened"
+
+
+def test_a_trigger_outcome_reaches_a_client(system):
+    """And it reaches every panel, which is how somebody watching sees that 03:00 happened."""
+    client, engine, _server, _states, holder = system
+    heard = []
+    client._on_event = heard.append
+
+    holder["cfg"].triggers.append(cfg_mod.Trigger(
+        name="nightly", action="service", service="AppEngine", service_action="stop"))
+    engine.run_trigger("nightly")
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "trigger" for e in heard), timeout=15)
+    fired = next(e for e in heard if e.get("kind") == "trigger")
+    assert fired["trigger"] == "nightly"
+    assert fired["outcome"] == "done", f"reported {fired['outcome']!r}: {fired['detail']!r}"
+
+
+def test_a_trigger_that_asks_for_what_is_already_true_is_skipped(system):
+    """"start AppEngine" at 03:00 when it is already running is the normal case, and it used
+    to raise "service already running" in somebody's face at three in the morning."""
+    client, engine, _server, _states, holder = system
+    heard = []
+    client._on_event = heard.append
+
+    holder["cfg"].triggers.append(cfg_mod.Trigger(
+        name="morning", action="service", service="AppEngine", service_action="start"))
+    engine.run_trigger("morning")
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "trigger" for e in heard), timeout=10)
+    fired = next(e for e in heard if e.get("kind") == "trigger")
+    assert fired["outcome"] == "skipped"
+    assert "already running" in fired["detail"]
+
+
+def test_stack_progress_and_its_result_reach_a_client(system):
+    """A stack run by the hub's scheduler was invisible to every panel: no progress, no
+    result."""
+    client, _engine, _server, _states, holder = system
+    heard = []
+    client._on_event = heard.append
+
+    holder["cfg"].stacks.append(cfg_mod.Stack(
+        name="evening", steps=[cfg_mod.Step(service="AppEngine", action="stop")]))
+    assert client.run_stack("evening")
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "stack_done" for e in heard), timeout=20),         "the run finished and no panel was told"
+    assert any(e.get("kind") == "stack_step" for e in heard), "no progress either"
+    done = next(e for e in heard if e.get("kind") == "stack_done")
+    assert done["stack"] == "evening" and done["ok"] is True, done
+    assert "evening" in done["summary"], done["summary"]
+
+
+def test_an_engine_error_reaches_a_client(system):
+    """A hub has no tray to put a notification in, and these were wired to nothing — so an
+    engine error was reported nowhere but its own log file."""
+    client, engine, _server, _states, _holder = system
+    heard = []
+    client._on_event = heard.append
+
+    engine._call(engine._on_error, kind="watchdog", text="could not restart AppEngine")
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "error" for e in heard), timeout=10)
+    said = next(e for e in heard if e.get("kind") == "error")
+    assert said["text"] == "could not restart AppEngine"
+
+
+def test_a_failed_stack_arrives_as_failed(system, monkeypatch):
+    """The first version of `stack_done_event` guessed the field names — `name` and `failed`,
+    neither of which a RunResult has — so every run reported the right shape with the wrong
+    contents and a failure arrived as `ok: True`. A panel would have said it worked."""
+    client, engine, _server, _states, holder = system
+    heard = []
+    client._on_event = heard.append
+
+    def refuse(name, machine=""):
+        raise OSError("Access is denied")
+
+    monkeypatch.setattr(engine_mod.control, "stop_service", refuse)
+    holder["cfg"].stacks.append(cfg_mod.Stack(
+        name="doomed", steps=[cfg_mod.Step(service="AppEngine", action="stop")]))
+
+    assert client.run_stack("doomed")
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "stack_done" for e in heard), timeout=20)
+    done = next(e for e in heard if e.get("kind") == "stack_done")
+
+    assert done["ok"] is False, "a failed run arrived as a success"
+    assert done["stack"] == "doomed"
+    assert "denied" in done["summary"].lower(), done["summary"]
+
+
+def test_a_trigger_whose_stack_fails_says_failed(system, monkeypatch):
+    """And the trigger that owns it agrees — one run, one verdict."""
+    client, engine, _server, _states, holder = system
+    heard = []
+    client._on_event = heard.append
+
+    monkeypatch.setattr(engine_mod.control, "stop_service",
+                        lambda name, machine="": (_ for _ in ()).throw(OSError("nope")))
+    holder["cfg"].stacks.append(cfg_mod.Stack(
+        name="doomed", steps=[cfg_mod.Step(service="AppEngine", action="stop")]))
+    holder["cfg"].triggers.append(cfg_mod.Trigger(
+        name="nightly", action="stack", stack="doomed"))
+
+    engine.run_trigger("nightly")
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "trigger" for e in heard), timeout=20)
+    fired = next(e for e in heard if e.get("kind") == "trigger")
+    assert fired["outcome"] == "failed", fired

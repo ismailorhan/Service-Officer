@@ -71,6 +71,12 @@ class Engine:
         self._on_error = on_error
         self._on_config_saved = on_config_saved
 
+        #: The outcome a trigger that started a *stack* is waiting for. One slot, because
+        #: one stack runs at a time. A service trigger needs no slot — it hands `act` a
+        #: closure, which cannot race the way a later registration did.
+        self._stack_wait = None
+        self._waiting_lock = threading.Lock()
+
         #: action ids in flight, so a caller in another process can be told what
         #: happened to the one it asked for, and so shutdown can wait for them.
         self._in_flight: set = set()
@@ -126,7 +132,10 @@ class Engine:
 
         self.scheduler = schedule_mod.Scheduler(
             config_getter=config_getter,
-            on_fire=lambda trigger: self._call(self._on_trigger, trigger=trigger),
+            # Performed here, not handed to whoever is listening. It was handed out,
+            # and a hub has nobody listening — so a hub install ran its schedule not at
+            # all, silently, and its own Run now answered 200 having done nothing.
+            on_fire=lambda trigger: self.run_trigger(trigger, actor="the schedule"),
             log=lambda text: log.info(text))
 
         self.watcher = scm.Watcher(
@@ -348,12 +357,17 @@ class Engine:
 
     # -- actions -----------------------------------------------------------
     def act(self, action: str, service: str, machine: str = "",
-            actor: str = "", bulk: bool = False) -> str:
+            actor: str = "", bulk: bool = False, then=None) -> str:
         """Do it, on a worker thread, and answer with an id.
 
         An id rather than a name because two of the same action can be in flight, and
         "the restart finished" then answers the wrong question. Raises Busy if this
         service is already being acted on — by another client, or by the watchdog.
+
+        `then(error, status)` is called when it lands, on the worker's thread. It exists
+        because registering interest *after* this returns is a race the short actions win:
+        a stop of an already-stopping service finished before the caller had written down
+        that it was waiting, and the outcome was lost. Captured in the closure instead.
         """
         if action == "kill":
             return self.kill(service, machine, actor)
@@ -408,6 +422,8 @@ class Engine:
             self._call(self._on_action_done, id=action_id, action=action,
                        service=service, machine=machine, error=error,
                        status=status, actor=actor, bulk=bulk)
+            if then is not None:
+                self._call(then, error=error, status=status)
 
         self._in_flight.add(action_id)
         threading.Thread(target=work, daemon=True,
@@ -460,6 +476,68 @@ class Engine:
         return action_id
 
     # -- stacks and triggers ----------------------------------------------
+    def run_trigger(self, trigger_or_name, actor: str = "") -> bool:
+        """Do what a trigger says. The scheduler's path and Run now's, on either install.
+
+        This used to live in the Qt layer, reached through `on_trigger` — which is None on a
+        hub, so a hub ran its schedule not at all. It belongs here: the engine is the half
+        that acts, and the only half a hub has.
+
+        Returns whether anything was *started*. An outcome — done, skipped or failed —
+        arrives through `on_trigger` when it is known, which for a service or a stack is
+        after the work, not now.
+        """
+        cfg = self._config()
+        trigger = (cfg.trigger(trigger_or_name)
+                   if isinstance(trigger_or_name, str) else trigger_or_name)
+        if trigger is None:
+            return False
+        began = time.monotonic()
+
+        def finish(outcome: str, detail: str = ""):
+            """The history row and the notification, for an outcome known at any point."""
+            history.record_run("trigger", trigger.name, outcome,
+                               seconds=time.monotonic() - began, detail=detail,
+                               source=st.SRC_SCHEDULE)
+            self._call(self._on_trigger, trigger=trigger, outcome=outcome,
+                       detail=detail)
+
+        if trigger.action == "service":
+            if not trigger.service:
+                finish("failed", "no service chosen")
+                return False
+            # Already there is *skipped*, not failed: "start AppEngine" at 03:00 when it is
+            # already running is the normal case, and it used to raise "service already
+            # running" in somebody's face at three in the morning.
+            target = {"start": st.RUNNING, "stop": st.STOPPED}.get(
+                trigger.service_action)
+            current = self.store.status_of(trigger.service, trigger.machine)
+            if target and current == target:
+                log.info("trigger %r skipped: %s is already %s", trigger.name,
+                         trigger.service, current.lower())
+                finish("skipped", f"{trigger.service} was already {current.lower()}")
+                return False
+            try:
+                self.act(trigger.service_action, trigger.service, trigger.machine,
+                         actor=actor or "the schedule",
+                         then=lambda error, status: finish(
+                             "failed" if error else "done", error or ""))
+            except Busy as clash:
+                finish("skipped", str(clash))
+                return False
+            return True
+
+        stack = cfg.stack(trigger.stack)
+        if not stack or not stack.steps:
+            finish("skipped", "the stack has no steps")
+            return False
+        if not self.run_stack(stack, actor=actor or "the schedule"):
+            finish("skipped", "a stack run is already in progress")
+            return False
+        with self._waiting_lock:
+            self._stack_wait = finish
+        return True
+
     def run_stack(self, stack_or_name, actor: str = "") -> bool:
         """Run a stack by name, or a Stack object (a test run from Settings uses the
         values on screen, not the saved ones). Returns False if it could not start —
@@ -484,7 +562,21 @@ class Engine:
                     self._call(self._on_stack_step, index=i, total=total,
                                service=svc, action=act, phase=phase),
                 machine_for=lambda n: machine_for.get(n, ""))
-            self._call(self._on_stack_done, result=result)
+            with self._waiting_lock:
+                waiting, self._stack_wait = self._stack_wait, None
+            # Whether a trigger owns this run travels *with* it. Whoever shows a
+            # notification has to know, or a trigger's stack is announced twice: once as
+            # the trigger's outcome and once as a stack somebody asked for.
+            self._call(self._on_stack_done, result=result,
+                       by_trigger=waiting is not None)
+            if waiting is not None:
+                # `ok` and `cancelled` are what a RunResult actually has, and `summary()` is
+                # the sentence it words for a notification — so a trigger's history row says
+                # what the stack said rather than a second version of it.
+                outcome = ("done" if getattr(result, "ok", False)
+                           else "cancelled" if getattr(result, "cancelled", False)
+                           else "failed")
+                waiting(outcome, result.summary() if hasattr(result, "summary") else "")
 
         threading.Thread(target=work, daemon=True, name="stack").start()
         return True
@@ -562,25 +654,22 @@ class Engine:
         caller decides whether it is a toast, a log line or nothing."""
         self._call(self._on_error, kind="notify", text=text)
 
-    def also_on_machine(self, fn) -> None:
-        """Add a second listener for machine reachability, keeping the first."""
-        self._chain("_on_machine", fn)
+    #: The callbacks a second listener may be added to. Named, so a typo is a refusal
+    #: rather than a listener quietly attached to nothing.
+    LISTENABLE = ("event", "health", "machine", "action_done", "stack_step",
+                  "stack_done", "trigger", "error", "config_saved")
 
-    def also_on_health(self, fn) -> None:
-        """Add a second listener for health verdicts, keeping the first."""
-        self._chain("_on_health", fn)
+    def also_on(self, kind: str, fn) -> None:
+        """Add a listener beside whoever already has one.
 
-    def also_on_action_done(self, fn) -> None:
-        """Add a second listener for actions finishing, keeping the first."""
-        self._chain("_on_action_done", fn)
-
-    def also_on_config_saved(self, fn) -> None:
-        """Add a second listener for the config being saved, keeping the first.
-
-        The hub's own first listener is what swaps the config every other part reads, so
-        replacing it rather than chaining would leave the poller running the old one.
+        The hub server is built after the engine — it needs one to serve — so it cannot pass
+        these in at construction time, and replacing a callback would silence whoever already
+        had it: the hub's own `config_saved` listener is what swaps the config every other
+        part reads.
         """
-        self._chain("_on_config_saved", fn)
+        if kind not in self.LISTENABLE:
+            raise ValueError(f"nothing listens to {kind!r}; one of {self.LISTENABLE}")
+        self._chain(f"_on_{kind}", fn)
 
     def _chain(self, attribute: str, fn) -> None:
         """Add a listener beside whoever already has one.

@@ -211,18 +211,25 @@ class HubServer:
         # Reachability is not a store subscription: the store publishes service state, and
         # a machine going quiet is not a service changing. Without this the chip on every
         # remote machine was frozen at whatever the client's first snapshot said.
-        self.engine.also_on_machine(self._on_machine)
+        self.engine.also_on("machine", self._on_machine)
         # Health is not a status change — the service manager still says Running — but it is
         # what st.effective() turns into the chip's colour. Unpublished, a connected panel
         # showed green for a service whose checks had been failing for hours.
-        self.engine.also_on_health(self._on_health)
+        self.engine.also_on("health", self._on_health)
         # And when one finishes. The hub answers 202 to an action — accepted, not done — so
         # without this a client never learned the outcome: a busy label that never cleared,
         # and a refusal nobody saw.
-        self.engine.also_on_action_done(self._on_action_done)
+        self.engine.also_on("action_done", self._on_action_done)
         # And when the landscape is edited, by whoever. Without this two panels on one hub
         # disagreed about what services exist until one of them was restarted.
-        self.engine.also_on_config_saved(self._on_config_saved)
+        self.engine.also_on("config_saved", self._on_config_saved)
+        # And the four nobody was listening to at all. A stack run by the hub's own
+        # scheduler was invisible to every panel, and an engine error was reported nowhere:
+        # a Windows service has no tray to put a notification in.
+        self.engine.also_on("stack_step", self._on_stack_step)
+        self.engine.also_on("stack_done", self._on_stack_done)
+        self.engine.also_on("trigger", self._on_trigger)
+        self.engine.also_on("error", self._on_error)
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         daemon=True, name="hub-http")
         self._thread.start()
@@ -286,6 +293,19 @@ class HubServer:
         """A status changed: fan it out to every open stream. Called on whatever
         thread the change happened on, which is why the queues are locked."""
         self.publish(wire.event_from_state(state_event))
+
+    def _on_stack_step(self, index=0, total=0, service="", action="", phase="",
+                       **_rest) -> None:
+        self.publish(wire.stack_step_event(index, total, service, action, phase))
+
+    def _on_stack_done(self, result=None, **_rest) -> None:
+        self.publish(wire.stack_done_event(result))
+
+    def _on_trigger(self, trigger=None, outcome="", detail="", **_rest) -> None:
+        self.publish(wire.trigger_event(trigger, outcome, detail))
+
+    def _on_error(self, kind="", text="", **_rest) -> None:
+        self.publish(wire.error_event(kind, text))
 
     def _on_health(self, service="", machine="", verdict="", detail="", **_rest) -> None:
         """A verdict changed: tell every open stream."""
@@ -558,11 +578,9 @@ def _make_handler(hub: HubServer):
             if kind == "stack":
                 started = hub.engine.run_stack(name, actor=actor)
             else:
-                trigger = hub.engine.config().trigger(name) \
-                    if hasattr(hub.engine.config(), "trigger") else None
-                started = bool(trigger)
-                if started:
-                    hub.engine._call(hub.engine._on_trigger, trigger=trigger)
+                # Through the engine, which is the half that acts. This used to poke
+                # `_on_trigger` — None on a hub — and then answer that it had started.
+                started = hub.engine.run_trigger(name, actor=actor)
             if not started:
                 self._refuse(409, f"the {kind} could not be started — it may be "
                                   f"running already, empty, or gone")

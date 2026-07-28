@@ -125,6 +125,52 @@ def gap_event(missed: int) -> dict:
     return {"kind": "gap", "missed": int(missed), "at": time.time()}
 
 
+def stack_step_event(index: int, total: int, service: str, action: str,
+                     phase: str) -> dict:
+    """One step of a stack run, as it happens."""
+    return {"kind": "stack_step", "index": int(index), "total": int(total),
+            "service": service or "", "action": action or "", "phase": phase or "",
+            "at": time.time()}
+
+
+def stack_done_event(result) -> dict:
+    """A stack run finished, flattened to what a panel shows.
+
+    A `stacks.RunResult` carries a record per step, which a client has no use for and JSON
+    has no room for. The summary line comes from the result itself rather than being
+    reassembled here: it is one sentence, the runner already words it, and two places
+    wording the same thing drift.
+
+    The first version of this guessed the field names — `name` and `failed`, neither of
+    which exists — so every run reported the right *shape* with the wrong contents, and a
+    failed one arrived as `ok: True`.
+    """
+    return {"kind": "stack_done",
+            "stack": str(getattr(result, "stack", "") or ""),
+            "ok": bool(getattr(result, "ok", False)),
+            "cancelled": bool(getattr(result, "cancelled", False)),
+            "summary": result.summary() if hasattr(result, "summary") else "",
+            "at": time.time()}
+
+
+def trigger_event(trigger, outcome: str = "", detail: str = "") -> dict:
+    """A scheduled trigger fired, and how it went.
+
+    The name rather than the trigger: a client holds the landscape already, and what it
+    needs is which one and what happened.
+    """
+    return {"kind": "trigger", "trigger": str(getattr(trigger, "name", trigger) or ""),
+            "outcome": outcome or "", "detail": detail or "", "at": time.time()}
+
+
+def error_event(kind: str, text: str) -> dict:
+    """Something the engine could not do and nobody asked for directly.
+
+    A hub has no tray to notify, so before this these went nowhere at all.
+    """
+    return {"kind": "error", "what": kind or "", "text": text or "", "at": time.time()}
+
+
 def config_event(actor: str = "", etag: str = "") -> dict:
     """The landscape was edited. Carries no config: it is large, every client holds a copy
     already, and one that wants the new one asks — which also gets it the etag it will need
