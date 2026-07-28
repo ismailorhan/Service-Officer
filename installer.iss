@@ -64,8 +64,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
 
 [CustomMessages]
-english.AutoStartTask=Start &Service Officer automatically when Windows starts
-english.DesktopIconTask=Create a &desktop shortcut
+english.AutoStartTask=Start the &panel when I sign in to this computer
+english.DesktopIconTask=Put a shortcut to the panel on the &desktop
 english.TypeClient=Client (tray) only
 english.TypeFull=Hub and Client
 english.CompClient=Service Officer (tray application)
@@ -73,6 +73,8 @@ english.CompHub=Service Officer Hub (Windows service)
 english.RegisteringHub=Registering the hub service...
 english.PairingLocal=Pairing this computer with its hub...
 english.SecuringData=Setting permissions on the data folder...
+english.PanelTasks=The panel (Client) — the Hub is a Windows service and starts with the computer on its own
+turkish.PanelTasks=Panel (Client) — Hub bir Windows hizmeti ve bilgisayarla birlikte kendisi başlar
 english.TypeCaption=Setup type
 english.TypeBody=What is this computer's part?
 english.TypeBothWhy=The services are watched from here: this computer asks them how they are, restarts them when they fail, runs the schedule and keeps the history — whether or not anybody is logged in, because that part is a Windows service. Other computers connect to it and read what it knows. The panel is installed here as well.
@@ -100,8 +102,8 @@ english.ReadyHubKept=Hub (service): upgraded to %1, keeping port %2
 english.ReadyHubNew=Hub (service): a new hub on port %1
 english.ReadyClientLocal=Client (tray): reads the hub on this computer
 english.ReadyClientRemote=Client (tray): reads %1
-turkish.AutoStartTask=Windows ba&şladığında Service Officer'ı otomatik başlat
-turkish.DesktopIconTask=&Masaüstü kısayolu oluştur
+turkish.AutoStartTask=Bu bilgisayarda &oturum açtığımda paneli başlat
+turkish.DesktopIconTask=Panelin kısayolunu &masaüstüne koy
 turkish.TypeClient=Yalnızca Client (tepsi)
 turkish.TypeFull=Hub ve Client
 turkish.CompClient=Service Officer (tepsi uygulaması)
@@ -153,8 +155,16 @@ Name: "client"; Description: "{cm:CompClient}"; Types: client full
 Name: "hub";    Description: "{cm:CompHub}";    Types: full
 
 [Tasks]
-Name: "autostart"; Description: "{cm:AutoStartTask}"; GroupDescription: "{cm:AdditionalIcons}"; Components: client
-Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Components: client
+; Both are about the *panel*. The Hub needs neither: it is a Windows service, it starts
+; with the computer whether anybody signs in or not, and a shortcut to it would do nothing.
+; That was worth saying on screen, because "start automatically when Windows starts" next to
+; a product that installs a service reads as the service.
+;
+; And the first one is a shortcut in a Startup folder, so it happens when somebody *signs
+; in*, not when Windows boots. It is also that person's own — anybody else who uses this
+; computer sets it for themselves, on the panel's Settings page.
+Name: "autostart"; Description: "{cm:AutoStartTask}"; GroupDescription: "{cm:PanelTasks}"; Components: client
+Name: "desktopicon"; Description: "{cm:DesktopIconTask}"; GroupDescription: "{cm:PanelTasks}"; Flags: unchecked; Components: client
 
 [Dirs]
 ; Config, history and the app log live here rather than in one user's profile:
