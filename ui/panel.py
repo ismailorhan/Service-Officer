@@ -193,7 +193,8 @@ class MainPanel(QDialog):
         self.status = _label("", "hint")
         fl.addWidget(self.status)
         fl.addSpacing(8)
-        fl.addWidget(_button("Close", None, self.reject))
+        # No Close button: the title bar already has one, and a second way to do the same
+        # thing sits next to Save competing for the same glance.
         self.save_button = _button("Save", "primary", self._save)
         fl.addWidget(self.save_button)
         outer.addWidget(foot)

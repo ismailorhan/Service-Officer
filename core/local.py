@@ -136,6 +136,23 @@ def token(url: str) -> str:
             or secrets.get(ref))
 
 
+def tokens(url: str) -> list:
+    """Every token this computer holds for that hub, best guess first.
+
+    There can be two — this user's and the machine's — and only the hub knows which it
+    still accepts. A stale one used to be the end of it: on 2026-07-28 an upgrade had
+    replaced the machine's token, the user's copy was refused, and a panel that had been
+    working could not reconnect. So the client tries the other rather than giving up.
+    """
+    ref = _token_ref(url)
+    found = []
+    for path in (secrets.USER_SECRETS_PATH, None):
+        value = secrets.get(ref, path=path) if path else secrets.get(ref)
+        if value and value not in found:
+            found.append(value)
+    return found
+
+
 def set_token(url: str, value: str, machine: bool = False) -> bool:
     """This user's own store — the machine's is not writable without elevation, and one
     person pairing must not repoint everybody who logs into this computer.

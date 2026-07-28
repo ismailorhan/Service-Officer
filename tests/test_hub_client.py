@@ -326,3 +326,50 @@ def test_closing_the_app_is_not_logged_as_a_failure(pair, caplog):
 
     shouted = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert shouted == [], f"closing the app logged {[r.message for r in shouted]}"
+
+
+def test_a_refused_token_makes_it_try_the_other_one(pair, monkeypatch):
+    """A computer can hold two tokens for one hub — this user's and the machine's — and only
+    the hub knows which it still accepts. One stale one used to be the end of it: an upgrade
+    replaced the machine's token, the copy in the user's profile was refused, and a panel
+    that had been working could not reconnect."""
+    from core import hub_server
+
+    client, _engine, server, _holder = pair
+    monkeypatch.setattr(hub_server.hub_auth, "check",
+                        lambda token: "tests" if token == "the-good-one" else "")
+
+    second = hub_client.HubClient(server.url, ["stale", "the-good-one"])
+    try:
+        answer = second.refresh_now()
+    finally:
+        second.stop()
+
+    assert answer is not None, "gave up on the first refusal"
+    assert second.token == "the-good-one", "did not settle on the one that works"
+
+
+def test_when_no_token_works_it_still_says_refused(pair, monkeypatch):
+    """Trying the other one must not turn a refusal into a hang or a loop."""
+    from core import hub_server
+
+    client, _engine, server, _holder = pair
+    monkeypatch.setattr(hub_server.hub_auth, "check", lambda token: "")
+
+    second = hub_client.HubClient(server.url, ["one", "two"])
+    try:
+        with pytest.raises(hub_client.Refused):
+            second.refresh_now()
+    finally:
+        second.stop()
+
+
+def test_one_token_as_a_string_still_works(pair):
+    """The shape most callers use, and every test written before there were two."""
+    client, _engine, server, _holder = pair
+    single = hub_client.HubClient(server.url, "good")
+    try:
+        assert single.token == "good"
+        assert single.ping()["protocol"] >= 1
+    finally:
+        single.stop()

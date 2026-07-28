@@ -266,6 +266,15 @@ class Engine:
             # a server that is merely unreachable would send someone to the wrong
             # fix.
             self.store.update(name, st.UNKNOWN, machine=machine)
+            if machine:
+                # And the machine is *recorded* as not answering. Without this the chip
+                # stayed on "not asked yet", which is a different thing and sends somebody
+                # looking for a poller that never ran instead of at a machine that will
+                # not answer. Found on 2026-07-28: sc-sql showed `waiting` while Test
+                # connection said `answered`.
+                self.store.note_machine(machine, False, "it did not answer")
+                self._call(self._on_machine, machine=machine, reachable=False,
+                           detail="it did not answer")
             return
         self.store.update(name, status.state, exit_code=status.exit_code,
                           pid=status.pid, machine=machine)

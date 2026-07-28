@@ -248,10 +248,17 @@ class ReadOnly(RuntimeError):
 
 
 class HubClient:
-    def __init__(self, url: str, token: str, fingerprint: str = "",
+    def __init__(self, url: str, token=None, fingerprint: str = "",
                  on_event=None, on_connected=None):
         self.url = url.rstrip("/")
-        self.token = token
+        #: Tokens to try, best guess first. There can genuinely be two on one computer —
+        #: this user's and the machine's — and only the hub knows which it still accepts.
+        #: One stale one used to be the end of it: an upgrade replaced the machine's token
+        #: on 2026-07-28, the copy in this user's profile was then refused, and a panel
+        #: that had been working could not reconnect. A single string is still accepted.
+        self._tokens = [t for t in ([token] if isinstance(token, str)
+                                    else list(token or [])) if t]
+        self.token = self._tokens[0] if self._tokens else ""
         self.fingerprint = fingerprint or ""
         self.store = RemoteStore()
         self.connected = False
@@ -327,6 +334,10 @@ class HubClient:
             except ValueError:
                 said = {"error": raw[:200]}
             if exc.code == 401:
+                if self._next_token():
+                    # The other token this computer holds. Not a loop: _next_token only
+                    # ever moves forward through a list of at most two.
+                    return self._ask(method, path, body, timeout)
                 raise Refused(said.get("error") or "the hub refused this token") \
                     from exc
             if exc.code == 404:
@@ -341,6 +352,18 @@ class HubClient:
             raise RuntimeError(said.get("error") or f"the hub said {exc.code}") from exc
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise Unreachable(f"{self.url} did not answer: {exc}") from exc
+
+    def _next_token(self) -> bool:
+        """Move to the next token this computer holds. True if there was another."""
+        if self.token in self._tokens:
+            following = self._tokens[self._tokens.index(self.token) + 1:]
+        else:
+            following = self._tokens
+        if not following:
+            return False
+        self.token = following[0]
+        log.info("that token was refused; trying the other one this computer holds")
+        return True
 
     def ping(self) -> dict:
         return self._ask("GET", "/api/v1/ping")[1]

@@ -32,6 +32,7 @@ much it does:
 from __future__ import annotations
 
 import os
+import socket
 import sys
 import threading
 
@@ -100,7 +101,6 @@ def _client_command(argv) -> int | None:
         name = argv[3]
         token = hub_auth.add_client(name)
         _p, fingerprint = hub_auth.ensure_certificate(cfg_mod.in_app_dir("hub.pem"))
-        import socket
         where = f"https://{socket.gethostname()}:{cfg_mod.load().hub.port}"
         print(f"\nToken for {name}:\n\n  {token}\n")
         print("Give it to that client once:\n")
@@ -113,9 +113,19 @@ def _client_command(argv) -> int | None:
         # The installer's path: a machine that installs both components comes out
         # already working, with nobody shown a token they would have to carry.
         name = f"{os.environ.get('COMPUTERNAME', 'this-computer')}-local"
-        token = hub_auth.add_client(name)
+        # Only issue one if there is not already a working one. `add_client` *replaces*
+        # the token for a name that exists, and this command runs on every upgrade — so
+        # issuing unconditionally revoked the token sitting in every user's profile on
+        # this machine, and the next launch of their panel could not connect. Proved on
+        # 2026-07-28: the user's copy was refused, the machine's was accepted.
+        token = local_mod.token(f"https://{socket.gethostname()}:"
+                                f"{cfg_mod.load().hub.port}")
+        if not token or hub_auth.check(token) != name:
+            token = hub_auth.add_client(name)
+            print(f"issued a token for {name}")
+        else:
+            print(f"{name} already has a token that works; keeping it")
         _p, fingerprint = hub_auth.ensure_certificate(cfg_mod.in_app_dir("hub.pem"))
-        import socket
         # This computer's *name*, not localhost: the certificate is issued for the host
         # name, and a client that pinned localhost could not later be pointed at the
         # same hub by name without failing its own check.

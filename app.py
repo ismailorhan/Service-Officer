@@ -247,7 +247,9 @@ class Application(QObject):
             self.engine = None
             settings = local_mod.load()
             self.hub = hub_client.HubClient(
-                self.hub_url, local_mod.token(self.hub_url),
+                # Every token this computer holds, not just the first: see
+                # HubClient._tokens.
+                self.hub_url, local_mod.tokens(self.hub_url),
                 fingerprint=settings.hub_fingerprint,
                 on_event=lambda payload: self.hub_signals.event.emit(payload),
                 on_connected=lambda ok: self.hub_signals.connected.emit(ok))

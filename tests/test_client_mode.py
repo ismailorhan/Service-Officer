@@ -24,9 +24,16 @@ class FakeHub:
     application ends up reading, not whether a socket works — that is tested against a
     real server in test_hub_client and test_hub_roundtrip."""
 
-    def __init__(self, url, token, fingerprint="", on_event=None,
+    def __init__(self, url, token=None, fingerprint="", on_event=None,
                  on_connected=None):
-        self.url, self.token, self.fingerprint = url, token, fingerprint
+        # The same shape as the real one: it takes a *list* of tokens now, because a
+        # computer can hold two and only the hub knows which it still accepts. A fake that
+        # took a string would pass while the real thing was handed a list — which is
+        # exactly how RemoteStore.counts() shipped broken this morning.
+        self.url, self.fingerprint = url, fingerprint
+        self._tokens = [t for t in ([token] if isinstance(token, str)
+                                    else list(token or [])) if t]
+        self.token = self._tokens[0] if self._tokens else ""
         self.store = st.Store()
         self.started = False
         self.connected = True

@@ -177,3 +177,40 @@ def test_the_port_command_never_reaches_the_service_framework(routes, tmp_path,
     took = run(routes, "port", "9000")
 
     assert "commandline" not in took and "dispatch" not in took
+
+
+def test_pair_local_keeps_a_token_that_still_works(tmp_path, monkeypatch, capsys):
+    """This command runs on *every* upgrade, and `add_client` replaces the token for a name
+    that already exists. So issuing one unconditionally revoked the token sitting in every
+    user's profile on that machine, and the next launch of their panel could not connect.
+
+    Proved on the running installation on 2026-07-28: the copy in this user's store was
+    refused, the machine's was accepted, and the panel on screen only still worked because
+    its connection predated the upgrade.
+    """
+    from core import config as cfg_mod
+    from core import hub_auth, local, secrets
+
+    monkeypatch.setattr(local, "MACHINE_PATH", str(tmp_path / "machine.json"))
+    monkeypatch.setattr(local, "PATH", str(tmp_path / "user.json"))
+    monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "machine.dat"))
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
+    monkeypatch.setattr(hub_auth, "ensure_certificate",
+                        lambda path: ("hub.pem", "SHA256:pinned"))
+    monkeypatch.setattr(cfg_mod, "load", lambda path=None: cfg_mod.Config())
+    issued = []
+    monkeypatch.setattr(hub_auth, "add_client",
+                        lambda name, description="": issued.append(name) or "first-token")
+    # The hub accepts exactly the token it issued, for that name.
+    monkeypatch.setattr(hub_auth, "check",
+                        lambda token: ("%s-local" % __import__("socket").gethostname())
+                        if token == "first-token" else "")
+
+    assert hub._client_command(["hub.exe", "client", "pair", "--local"]) == 0
+    assert len(issued) == 1, "the first install has to issue one"
+
+    # The upgrade. Same command, and the token it already has still works.
+    assert hub._client_command(["hub.exe", "client", "pair", "--local"]) == 0
+
+    assert len(issued) == 1, "an upgrade issued a new token and revoked the working one"
+    assert "keeping it" in capsys.readouterr().out
