@@ -9,11 +9,12 @@ from .categories import CategoriesPage
 from .clients import ClientsPage
 from .general import GeneralPage
 from .history import HistoryPage
+from .hub import HubPage
 from .machines import MachinesPage
 from .schedule import SchedulePage
 from .services import ServiceDetail, ServicesPage
 from .stacks import StackDetail, StacksPage
 
 __all__ = ["CategoriesPage", "ClientsPage", "GeneralPage", "HistoryPage",
-           "MachinesPage", "SchedulePage", "ServiceDetail",
+           "HubPage", "MachinesPage", "SchedulePage", "ServiceDetail",
            "ServicesPage", "StackDetail", "StacksPage"]

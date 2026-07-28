@@ -2075,7 +2075,7 @@ def test_a_check_that_was_already_configured_still_shows(qapp):
 # This field is what makes the installer's "the address looks wrong, carry on anyway"
 # honest: somebody who gets it wrong, or whose hub moves, needs a place to put the right
 # answer. It is also the only place the panel says which hub it is reading.
-def test_general_shows_and_stores_the_hub_address(qapp, sample, monkeypatch, tmp_path):
+def test_the_hub_page_shows_and_stores_the_address(qapp, sample, monkeypatch, tmp_path):
     from core import local, secrets
 
     monkeypatch.setattr(local, "PATH", str(tmp_path / "client.json"))
@@ -2084,7 +2084,7 @@ def test_general_shows_and_stores_the_hub_address(qapp, sample, monkeypatch, tmp
     monkeypatch.setattr(secrets, "SECRETS_PATH", str(tmp_path / "machine.dat"))
 
     win = panel_mod.MainPanel(sample)
-    page = win.general_page
+    page = win.hub_page
     page.load_from(win.config())
     told = []
     page.hub_changed.connect(told.append)
@@ -2118,7 +2118,7 @@ def test_emptying_the_address_goes_back_to_watching_this_computer(qapp, sample,
                               hub_fingerprint="SHA256:x"))
 
     win = panel_mod.MainPanel(sample)
-    page = win.general_page
+    page = win.hub_page
     page.load_from(win.config())
     assert (page.hub_url.text(), page.hub_port.text()) == ("ctl052", "8797")
 
@@ -2144,7 +2144,7 @@ def test_pointing_at_a_different_hub_drops_the_old_pin(qapp, sample, monkeypatch
                               hub_fingerprint="SHA256:the-old-one"))
 
     win = panel_mod.MainPanel(sample)
-    page = win.general_page
+    page = win.hub_page
     page.load_from(win.config())
     # A whole address pasted into the host box is what somebody copies out of a ticket.
     page.hub_url.setText("https://new:9000")
@@ -2286,7 +2286,7 @@ def test_the_port_is_its_own_field_and_tolerates_a_pasted_address(qapp, sample,
     monkeypatch.setattr(local, "MACHINE_PATH", str(tmp_path / "machine.json"))
     monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
     win = panel_mod.MainPanel(sample)
-    page = win.general_page
+    page = win.hub_page
     page.load_from(win.config())
 
     page.hub_url.setText("ctl052")
@@ -2418,3 +2418,115 @@ def test_a_connection_test_says_whose_reach_it_proved(qapp, tmp_path, monkeypatc
 
     assert "from this computer" not in said[0], "watching alone, there is no other computer"
     assert "from this computer" in said[1], "did not say whose reach answered"
+
+
+class _Nods:
+    """Answers anything with a shrug. For the parts of an Application a test is not about."""
+
+    def __getattr__(self, _name):
+        return _Nods()
+
+    def __call__(self, *a, **k):
+        return None
+
+    def isVisible(self):
+        return False
+
+
+def test_a_machine_answering_repaints_the_machines_page(qapp, sample, monkeypatch):
+    """It was only redrawn on the way in. So a machine that started answering while the page
+    was open kept its `waiting` chip while the very services on it streamed in as Running —
+    the hub appearing to contradict itself. Seen on 2026-07-29.
+
+    Every screen that shows state is repainted from one place, and the Machines page was not
+    one of them. Driven through that one place rather than around it.
+    """
+    import app as app_mod
+
+    win = panel_mod.MainPanel(sample)
+    win.show()
+    try:
+        drawn = []
+        monkeypatch.setattr(win.machines_page, "refresh", lambda: drawn.append(True))
+
+        stub = _Nods()
+        stub.panel = win
+
+        app_mod.Application._refresh_lists(stub)
+
+        assert drawn, "the one place that repaints state does not reach the Machines page"
+    finally:
+        win.close()
+
+
+def test_the_hub_is_infrastructure_and_comes_first(qapp, sample):
+    """It was the last section of General, under appearance, startup and notifications —
+    four scrolls past the things it outranks. A hub decides where every service in this
+    window comes from and whether this computer does the watching at all, so it sits with
+    Machines and Clients, and above them: those two are what a hub *has*."""
+    win = panel_mod.MainPanel(sample)
+    try:
+        order = list(win._buttons_by_name)
+
+        assert "hub" in order, "there is nowhere to set the address"
+        assert order.index("hub") < order.index("machines"), "Machines came first"
+        assert order.index("hub") < order.index("general"), "still buried in Settings"
+
+        assert not win._buttons_by_name["hub"].icon().isNull(),             "the only nav entry without a picture reads as unfinished"
+
+        win._select(win.hub_page, win._buttons_by_name["hub"])
+        assert win.pages.currentWidget() is win.hub_page
+    finally:
+        win.close()
+
+
+def test_the_hub_page_is_there_without_a_hub(qapp, sample):
+    """Unlike Clients. A panel watching its own services still has to be able to point at
+    one — that field is how it becomes a client at all."""
+    win = panel_mod.MainPanel(sample)
+    try:
+        assert win._buttons_by_name["hub"].isVisible() or not win.isVisible()
+        assert win._buttons_by_name["clients"].isVisible() is False
+    finally:
+        win.close()
+
+
+def test_no_page_spreads_itself_over_the_window(qapp, sample):
+    """A layout with no trailing stretch hands its spare height to the widgets in it. The
+    Hub page shipped that way for one build: its ADDRESS heading was 55 pixels tall where it
+    wants 15, so every section floated in the middle of a gap and the page read as a
+    different product from General beside it.
+
+    Measured on the headings, not on the gaps between them — the gaps are fixed spacings and
+    stayed at 9 the whole time, which is how a first version of this test passed against the
+    very bug it was written for. What stretches is the widgets.
+    """
+    from PySide6.QtWidgets import QLabel
+
+    win = panel_mod.MainPanel(sample)
+    win.resize(1010, 700)
+    win.show()
+    try:
+        for name, button in win._buttons_by_name.items():
+            page = win._by_name[name]
+            win._select(page, button)
+            win.grab()          # a layout is only applied when something asks it to paint
+            for head in page.findChildren(QLabel):
+                if head.property("role") != "section" or not head.isVisible():
+                    continue
+                # Only headings in the page's own vertical flow. One sitting in a row beside
+                # a button is as tall as that button by design — Schedule's RECENT EXECUTIONS
+                # is 31px next to its Refresh, and that is alignment, not spare height.
+                owner = head.parentWidget().layout()
+                if owner is None or owner.indexOf(head) < 0:
+                    continue
+                # Ten pixels of slack: a heading inside a table header carries a couple of
+                # pixels of cell padding and that is fine. Nothing legitimately adds forty,
+                # which is what the spare height of a window looks like.
+                assert head.height() <= head.sizeHint().height() + 10, (
+                    f"{name}: the {head.text()!r} heading is {head.height()}px tall and "
+                    f"wants {head.sizeHint().height()}px — a missing addStretch(1) at the "
+                    f"end of that page's layout")
+    finally:
+        win.close()
+

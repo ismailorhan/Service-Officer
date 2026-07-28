@@ -193,6 +193,10 @@ class HubServer:
                                                       server_side=True)
         self.port = self._server.server_address[1]
         self.engine.store.subscribe(self._on_state)
+        # Reachability is not a store subscription: the store publishes service state, and
+        # a machine going quiet is not a service changing. Without this the chip on every
+        # remote machine was frozen at whatever the client's first snapshot said.
+        self.engine.also_on_machine(self._on_machine)
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         daemon=True, name="hub-http")
         self._thread.start()
@@ -256,6 +260,10 @@ class HubServer:
         """A status changed: fan it out to every open stream. Called on whatever
         thread the change happened on, which is why the queues are locked."""
         self.publish(wire.event_from_state(state_event))
+
+    def _on_machine(self, machine="", reachable=False, detail="") -> None:
+        """A machine started or stopped answering: tell every open stream."""
+        self.publish(wire.machine_event(machine, reachable, detail))
 
     def publish(self, payload: dict) -> None:
         with self._listeners_lock:

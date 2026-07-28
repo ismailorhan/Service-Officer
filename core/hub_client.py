@@ -149,6 +149,20 @@ class RemoteStore:
             except Exception:
                 log.exception("a subscriber failed handling a hub event")
 
+    def apply_machine(self, raw: dict) -> None:
+        """A machine started or stopped answering.
+
+        Kept even for a machine no snapshot has mentioned — one added on another client —
+        so the row is right before the next snapshot rather than after it.
+        """
+        name = raw.get("machine", "") or ""
+        with self._lock:
+            row = dict(self._machines.get(name) or {"name": name, "label": name})
+            row["reachable"] = bool(raw.get("reachable"))
+            row["detail"] = raw.get("detail", "")
+            row["at"] = raw.get("at", 0)
+            self._machines[name] = row
+
     def apply_health(self, raw: dict) -> None:
         key = (raw.get("machine", "") or "", raw.get("service", ""))
         with self._lock:
@@ -588,6 +602,8 @@ class HubClient:
             self.store.apply_event(payload)
         elif kind == "health":
             self.store.apply_health(payload)
+        elif kind == "machine":
+            self.store.apply_machine(payload)
         self._events.set()
         if self._on_event is not None:
             try:

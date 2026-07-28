@@ -91,6 +91,21 @@ def machine_row(machine, store) -> dict:
 # ---------------------------------------------------------------------------
 # the config, and its version stamp
 # ---------------------------------------------------------------------------
+def machine_event(machine: str, reachable: bool, detail: str = "") -> dict:
+    """A machine started or stopped answering.
+
+    Its own event kind rather than a field on a status event, because it is not about a
+    service: every service on a silent machine reads Unknown, and "the machine is not
+    answering" is the one sentence that explains all of them at once.
+
+    `at` is the wall clock, not `time.monotonic()` — one machine's monotonic clock means
+    nothing on another, which is the same reason a status event carries none.
+    """
+    return {"kind": "machine", "machine": machine or "",
+            "reachable": bool(reachable), "detail": detail or "",
+            "at": time.time()}
+
+
 def normalised(cfg) -> dict:
     """The config as it will be once stored and loaded again.
 

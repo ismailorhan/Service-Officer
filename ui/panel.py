@@ -30,7 +30,8 @@ from . import icons
 from .widgets import button as _button, label as _label
 from .dashboard import DashboardPage
 from .pages import (CategoriesPage, ClientsPage, GeneralPage, HistoryPage,
-                    MachinesPage, SchedulePage, ServicesPage, StacksPage)
+                    HubPage, MachinesPage, SchedulePage, ServicesPage,
+                    StacksPage)
 
 
 # ── the window ─────────────────────────────────────────────────────────────
@@ -116,6 +117,7 @@ class MainPanel(QDialog):
         self.machines_page = MachinesPage(get, self._store, self._hub)
         self.history_page = HistoryPage(get)
         self.clients_page = ClientsPage(self._hub)
+        self.hub_page = HubPage()
         self.general_page = GeneralPage(get)
         self.services_page.changed.connect(self.stacks_page.refresh)
         self.services_page.changed.connect(self.schedule_page.refresh)
@@ -123,7 +125,7 @@ class MainPanel(QDialog):
         self.stacks_page.test_run.connect(self.test_run)
         self.schedule_page.run_now.connect(self.run_trigger)
         self.general_page.theme_changed.connect(self.theme_changed)
-        self.general_page.hub_changed.connect(self.hub_changed)
+        self.hub_page.hub_changed.connect(self.hub_changed)
         self.general_page.theme_changed.connect(lambda _m: self.restyle())
         self.machines_page.changed.connect(self.services_page.refresh)
         # Renaming or removing a category changes what the Services rows say,
@@ -148,6 +150,7 @@ class MainPanel(QDialog):
                     ("Schedule", "schedule", self.schedule_page),
                     ("History", "history", self.history_page),
                     ("Infrastructure", None, None),
+                    ("Hub", "hub", self.hub_page),
                     ("Machines", "machines", self.machines_page),
                     ("Clients", "clients", self.clients_page),
                     ("Settings", None, None),
@@ -201,6 +204,7 @@ class MainPanel(QDialog):
 
         self.history_page.load_from(self._cfg)
         self.general_page.load_from(self._cfg)
+        self.hub_page.load_from(self._cfg)
         self.go_to("dashboard")            # what you want on opening: the status
         self._refresh_save_state()
 
@@ -210,7 +214,7 @@ class MainPanel(QDialog):
             b.setChecked(b is button)
         # Asked for when it is looked at, not when the window opens: this one is a request
         # over a network, and most times the panel is opened nobody goes near it.
-        if page is self.clients_page:
+        if page is self.clients_page or page is self.hub_page:
             page.refresh()
 
     def go_to(self, name: str) -> bool:

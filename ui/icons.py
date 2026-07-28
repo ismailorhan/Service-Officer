@@ -181,6 +181,18 @@ def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:
         p.drawRect(QRectF(s * 0.16, s * 0.56, s * 0.68, s * 0.24))
         p.drawPoint(QPointF(s * 0.72, s * 0.32))
         p.drawPoint(QPointF(s * 0.72, s * 0.68))
+    elif kind == "hub":                          # a centre with three spokes: what a hub
+        c = s / 2.0                              # is — one thing everything else reads
+        p.drawEllipse(QRectF(c - s * 0.13, c - s * 0.13, s * 0.26, s * 0.26))
+        for degrees in (90, 210, 330):
+            a = math.radians(degrees)
+            p.drawLine(QPointF(c + math.cos(a) * s * 0.17,
+                               c + math.sin(a) * s * 0.17),
+                       QPointF(c + math.cos(a) * s * 0.36,
+                               c + math.sin(a) * s * 0.36))
+            p.drawEllipse(QRectF(c + math.cos(a) * s * 0.36 - s * 0.07,
+                                 c + math.sin(a) * s * 0.36 - s * 0.07,
+                                 s * 0.14, s * 0.14))
     elif kind == "clients":                      # a key: what a client is given
         p.drawEllipse(QRectF(s * 0.16, s * 0.34, s * 0.3, s * 0.3))
         p.drawLine(QPointF(s * 0.45, s * 0.49), QPointF(s * 0.86, s * 0.49))

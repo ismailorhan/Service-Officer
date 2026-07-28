@@ -562,6 +562,21 @@ class Engine:
         caller decides whether it is a toast, a log line or nothing."""
         self._call(self._on_error, kind="notify", text=text)
 
+    def also_on_machine(self, fn) -> None:
+        """Add a second listener for machine reachability, keeping the first.
+
+        The hub server is built after the engine — it needs one to serve — so it cannot
+        pass this in at construction time, and replacing the callback would silence
+        whoever already had it.
+        """
+        first = self._on_machine
+
+        def both(**facts):
+            self._call(first, **facts)
+            self._call(fn, **facts)
+
+        self._on_machine = both
+
     def _call(self, callback, **facts) -> None:
         """A listener that raises must not take the engine down with it: it belongs
         to whoever is watching, and the engine has services to look after."""

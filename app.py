@@ -437,6 +437,10 @@ class Application(QObject):
             self.flyout.apply_states()
         if self.panel is not None and self.panel.isVisible():
             self.panel.dashboard.apply_states()
+            # The Machines page too: it was only redrawn on the way in, so a machine that
+            # started answering while it was open kept its `waiting` chip while the very
+            # services on it were streaming in as Running. Seen on 2026-07-29.
+            self.panel.machines_page.refresh()
 
     def _on_state_event(self, event):
         """GUI thread: refresh whatever is on screen, and say when a service that

@@ -260,3 +260,40 @@ def test_revoking_says_whether_there_was_anything_to_revoke(system, monkeypatch)
     assert client.revoke_client("ismail-laptop") is True
     assert client.revoke_client("nobody") is False, \
         "a name that was never paired should be an answer, not an exception"
+
+
+def test_a_machine_that_starts_answering_reaches_the_client(system):
+    """The whole point of the hub: what it learns, the panel sees.
+
+    Reachability was the one thing it never sent. The panel connected, took a snapshot in
+    which nothing had asked the machine yet — the first OpenSCManager against a machine
+    across a forest boundary takes 21 seconds, measured — and then stayed on `waiting` for
+    the rest of the session while that machine's services streamed in as Running. Seen on
+    2026-07-29, and it read as the hub contradicting itself.
+    """
+    client, engine, _server, _states, _holder = system
+
+    assert client.store.machine_state("sc-sql") == {}, "nothing has asked it yet"
+
+    engine._call(engine._on_machine, machine="sc-sql", reachable=True, detail="")
+    assert client.wait_for(
+        lambda: client.store.machine_state("sc-sql").get("reachable") is True, timeout=10)
+
+    engine._call(engine._on_machine, machine="sc-sql", reachable=False,
+                 detail="it did not answer")
+    assert client.wait_for(
+        lambda: client.store.machine_state("sc-sql").get("reachable") is False, timeout=10)
+    assert client.store.machine_state("sc-sql")["detail"] == "it did not answer",         "a silent machine has to arrive with the reason, not just a red chip"
+
+
+def test_the_engines_own_listener_still_hears_it():
+    """`also_on_machine` adds one; a hub that replaced it would have taken the tray's."""
+    from core import engine as engine_mod
+
+    heard = []
+    engine = engine_mod.Engine(lambda: None, on_machine=lambda **f: heard.append(f))
+    engine.also_on_machine(lambda **f: heard.append({"second": True}))
+    engine._call(engine._on_machine, machine="sc-sql", reachable=True, detail="")
+
+    assert len(heard) == 2, "one of the two listeners was dropped"
+    assert heard[0]["machine"] == "sc-sql"
