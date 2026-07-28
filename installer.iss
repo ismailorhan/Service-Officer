@@ -23,7 +23,7 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "2.2.5"
+#define MyAppVersion     "2.2.6"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyHubExeName     "ServiceOfficerHub.exe"
@@ -97,8 +97,9 @@ english.HubIsThisPC=That address is this computer, and the Hub here will be upgr
 english.HubNotHere=That address is this computer, but no Hub is installed here.%n%nThe Client will be installed and will have nothing to read until a Hub exists at that address. You can change the address later in Settings %+ General.%n%nInstall anyway?
 english.HubVersionClash=That hub is version %1 and this installer is version %2.%n%nA client and its hub have to be the same version — the connection would succeed and then refuse everything. Upgrade that hub first, or install the matching version here.
 english.HubSilent=%1 did not answer.%n%nNothing about it can be checked — its version, or whether it is this computer. The address and the token will be stored and used on the first launch, and can be changed in Settings %+ General.%n%nInstall anyway?
-english.ReadyHubUpgrade=Hub (service): %1 will be upgraded to %2
+english.ReadyHubUpgrade=Hub (service): %1 will be upgraded to %2, keeping port %3
 english.ReadyHubNew=Hub (service): a new hub on port %1
+english.ReadyHubKept=Hub (service): upgraded to %1, keeping port %2
 english.ReadyClientLocal=Client (tray): reads the hub on this computer
 english.ReadyClientRemote=Client (tray): reads %1%n%nInstall anyway?
 turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
@@ -123,8 +124,9 @@ turkish.HubIsThisPC=Bu adres bu bilgisayarı gösteriyor ve buradaki Hub %1 sür
 turkish.HubNotHere=Bu adres bu bilgisayarı gösteriyor ama burada kurulu bir Hub yok.%n%nClient kurulacak ve o adreste bir Hub olana kadar okuyacak bir şeyi olmayacak. Adresi sonradan Ayarlar %+ Genel bölümünden değiştirebilirsiniz.%n%nYine de kurulsun mu?
 turkish.HubVersionClash=O hub %1 sürümünde, bu kurulum ise %2 sürümünde.%n%nİstemci ile hub aynı sürümde olmak zorunda — bağlantı kurulur ama her isteği reddeder. Önce o hub'ı yükseltin ya da buraya eşleşen sürümü kurun.
 turkish.HubSilent=%1 yanıt vermedi.%n%nHakkında hiçbir şey denetlenemiyor — sürümü de, bu bilgisayar olup olmadığı da. Adres ve token kaydedilip ilk açılışta kullanılacak, Ayarlar %+ Genel bölümünden değiştirilebilir.%n%nYine de kurulsun mu?
-turkish.ReadyHubUpgrade=Hub (servis): %1 sürümü %2 sürümüne yükseltilecek
+turkish.ReadyHubUpgrade=Hub (servis): %1 sürümü %2 sürümüne yükseltilecek, port %3 korunuyor
 turkish.ReadyHubNew=Hub (servis): %1 portunda yeni bir hub
+turkish.ReadyHubKept=Hub (servis): %1 sürümüne yükseltilecek, port %2 korunuyor
 turkish.ReadyClientLocal=Client (tepsi): bu bilgisayardaki hub'ı okur
 turkish.ReadyClientRemote=Client (tepsi): %1 okur
 turkish.AutoStartTask=Windows ba&şladığında Service Officer'ı otomatik başlat
@@ -218,6 +220,11 @@ Filename: "{app}\{#MyHubService}\{#MyHubExeName}"; Parameters: "--startup auto i
   StatusMsg: "{cm:RegisteringHub}"; Components: hub; Flags: runhidden waituntilterminated
 ; 2. the firewall rule. Domain profile only, deliberately: a management port has no
 ;    business being open on a network the machine merely finds itself on.
+; Deleted first: `add rule` appends, so every installation left another rule with the same
+; name behind it — two of them on the machine this was found on. Deleting one that is not
+; there is not a failure worth minding, and the exit code is ignored either way.
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Service Officer Hub"""; \
+  Components: hub; Flags: runhidden waituntilterminated
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Service Officer Hub"" dir=in action=allow protocol=TCP localport={code:GetHubPort} profile=domain"; \
   Components: hub; Flags: runhidden waituntilterminated
 ; 3. the port, if it was chosen. Written by the hub itself: the installer has no
@@ -515,7 +522,12 @@ begin
   Section := String(Body);
   At := Pos('"hub"', Section);
   if At = 0 then
+  begin
+    // Saved before that section existed. Still an answer: a hub reading this file gets the
+    // default, because that is what core/config gives a file without one.
+    Result := '{#MyHubPort}';
     Exit;
+  end;
   Result := AsPort(JsonValue(Copy(Section, At, Length(Section)), 'port'));
 end;
 
@@ -669,10 +681,14 @@ begin
   // parts is a worse question than "what should this computer do".
   if PageID = wpSelectComponents then
     Result := True
-  // A port is only asked for when a hub is being installed here *and* there is not
-  // already one serving on a port its clients have stored.
+  // Asked once, on a first install. A hub that is already here keeps the port it serves
+  // on — its clients have that port stored, and moving it would leave every one of them
+  // looking at nothing. Decided by whether the *service exists*, not by whether its port
+  // could be read: on the machine this was found on neither source could answer (an exe
+  // predating the `port` command, and a config written before there was a "hub" section in
+  // it) and the page took both unknowns for "nothing is installed".
   else if (PortPage <> nil) and (PageID = PortPage.ID) then
-    Result := (not InstallingHub()) or (ExistingPort <> '')
+    Result := (not InstallingHub()) or HubInstalledHere()
   else if (HubPage <> nil) and (PageID = HubPage.ID) then
     Result := not InstallingClient();
 end;
@@ -795,8 +811,13 @@ begin
   Lines := '';
   if InstallingHub() then
   begin
+    // Three different things, and the reader deserves to be told which: an upgrade of a
+    // hub that answered a ping, an upgrade of one that did not but is in the registry, and
+    // a hub that does not exist here yet.
     if ExistingHubVersion <> '' then
-      Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubUpgrade}'), [ExistingHubVersion, '{#MyAppVersion}']) + NewLine
+      Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubUpgrade}'), [ExistingHubVersion, '{#MyAppVersion}', GetHubPort('')]) + NewLine
+    else if HubInstalledHere() then
+      Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubKept}'), ['{#MyAppVersion}', GetHubPort('')]) + NewLine
     else
       Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubNew}'), [GetHubPort('')]) + NewLine;
   end;

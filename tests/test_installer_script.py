@@ -201,3 +201,42 @@ def test_a_port_read_from_outside_is_validated_before_it_is_used(script):
         if "LoadStringsFromFile" in listed:
             assert "AsPort" in listed or "Result := Trim(Lines[0]);" not in listed, \
                 f"{name} uses a line of external output unvalidated"
+
+
+def test_a_first_install_is_decided_by_the_registry_not_by_a_readable_port(script):
+    """The port page appeared on a machine that had been running a hub for two days.
+
+    It was skipped only when the port could be *read*, and there neither source could
+    answer — the exe under {app} was a release that predates the `port` command, and
+    services.json had been written before there was a "hub" section in it. Two unknowns,
+    read as "nothing is installed here".
+
+    Whether a hub exists is a fact in the service registry. What port it uses is a detail.
+    Only the first may decide whether somebody is asked.
+    """
+    routines = _routines(script)
+    assert "ShouldSkipPage" in routines
+    decision = [line for line in routines["ShouldSkipPage"].splitlines()
+                if "PortPage.ID" in line or "Result := (not InstallingHub())" in line]
+    joined = "\n".join(decision)
+    assert "HubInstalledHere()" in joined, (
+        "the port page's skip rule does not consult the service registry: "
+        f"{joined.strip()!r}")
+    assert "ExistingPort" not in joined, (
+        "the port page's skip rule still depends on whether a port could be read, which "
+        "is a different question and answers 'first install' when it simply does not know")
+
+
+def test_the_firewall_rule_is_replaced_rather_than_appended(script):
+    """`netsh advfirewall firewall add rule` appends. Two identically named rules were on
+    the machine this was measured on — one per installation."""
+    lines = [line for line in script.splitlines() if "advfirewall firewall" in line]
+    adds = [line for line in lines if "add rule" in line]
+    deletes = [line for line in lines if "delete rule" in line]
+    assert len(adds) == 1, f"{len(adds)} add-rule lines"
+    # One delete before the install's add, one in [UninstallRun].
+    assert len(deletes) >= 2, (
+        "nothing deletes the rule before adding it, so every installation leaves another "
+        "copy behind")
+    assert script.index(deletes[0]) < script.index(adds[0]), \
+        "the delete has to come before the add"
