@@ -166,11 +166,14 @@ class RemoteStore:
     def apply_health(self, raw: dict) -> None:
         key = (raw.get("machine", "") or "", raw.get("service", ""))
         with self._lock:
-            row = self._services.get(key)
-            if row is None:
-                return
+            # Kept even for a service this client has never seen — one added on another
+            # client — the same way a status event is, so the next snapshot fills in the rest
+            # of the row rather than the verdict being the thing that goes missing.
+            row = dict(self._services.get(key) or
+                       {"name": key[1], "machine": key[0], "label": key[1]})
             row["health"] = raw.get("verdict", "unknown")
             row["health_detail"] = raw.get("detail", "")
+            self._services[key] = row
 
     # -- the read API ------------------------------------------------------
     def _row(self, name: str, machine: str = "") -> dict:
@@ -608,12 +611,29 @@ class HubClient:
             # Nothing to store: an action is a moment, not a state. It goes straight to
             # _on_event, which is where the window is.
             pass
+        elif kind == "gap":
+            # The hub dropped events for this connection, so what is held is no longer
+            # reliable and it cannot be told which are missing. One fresh snapshot is the
+            # whole repair. Not on this thread: this is the reader, and a request made from
+            # it would stall the very stream the answer has to arrive alongside.
+            log.info("the hub dropped %s event(s) for this client; reading a fresh snapshot",
+                     payload.get("missed", "?"))
+            threading.Thread(target=self._resync, daemon=True,
+                             name="hub-resync").start()
         self._events.set()
         if self._on_event is not None:
             try:
                 self._on_event(payload)
             except Exception:
                 log.exception("a hub event listener failed")
+
+    def _resync(self) -> None:
+        """Read the whole state again, after a gap. Failure is not fatal: the stream is still
+        open and the next reconnect takes a snapshot anyway."""
+        try:
+            self.refresh_now()
+        except Exception as exc:
+            log.info("could not resync after a gap: %s", exc)
 
     def _mark(self, connected: bool) -> None:
         if connected == self.connected:

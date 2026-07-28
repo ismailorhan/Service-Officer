@@ -431,3 +431,77 @@ def test_a_failure_this_panel_asked_for_is_reported(qapp, monkeypatch):
     app_mod.Application._action_done(app, "WMSServer", "", "stop", "Access is denied",
                                      announce=False, bulk=False, status="")
     assert not said, "reported an action this panel never asked for"
+
+
+def test_a_client_lists_the_hubs_services_not_its_own_disks(qapp, tmp_path, monkeypatch):
+    """`self.cfg = cfg_mod.load()` — and never anything else. So a client listed whatever was
+    in *its own* machine's services.json, which on a fresh client install is nothing: an empty
+    panel in front of a store holding nine services.
+
+    Invisible until 2026-07-29 only because the hub and the client had always been the same
+    computer sharing one ProgramData.
+    """
+    from core import config as cfg_mod, engine as engine_mod, hub_auth
+    from core import hub_client, hub_server
+    from core import state as st
+    import app as app_mod
+
+    # The hub, with a landscape and a theme of its own.
+    monkeypatch.setattr(engine_mod.control, "query_status",
+                        lambda name, machine="": st.RUNNING)
+    monkeypatch.setattr(engine_mod.control, "start_type",
+                        lambda name, machine="": "Automatic")
+    monkeypatch.setattr(hub_auth, "check", lambda token: "tests")
+    monkeypatch.setattr(hub_auth, "note_seen", lambda name, host="": None)
+    theirs = cfg_mod.Config(
+        machines=[cfg_mod.Machine(), cfg_mod.Machine(name="sc-sql", address="10.0.0.9")],
+        services=[cfg_mod.Service(name="AppEngine", label="CompuTec AppEngine"),
+                  cfg_mod.Service(name="B1ServerTools64", machine="sc-sql")],
+        theme="dark", auto_start=False)
+    engine = engine_mod.Engine(lambda: theirs, store=st.Store())
+    server = hub_server.HubServer(engine, host="127.0.0.1", port=0, insecure=True)
+    server.start()
+    try:
+        # And this machine: nothing of its own but a taste.
+        mine = cfg_mod.Config(theme="light", auto_start=True)
+
+        app = _Stub()
+        app.hub = hub_client.HubClient(server.url, "good")
+        app.cfg = mine
+
+        app_mod.Application._adopt_hub_config(app)
+
+        assert [s.name for s in app.cfg.services] == ["AppEngine", "B1ServerTools64"],             "the panel would have been empty"
+        assert [m.name for m in app.cfg.machines] == ["", "sc-sql"]
+        # And the taste stayed this computer's: auto-start is a registry key here, and a
+        # theme is one person's eyesight. Adopting the hub's would push one user's dark mode
+        # to everybody's tray.
+        assert app.cfg.theme == "light", "took the hub's theme"
+        assert app.cfg.auto_start is True, "took the hub's auto-start"
+    finally:
+        server.stop()
+
+
+class _Stub:
+    """Enough of an Application for _adopt_hub_config: it reads self.hub and self.cfg, and
+    rebuilds through the real method — which returns early because nothing has been built,
+    the way it does during the first adoption inside __init__."""
+
+    flyout = None
+    panel = None
+
+    def __init__(self):
+        import app as app_mod
+        self._rebuild_for_new_config = (
+            lambda: app_mod.Application._rebuild_for_new_config(self))
+
+
+def test_every_config_section_is_on_one_side_or_the_other():
+    """Adding a section and forgetting to classify it is silent: it would come from the hub
+    on one path and from this disk on another, and the disagreement shows up much later as a
+    setting that will not stick."""
+    from core import config as cfg_mod
+
+    assert cfg_mod.unclassified() == [], (
+        "these Config fields are in neither LANDSCAPE nor LOCAL_TASTE: "
+        f"{cfg_mod.unclassified()}")

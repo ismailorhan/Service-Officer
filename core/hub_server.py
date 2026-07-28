@@ -109,16 +109,31 @@ class _Listener:
 
     def put(self, payload: dict) -> None:
         with self.lock:
-            if len(self.events) >= self.LIMIT:
+            dropping = len(self.events) >= self.LIMIT
+            if dropping:
                 self.dropped += 1
-                return
-            self.events.append(payload)
+            else:
+                self.events.append(payload)
+        # Woken either way. A client far enough behind to fill this queue keeps every
+        # further event dropping, so returning quietly here left nothing to wake the writer
+        # and the gap marker was never sent at all — the client stayed silently wrong, which
+        # is precisely what the marker exists to prevent.
         self.wake.set()
 
     def take(self) -> list:
+        """Everything waiting, and a marker if anything was lost making room for it.
+
+        The marker goes *last*: the events still queued are true, and a client should apply
+        them before being told that what it holds is unreliable. Cleared here, so one gap
+        produces one marker however many events it swallowed — a client reading a fresh
+        snapshot for each of five hundred would be worse than the gap itself.
+        """
         with self.lock:
             found, self.events = self.events, []
+            missed, self.dropped = self.dropped, 0
             self.wake.clear()
+        if missed:
+            found.append(wire.gap_event(missed))
         return found
 
 
@@ -197,10 +212,17 @@ class HubServer:
         # a machine going quiet is not a service changing. Without this the chip on every
         # remote machine was frozen at whatever the client's first snapshot said.
         self.engine.also_on_machine(self._on_machine)
+        # Health is not a status change — the service manager still says Running — but it is
+        # what st.effective() turns into the chip's colour. Unpublished, a connected panel
+        # showed green for a service whose checks had been failing for hours.
+        self.engine.also_on_health(self._on_health)
         # And when one finishes. The hub answers 202 to an action — accepted, not done — so
         # without this a client never learned the outcome: a busy label that never cleared,
         # and a refusal nobody saw.
         self.engine.also_on_action_done(self._on_action_done)
+        # And when the landscape is edited, by whoever. Without this two panels on one hub
+        # disagreed about what services exist until one of them was restarted.
+        self.engine.also_on_config_saved(self._on_config_saved)
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         daemon=True, name="hub-http")
         self._thread.start()
@@ -265,9 +287,18 @@ class HubServer:
         thread the change happened on, which is why the queues are locked."""
         self.publish(wire.event_from_state(state_event))
 
+    def _on_health(self, service="", machine="", verdict="", detail="", **_rest) -> None:
+        """A verdict changed: tell every open stream."""
+        self.publish(wire.health_event(service, machine, verdict, detail))
+
     def _on_machine(self, machine="", reachable=False, detail="") -> None:
         """A machine started or stopped answering: tell every open stream."""
         self.publish(wire.machine_event(machine, reachable, detail))
+
+    def _on_config_saved(self, config=None, actor="", **_rest) -> None:
+        """The landscape changed: tell every open stream so they come and read it."""
+        self.publish(wire.config_event(actor, wire.etag(config)
+                                       if config is not None else ""))
 
     def _on_action_done(self, service="", machine="", action="", error="", status="",
                         actor="", **_rest) -> None:

@@ -566,9 +566,21 @@ class Engine:
         """Add a second listener for machine reachability, keeping the first."""
         self._chain("_on_machine", fn)
 
+    def also_on_health(self, fn) -> None:
+        """Add a second listener for health verdicts, keeping the first."""
+        self._chain("_on_health", fn)
+
     def also_on_action_done(self, fn) -> None:
         """Add a second listener for actions finishing, keeping the first."""
         self._chain("_on_action_done", fn)
+
+    def also_on_config_saved(self, fn) -> None:
+        """Add a second listener for the config being saved, keeping the first.
+
+        The hub's own first listener is what swaps the config every other part reads, so
+        replacing it rather than chaining would leave the poller running the old one.
+        """
+        self._chain("_on_config_saved", fn)
 
     def _chain(self, attribute: str, fn) -> None:
         """Add a listener beside whoever already has one.

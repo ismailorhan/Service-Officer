@@ -106,6 +106,34 @@ def machine_event(machine: str, reachable: bool, detail: str = "") -> dict:
             "at": time.time()}
 
 
+def health_event(service: str, machine: str, verdict: str, detail: str = "") -> dict:
+    """A service's health checks started or stopped passing.
+
+    Its own kind, not a status change: the service manager still says Running either way. What
+    changes is `st.effective()` — the words on the chip, its colour, and the tray icon.
+    """
+    return {"kind": "health", "service": service or "", "machine": machine or "",
+            "verdict": verdict or "unknown", "detail": detail or "", "at": time.time()}
+
+
+def gap_event(missed: int) -> dict:
+    """Events were dropped for this client, so what it holds is no longer reliable.
+
+    The one honest thing to send: it cannot be told *which* it missed, and guessing would be
+    worse than saying so. The client reads a fresh snapshot.
+    """
+    return {"kind": "gap", "missed": int(missed), "at": time.time()}
+
+
+def config_event(actor: str = "", etag: str = "") -> dict:
+    """The landscape was edited. Carries no config: it is large, every client holds a copy
+    already, and one that wants the new one asks — which also gets it the etag it will need
+    to save against. A notification, not a delivery.
+    """
+    return {"kind": "config", "actor": actor or "", "etag": etag or "",
+            "at": time.time()}
+
+
 def action_event(service: str, machine: str, action: str, error: str = "",
                  status: str = "", actor: str = "") -> dict:
     """An action finished — well or badly.

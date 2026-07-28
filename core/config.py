@@ -24,7 +24,7 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, field, asdict, replace
+from dataclasses import dataclass, field, asdict, fields, replace
 
 _PROGRAM_DATA = os.environ.get("ProgramData", r"C:\ProgramData")
 #: Named as the product is named, spaces and all, so it sits next to the other
@@ -466,6 +466,16 @@ class Hub:
     bind: str = ""
 
 
+#: The sections that describe the landscape: what is watched, where it lives, and how it is
+#: grouped and scheduled. One hub owns these, and every client of it reads the same ones.
+LANDSCAPE = ("services", "stacks", "triggers", "machines", "categories", "history", "hub")
+#: And the sections that belong to whoever is sitting at this computer. `auto_start` is a
+#: registry key on this machine; a theme is one person's eyesight; notifications are which
+#: toasts appear on *this* screen. Adopting a hub's would push one user's dark mode to
+#: everybody's tray.
+LOCAL_TASTE = ("notifications", "auto_start", "theme")
+
+
 @dataclass
 class Config:
     services: list = field(default_factory=list)      # list[Service]
@@ -825,6 +835,32 @@ def from_dict(data: dict) -> Config:
                else "system"),
         version=CURRENT_VERSION,
     )
+
+
+def merged(landscape, taste):
+    """The landscape from one config and the taste from another, as one Config.
+
+    What a client is: it watches the hub's services and keeps its own theme. Copied field by
+    field from the two names above rather than by listing them here again, so a section added
+    to Config has to be classified once and cannot quietly end up in neither.
+    """
+    import copy
+
+    made = copy.deepcopy(landscape)
+    for name in LOCAL_TASTE:
+        setattr(made, name, copy.deepcopy(getattr(taste, name)))
+    return made
+
+
+def unclassified() -> list:
+    """Config fields that are in neither LANDSCAPE nor LOCAL_TASTE.
+
+    A test asserts this is empty. Adding a section and forgetting to say which side it is on
+    is silent otherwise: it would come from the hub on one path and from the local file on
+    another, and the disagreement would show up as a setting that will not stick.
+    """
+    known = set(LANDSCAPE) | set(LOCAL_TASTE) | {"version"}
+    return [f.name for f in fields(Config) if f.name not in known]
 
 
 def to_dict(cfg: Config) -> dict:

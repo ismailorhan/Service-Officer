@@ -338,3 +338,65 @@ def test_a_client_is_told_when_its_action_fails(system, monkeypatch):
         lambda: any(e.get("kind") == "action" for e in heard), timeout=15)
     done = next(e for e in heard if e.get("kind") == "action")
     assert "denied" in done["error"].lower(), f"the reason was lost: {done['error']!r}"
+
+
+# ---------------------------------------------------------------------------
+# what a client knows, and how it finds out
+# ---------------------------------------------------------------------------
+def test_a_health_verdict_reaches_a_client(system):
+    """Health decides st.effective() — the chip's words, its colour, and the tray icon. It was
+    never published: `set_health` writes a dict and notifies nobody, and nothing sent a
+    `health` event at all, so `RemoteStore.apply_health` was dead code. A connected panel
+    showed green for a service whose checks had been failing for hours."""
+    client, engine, _server, _states, _holder = system
+
+    assert client.store.health_of("AppEngine") == "unknown"
+
+    engine._call(engine._on_health, service="AppEngine", machine="",
+                 verdict=st.UNHEALTHY, detail="the port never answered")
+
+    assert client.wait_for(
+        lambda: client.store.health_of("AppEngine") == st.UNHEALTHY, timeout=10),         "the verdict never crossed the wire"
+    assert client.store.health_detail("AppEngine") == "the port never answered",         "a red chip with no reason sends somebody looking in the wrong place"
+
+
+def test_a_dropped_event_makes_the_client_read_everything_again(system, monkeypatch):
+    """The queue is bounded at 500, which is right — a client that stopped reading must not
+    grow the hub's memory. But the drop was only counted and logged on the hub, and there is
+    no periodic snapshot, so the client stayed wrong for the rest of the session with no way
+    to know."""
+    client, engine, server, states, _holder = system
+
+    # Overflow one listener without needing five hundred real events.
+    with server._listeners_lock:
+        listener = next(iter(server._listeners))
+    monkeypatch.setattr(type(listener), "LIMIT", 0)
+
+    resynced = []
+    real = client.refresh_now
+    monkeypatch.setattr(client, "refresh_now",
+                        lambda: (resynced.append(True), real())[1])
+
+    states["AppEngine"] = st.STOPPED
+    engine.store.update("AppEngine", st.STOPPED)
+
+    assert client.wait_for(lambda: bool(resynced), timeout=10),         "the client was never told it had missed anything"
+    assert client.wait_for(
+        lambda: client.store.status_of("AppEngine") == st.STOPPED, timeout=10),         "it resynced and still did not catch up"
+
+
+def test_a_config_change_by_one_client_reaches_another(system):
+    """A config change was published to nobody, so two panels on one hub disagreed about what
+    services exist until one of them was restarted."""
+    client, _engine, _server, _states, _holder = system
+    heard = []
+    client._on_event = heard.append
+
+    current, etag = client.config()
+    current.services.append(cfg_mod.Service(name="Added", label="Added later"))
+    client.save_config(current, etag)
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "config" for e in heard), timeout=10),         "nobody was told the landscape had changed"
+    again, _etag = client.config()
+    assert any(s.name == "Added" for s in again.services)

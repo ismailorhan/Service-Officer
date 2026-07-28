@@ -264,6 +264,10 @@ class Application(QObject):
                 # certificate is the one thing a pin must never do.
                 log.error("%s", exc)
             self.store = self.hub.store
+            # The landscape is the hub's, not this disk's. Without this a client listed
+            # whatever was in its own services.json, which on a fresh client machine is
+            # nothing at all — an empty panel in front of a store holding nine services.
+            self._adopt_hub_config()
             self.hub.start()
         else:
             self.engine = engine_mod.Engine(
@@ -381,6 +385,16 @@ class Application(QObject):
     def _on_hub_event(self, payload) -> None:
         """Something happened on the hub. The store has already been updated by the
         client; this is the repaint, and the notifications that belong to this screen."""
+        if payload.get("kind") == "config":
+            self._adopt_hub_config()
+        if payload.get("kind") == "health":
+            # Same signal as the engine's, so a connected panel gets the repaint *and* the
+            # toast. Unpublished until now, a service whose checks had been failing for
+            # hours stayed green here: health is what st.effective() turns into the chip's
+            # colour and the tray icon.
+            self.health_signals.verdict.emit(
+                payload.get("service", ""), payload.get("machine", ""),
+                payload.get("verdict", "unknown"), payload.get("detail", ""))
         if payload.get("kind") == "action":
             # Through the same signal the engine uses, so one handler clears the busy
             # label, counts a batch and reports a failure whether this panel owns an
@@ -393,8 +407,58 @@ class Application(QObject):
                 False, False, payload.get("status", ""))
         self._refresh_lists()
 
+    def _adopt_hub_config(self) -> None:
+        """Take the hub's landscape and keep this computer's own taste.
+
+        Theme, auto-start and notifications stay local: auto-start is a registry key on this
+        machine, and a theme is one person's eyesight — see config.LOCAL_TASTE. Everything
+        else is what the hub is watching, and a client that answered from its own disk was
+        answering about a different landscape.
+
+        A hub that cannot be reached leaves what is already here, which for a first launch is
+        this machine's own file. Empty is honest; inventing a landscape is not.
+        """
+        if self.hub is None:
+            return
+        try:
+            landscape, _etag = self.hub.config()
+        except Exception as exc:
+            log.info("could not read the hub's settings yet: %s", exc)
+            return
+        was = cfg_mod.to_dict(self.cfg)
+        self.cfg = cfg_mod.merged(landscape, self.cfg)
+        if cfg_mod.to_dict(self.cfg) == was:
+            return
+        log.info("adopted the hub's settings: %d service(s), %d machine(s)",
+                 len(self.cfg.services), len(self.cfg.machines))
+        self._rebuild_for_new_config()
+
+    def _rebuild_for_new_config(self) -> None:
+        """Everything that was built from the old one. Shared by adopting and by saving."""
+        # The first adoption happens while this object is still being built — the hub has to
+        # be connected before the tray and the flyout are made, or they would be made from
+        # the wrong landscape. There is nothing to rebuild then: they have not been built,
+        # and when they are it will be from the config this just replaced.
+        if getattr(self, "flyout", None) is None:
+            return
+        self.tray.rebuild_menu()
+        self.flyout.rebuild()
+        # An open panel is *not* replaced. It edits a deep copy and Save commits it, so
+        # swapping its config underneath would throw away whatever somebody is halfway
+        # through typing. The etag already turns a genuine collision into a refusal at save
+        # time rather than a silent loss — see test_two_clients_editing_at_once. Its
+        # dashboard shows state rather than edits, so that half does rebuild.
+        if self.panel is not None:
+            self.panel.dashboard.rebuild()
+        self._refresh_lists()
+
     def _on_hub_connected(self, connected: bool) -> None:
         log.info("hub %s", "connected" if connected else "disconnected")
+        if connected:
+            # Anything could have been edited while this client was away, including by
+            # somebody at the hub itself. Cheap: one small request, and it is also how a
+            # client that started while the hub was down ever gets a landscape at all.
+            self._adopt_hub_config()
         self._refresh_lists()
         if not connected and local_mod.load().notify:
             self.tray.notify("Service Officer",
