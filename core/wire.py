@@ -106,6 +106,21 @@ def machine_event(machine: str, reachable: bool, detail: str = "") -> dict:
             "at": time.time()}
 
 
+def action_event(service: str, machine: str, action: str, error: str = "",
+                 status: str = "", actor: str = "") -> dict:
+    """An action finished — well or badly.
+
+    Its own kind, because it is not a status change: an action that is refused changes no
+    status at all, and that is exactly the case a client used to hear nothing about.
+
+    `bulk` is deliberately absent. It means "part of a batch *this* panel confirmed", which is
+    true of the panel that started it and of no other.
+    """
+    return {"kind": "action", "service": service or "", "machine": machine or "",
+            "action": action or "", "error": error or "", "status": status or "",
+            "actor": actor or "", "at": time.time()}
+
+
 def normalised(cfg) -> dict:
     """The config as it will be once stored and loaded again.
 

@@ -110,6 +110,20 @@ def abilities(machine: str = "", record=None):
     return _for(machine, record).abilities()
 
 
+def log_records(service_name: str, machine: str = "", label: str = "",
+                hours: int = 168, levels=None, limit: int = 400, record=None) -> list:
+    """This service's event log entries as records, whichever machine it lives on.
+
+    Empty where the transport has no log to read — a Linux target's journal is a different
+    shape and is not merged into a timeline yet.
+    """
+    connector = _for(machine, record)
+    reader = getattr(connector, "log_records", None)
+    if reader is None:
+        return []
+    return reader(service_name, label, hours, levels, limit)
+
+
 def reachable(machine: str, record=None) -> bool:
     """Can we talk to this machine at all? Used to show a machine as offline
     instead of every service on it as 'Not Found'."""

@@ -2584,3 +2584,88 @@ def test_a_row_nobody_told_offers_no_remote_kill(qapp):
     here = rows_mod.ServiceRow(cfg_mod.Service(name="X"))
     here.set_status(st.RUNNING)
     assert here.buttons["kill"].isEnabled() is True
+
+
+def test_history_never_asks_a_machine_whose_switch_is_off(qapp, monkeypatch):
+    """Reading a log is not worth starting a PowerShell process against a machine whose owner
+    has said no — and every WinRM call writes a logon record to that machine's Security log,
+    which is the whole reason the switch exists."""
+    from core import config as cfg_mod
+    from ui.pages import history as page_mod
+
+    cfg = cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="on", address="10.0.0.1", winrm=True),
+                  cfg_mod.Machine(name="off", address="10.0.0.2", winrm=False),
+                  cfg_mod.Machine(name="linux", address="10.0.0.3", kind="linux")],
+        services=[cfg_mod.Service(name="here"),
+                  cfg_mod.Service(name="A", machine="on"),
+                  cfg_mod.Service(name="B", machine="off"),
+                  cfg_mod.Service(name="C", machine="linux")])
+
+    page = page_mod.HistoryPage(lambda: cfg)
+    page.include_windows.setChecked(True)
+
+    asked = [m for m, _s, _l in page._remote_machines()]
+
+    assert asked == ["on"], f"asked {asked}"
+
+
+def test_history_reads_a_remote_log_off_the_gui_thread(qapp, monkeypatch):
+    """One of these calls took 8.8 seconds against a real machine. The Machines page already
+    learned this: a frozen window with no cursor and no explanation for 42 seconds."""
+    import threading
+    import time
+    from core import config as cfg_mod, control
+    from ui.pages import history as page_mod
+
+    cfg = cfg_mod.Config(
+        machines=[cfg_mod.Machine(),
+                  cfg_mod.Machine(name="on", address="10.0.0.1", winrm=True)],
+        services=[cfg_mod.Service(name="A", machine="on")])
+
+    gui = threading.current_thread()
+    seen = {}
+
+    def fake_read(service, machine="", label="", hours=168, levels=None, limit=400,
+                  record=None):
+        seen["thread"] = threading.current_thread()
+        seen["args"] = (service, machine, label, hours)
+        return [{"ts": "2026-07-16T10:00:00", "service": service, "level": "Error",
+                 "event_id": 7011, "message": "x", "source": "SCM", "summary": "timed out"}]
+
+    monkeypatch.setattr(control, "log_records", fake_read)
+
+    page = page_mod.HistoryPage(lambda: cfg)
+    # Ticking the box is what a person does, and it reloads — which would start the worker
+    # before this test has connected to hear it finish. Set it without the side effect, then
+    # ask on purpose.
+    page.include_windows.blockSignals(True)
+    page.include_windows.setChecked(True)
+    page.include_windows.blockSignals(False)
+    drawn = []
+    page.remote_logs_arrived.connect(lambda: drawn.append(True))
+    page._fetch_remote_logs()
+
+    # Spin the event loop rather than blocking on it. `remote_logs_arrived` is a queued
+    # cross-thread connection — which is the point, the drawing must happen here — so a
+    # thread that waits on the GUI thread waits for a slot that can never run.
+    for _ in range(200):
+        if not page._remote_busy and page._remote_key is not None:
+            break
+        qapp.processEvents()
+        time.sleep(0.02)
+
+    assert page._remote_key is not None, "the worker never came back"
+    qapp.processEvents()
+    assert drawn, "it came back and nothing was told to repaint"
+    assert seen["thread"] is not gui, "read on the GUI thread — the window would freeze"
+    assert seen["args"][:3] == ("A", "on", "A")
+    assert page._remote_logs["on"], "what it read was thrown away"
+
+    # Asked once: sorting a column must not cost a WinRM call, nor a logon record.
+    before = seen["thread"]
+    seen.clear()
+    page._fetch_remote_logs()
+    assert "thread" not in seen, "asked the same machine twice for the same view"
+    assert before is not None

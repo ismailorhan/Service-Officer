@@ -604,6 +604,10 @@ class HubClient:
             self.store.apply_health(payload)
         elif kind == "machine":
             self.store.apply_machine(payload)
+        elif kind == "action":
+            # Nothing to store: an action is a moment, not a state. It goes straight to
+            # _on_event, which is where the window is.
+            pass
         self._events.set()
         if self._on_event is not None:
             try:

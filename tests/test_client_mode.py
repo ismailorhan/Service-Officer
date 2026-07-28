@@ -366,3 +366,68 @@ def test_quitting_an_embedded_install_still_stops_the_engine(qapp, monkeypatch):
     built.quit()
 
     assert stopped == [True]
+
+
+class _Quiet:
+    """Enough of an Application for _action_done. Unbound, because Application is a Qt class
+    and object.__new__ refuses it — and building a real one starts a tray icon."""
+
+    def __getattr__(self, _name):
+        return _Quiet()
+
+    def __call__(self, *a, **k):
+        return None
+
+    def isVisible(self):
+        return False
+
+
+def test_a_hub_action_event_clears_the_busy_label(qapp, monkeypatch):
+    """The event is only half of it: the panel has to treat it exactly like its own engine's,
+    because the busy label is sticky by design — it survives a repaint so "Restarting…" is not
+    wiped by an unrelated poll. Nothing cleared it in client mode, so a row read "Stopping…"
+    for the rest of the session next to a counter that already said "1 stopped"."""
+    import app as app_mod
+
+    cleared, announced = [], []
+    app = _Quiet()
+    app.panel = None
+    app._announce = {}
+    app._bulk = None
+    app._pending_trigger = None
+    app._clear_busy = lambda name, machine: cleared.append((name, machine))
+    monkeypatch.setattr(app_mod.QMessageBox, "warning",
+                        lambda *a, **k: announced.append(a))
+
+    app_mod.Application._action_done(app, "AppEngine", "", "stop", "", announce=False,
+                                     bulk=False, status="Stopped")
+
+    assert cleared == [("AppEngine", "")], "the label was left saying Stopping…"
+    assert not announced, "somebody else's action must not raise a dialog here"
+
+
+def test_a_failure_this_panel_asked_for_is_reported(qapp, monkeypatch):
+    """And one it did not ask for is not. `_announce` only has an entry for an action this
+    panel started, which is what keeps another user's refusal off this screen."""
+    import app as app_mod
+
+    said = []
+    app = _Quiet()
+    app.panel = None
+    app._bulk = None
+    app._pending_trigger = None
+    app._clear_busy = lambda name, machine: None
+    monkeypatch.setattr(app_mod.QMessageBox, "warning", lambda *a, **k: said.append(a[2]))
+
+    # This panel asked: do_action puts an entry in _announce before it calls the engine.
+    app._announce = {("AppEngine", ""): True}
+    app_mod.Application._action_done(app, "AppEngine", "", "stop", "Access is denied",
+                                     announce=False, bulk=False, status="")
+    assert said, "the panel that pressed the button heard nothing about the refusal"
+
+    # Another panel asked: no entry, so nothing is said here.
+    said.clear()
+    app._announce = {}
+    app_mod.Application._action_done(app, "WMSServer", "", "stop", "Access is denied",
+                                     announce=False, bulk=False, status="")
+    assert not said, "reported an action this panel never asked for"

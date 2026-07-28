@@ -405,21 +405,181 @@ def kill(host: str, pid: int, user: str = "", password: str = "") -> tuple:
     return False, reason
 
 
-def logs(host: str, service: str, lines: int = 50, user: str = "",
-         password: str = "") -> list:
-    """That service's recent entries from the target's own event log.
+#: Field separator for a structured log record. The unit separator: it is not a character
+#: an event message contains, and unlike a comma or a pipe it needs no escaping.
+FIELD = "\x1f"
 
-    The System log filtered by provider name, which is where the service control manager
-    and most services put theirs. Returns the lines, or one line saying why not — the
-    caller shows this in a panel, and an empty list there is indistinguishable from "no
-    events".
+
+#: The provider that writes "the X service entered the stopped state". Its events name the
+#: service in the *message*, not in the provider — so they are only this service's when the
+#: message says so. Treating the provider itself as a match returns every service on the
+#: machine, which is what the first version of this did: asked for B1ServerTools64 on
+#: 10.77.3.112 and got Windows Update, App Readiness and AppXSVC.
+SCM_PROVIDER = "Service Control Manager"
+
+
+#: Windows event levels, by number, to the names `eventlog.read` uses. Numbers rather than
+#: `LevelDisplayName`, because that string is localised: a Turkish target answers "Hata" and
+#: "Uyarı", and a timeline that sorts and colours by level cannot read those. Critical counts
+#: as an error — it is strictly worse, and there is no third colour for it.
+LEVEL_NAMES = {0: "Information", 1: "Error", 2: "Error", 3: "Warning", 4: "Information",
+               5: "Information"}
+#: The other direction, for asking the target to filter.
+LEVEL_NUMBERS = {"Error": (1, 2), "Warning": (3,), "Information": (0, 4, 5)}
+
+
+def log_records(host: str, service: str, lines: int = 50, user: str = "",
+                password: str = "", label: str = "", hours: int = 168,
+                levels=None) -> list:
+    """That service's event log entries from the target over the last `hours`, as records.
+
+    Same shape as `eventlog.read` — ts, service, level, source, event_id, summary, message —
+    so a timeline merges this computer's rows and another machine's through one code path.
+
+    `label` is the display name, because that is what the service control manager writes into
+    its messages: "The CompuTec AppEngine service entered the running state" never contains
+    "AppEngine" on its own. Matching both is what the local reader does.
+
+    `hours` and `levels` are both filtered on the *target*, not here. By StartTime rather than
+    by taking the newest N and looking through them: a busy machine writes hundreds of System
+    events an hour, so a fixed count is a window of unknown length. Measured on 10.77.3.112 —
+    asked for B1ServerTools64's week it answered nothing, because all 53 of its entries were
+    older than the machine's last 400 System events.
+
+    `levels` are the names `eventlog.read` uses, and default to the same two it does: a
+    timeline of "entered the running state" every hour is not a history of anything.
+
+    Returns [] when it cannot be read, rather than a row saying so: a timeline that puts
+    "WinRM refused the account" in the middle of a service's history has invented an event
+    that never happened. Whoever asked reports the failure in their own words — see
+    `logs()` for the panel version, which does say why.
+    """
+    wanted = set(levels or ("Error", "Warning"))
+    numbers = sorted({n for name in wanted for n in LEVEL_NUMBERS.get(name, ())})
+    body = (
+        " $ErrorActionPreference='Continue';"
+        " $svc = $using:service; $lbl = $using:label;"
+        " $sep = [string][char]31;"
+        " $since = (Get-Date).AddHours(-1 * $using:hours);"
+        " $filter = @{ LogName = 'System'; StartTime = $since };"
+        # Cast, because an array crosses the session as a System.Collections.ArrayList and
+        # FilterHashtable's Level silently matches *nothing* for one — no error, no events,
+        # and -ErrorAction SilentlyContinue would hide an error anyway. Measured on
+        # 10.77.3.112: the same three levels gave 0 events as an ArrayList and 356 as an
+        # Int32[].
+        " if ($using:levels) {"
+        "   $filter['Level'] = @($using:levels | ForEach-Object { [int]$_ }) }"
+        " Get-WinEvent -ErrorAction SilentlyContinue -FilterHashtable $filter |"
+        " Where-Object {"
+        "   $hit = ($_.ProviderName -eq $svc);"
+        "   if (-not $hit -and $svc) { $hit = $_.Message -like ('*' + $svc + '*') }"
+        "   if (-not $hit -and $lbl) { $hit = $_.Message -like ('*' + $lbl + '*') }"
+        "   $hit } |"
+        " Select-Object -First $using:lines |"
+        " ForEach-Object {"
+        "   $flat = ($_.Message -replace '[\r\n]+', ' ');"
+        "   $_.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss') + $sep +"
+        "   [string]$_.Level + $sep + [string]$_.Id + $sep +"
+        "   $_.ProviderName + $sep + $flat } ")
+    script = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        + _credential_prologue(user) +
+        "$service = $env:SO_WINRM_SERVICE\n"
+        "$label = $env:SO_WINRM_LABEL\n"
+        "$lines = [int]$env:SO_WINRM_LINES\n"
+        "$hours = [int]$env:SO_WINRM_HOURS\n"
+        "$levels = @(($env:SO_WINRM_LEVELS -split ',' |"
+        " Where-Object { $_ } | ForEach-Object { [int]$_ }))\n"
+        "$a = @{ ComputerName = $env:SO_WINRM_HOST; ScriptBlock = {" + body + "} }\n"
+        "if ($cred) { $a['Credential'] = $cred }\n"
+        "try { Invoke-Command @a }\n"
+        "catch { Write-Output ('SO-ERR ' + $_.Exception.Message); exit 3 }\n")
+    environment = {"SO_WINRM_HOST": host, "SO_WINRM_USER": user or "",
+                   "SO_WINRM_PW": password or "", "SO_WINRM_SERVICE": service,
+                   "SO_WINRM_LABEL": label or "",
+                   "SO_WINRM_HOURS": str(max(1, int(hours or 168))),
+                   "SO_WINRM_LEVELS": ",".join(str(n) for n in numbers),
+                   "SO_WINRM_LINES": str(int(lines))}
+    code, out, err = _powershell(script, environment, TIMEOUT)
+    if code != 0:
+        log.info("%s: could not read its event log: %s", host, _clean(err or out)[:200])
+        return []
+    return _parse_records(out, service)
+
+
+def _summary_for(event_id: int) -> str:
+    """What a service control manager event id means, from the local reader's own table.
+
+    Imported here rather than copied: two tables drift, and then the same event reads as one
+    thing from this computer and another from the machine next to it. `eventlog` needs
+    pywin32 to *read* a log, but its table is a dict — so a machine without it still gets the
+    words.
+    """
+    try:
+        from .eventlog import SCM_EVENTS
+    except Exception:
+        return ""
+    return SCM_EVENTS.get(event_id, "")
+
+
+def _parse_records(out: str, service: str) -> list:
+    """The separated lines back into records, skipping anything malformed.
+
+    A line that does not have five fields is dropped rather than guessed at: a record
+    assembled from the wrong pieces reads as a real event and is worse than a missing one.
+    """
+    found = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split(FIELD, 4)
+        if len(parts) != 5:
+            continue
+        when, level, event_id, source, message = parts
+        try:
+            number = int(event_id.strip() or 0)
+        except ValueError:
+            number = 0
+        try:
+            severity = LEVEL_NAMES.get(int(level.strip() or 4), "Information")
+        except ValueError:
+            severity = "Information"
+        found.append({
+            "ts": when.strip(),
+            "service": service,
+            "level": severity,
+            "source": source.strip(),
+            "event_id": number,
+            # What the event *means*, when we know it. The local reader has a table of the
+            # service control manager's ids; sharing it keeps one row from reading
+            # differently depending on which machine it came from.
+            "summary": _summary_for(number),
+            "message": " ".join(message.split()),
+        })
+    return found
+
+
+def logs(host: str, service: str, lines: int = 50, user: str = "",
+         password: str = "", label: str = "") -> list:
+    """That service's recent entries from the target's own event log, as lines for a panel.
+
+    The System log, kept to entries that are about *this* service: written by it, or naming
+    it. `label` is the display name, because that is what the service control manager writes
+    into its messages — see log_records, which is the same query for a timeline.
+
+    Returns the lines, or one line saying why not: the caller shows this in a panel, where an
+    empty list is indistinguishable from "no events".
     """
     body = (
         " $ErrorActionPreference='Continue';"
-        " $names = @($using:service, 'Service Control Manager');"
+        " $svc = $using:service; $lbl = $using:label;"
         " Get-WinEvent -LogName System -MaxEvents 400 -ErrorAction SilentlyContinue |"
-        " Where-Object { $names -contains $_.ProviderName -or"
-        " $_.Message -like ('*' + $using:service + '*') } |"
+        " Where-Object {"
+        "   $hit = ($_.ProviderName -eq $svc);"
+        "   if (-not $hit -and $svc) { $hit = $_.Message -like ('*' + $svc + '*') }"
+        "   if (-not $hit -and $lbl) { $hit = $_.Message -like ('*' + $lbl + '*') }"
+        "   $hit } |"
         " Select-Object -First $using:lines |"
         " ForEach-Object { $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' +"
         " $_.LevelDisplayName + '  ' + ($_.Message -split \"`n\")[0] } ")
@@ -427,6 +587,7 @@ def logs(host: str, service: str, lines: int = 50, user: str = "",
         "$ErrorActionPreference = 'Stop'\n"
         + _credential_prologue(user) +
         "$service = $env:SO_WINRM_SERVICE\n"
+        "$label = $env:SO_WINRM_LABEL\n"
         "$lines = [int]$env:SO_WINRM_LINES\n"
         "$a = @{ ComputerName = $env:SO_WINRM_HOST; ScriptBlock = {" + body + "} }\n"
         "if ($cred) { $a['Credential'] = $cred }\n"
@@ -434,6 +595,7 @@ def logs(host: str, service: str, lines: int = 50, user: str = "",
         "catch { Write-Output ('SO-ERR ' + $_.Exception.Message); exit 3 }\n")
     environment = {"SO_WINRM_HOST": host, "SO_WINRM_USER": user or "",
                    "SO_WINRM_PW": password or "", "SO_WINRM_SERVICE": service,
+                   "SO_WINRM_LABEL": label or "",
                    "SO_WINRM_LINES": str(int(lines))}
     code, out, err = _powershell(script, environment, TIMEOUT)
     if code != 0:

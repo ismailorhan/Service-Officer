@@ -563,19 +563,27 @@ class Engine:
         self._call(self._on_error, kind="notify", text=text)
 
     def also_on_machine(self, fn) -> None:
-        """Add a second listener for machine reachability, keeping the first.
+        """Add a second listener for machine reachability, keeping the first."""
+        self._chain("_on_machine", fn)
 
-        The hub server is built after the engine — it needs one to serve — so it cannot
-        pass this in at construction time, and replacing the callback would silence
-        whoever already had it.
+    def also_on_action_done(self, fn) -> None:
+        """Add a second listener for actions finishing, keeping the first."""
+        self._chain("_on_action_done", fn)
+
+    def _chain(self, attribute: str, fn) -> None:
+        """Add a listener beside whoever already has one.
+
+        The hub server is built after the engine — it needs one to serve — so it cannot pass
+        these in at construction time, and replacing a callback would silence whoever already
+        had it. A raising listener still cannot take the engine down: both go through _call.
         """
-        first = self._on_machine
+        first = getattr(self, attribute)
 
         def both(**facts):
             self._call(first, **facts)
             self._call(fn, **facts)
 
-        self._on_machine = both
+        setattr(self, attribute, both)
 
     def _call(self, callback, **facts) -> None:
         """A listener that raises must not take the engine down with it: it belongs

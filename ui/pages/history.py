@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import threading
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
@@ -37,6 +39,9 @@ class _TimeCell(QTableWidgetItem):
 
 class HistoryPage(_Page):
     changed = Signal()
+    #: Another machine's event log came back. Carries nothing: the records are in the cache,
+    #: and a signal is how a worker thread asks the GUI thread to draw them.
+    remote_logs_arrived = Signal()
 
     # "Asked by" is last and hidden unless something in view fills it: on a
     # single-machine install nothing ever does, and an always-empty column would
@@ -65,6 +70,12 @@ class HistoryPage(_Page):
         #: it — 340 ms of a 300 ms window open, on a 2.8 MB file. Load when the
         #: page is first shown instead, and again whenever it goes stale.
         self._stale = True
+        #: {machine: [records]} for machines whose logs have been read, and the key those
+        #: were read for. Kept so sorting a column does not cost a WinRM call.
+        self._remote_logs: dict = {}
+        self._remote_key = None
+        self._remote_busy = False
+        self.remote_logs_arrived.connect(self._draw)
 
         row = QHBoxLayout()
         row.setSpacing(9)
@@ -286,6 +297,8 @@ class HistoryPage(_Page):
                 # Which of them are on this computer, because the Windows event log
                 # is only this computer's — see history.query.
                 local_services=[s.name for s in cfg.services if not s.machine],
+                # Read already, on a worker thread — see _fetch_remote_logs.
+                remote_events=self._remote_logs if self.include_windows.isChecked() else None,
                 full=self.full_detail.isChecked())
         except Exception:
             return []
@@ -295,7 +308,67 @@ class HistoryPage(_Page):
         return rows
 
     def reload(self):
+        """Draw what is here, then go and ask the machines that are not."""
         self._stale = False
+        self._draw()
+        self._fetch_remote_logs()
+
+    def _remote_machines(self) -> list:
+        """The machines a timeline would have to ask, and what to ask them for.
+
+        Only where the switch is on: reading a log is not worth starting a PowerShell process
+        against a machine whose owner has said no. And only for services actually in view, so
+        filtering to one service asks one machine rather than all of them.
+        """
+        cfg = self.cfg()
+        chosen = self.service_filter.currentData()
+        wanted = []
+        for svc in cfg.services:
+            if not svc.machine or (chosen and svc.name != chosen):
+                continue
+            machine = cfg.machine(svc.machine)
+            if machine is None or machine.is_linux or not getattr(machine, "winrm", False):
+                continue
+            wanted.append((svc.machine, svc.name, svc.display()))
+        return wanted
+
+    def _fetch_remote_logs(self) -> None:
+        """One worker for the whole set, if the answer is not already the right one."""
+        if not self.include_windows.isChecked():
+            return
+        hours = self.range_filter.currentData() or None
+        wanted = self._remote_machines()
+        key = (tuple(sorted(wanted)), hours)
+        if not wanted or key == self._remote_key or self._remote_busy:
+            return
+        self._remote_busy = True
+        threading.Thread(target=self._read_remote_logs, args=(wanted, hours, key),
+                         daemon=True).start()
+
+    def _read_remote_logs(self, wanted, hours, key) -> None:
+        """On a worker thread. Never raises into it — a failed read is no rows, and the
+        machine's own page is where a broken WinRM is explained."""
+        from core import control
+
+        found: dict = {}
+        try:
+            cfg = self.cfg()
+            for machine_name, service_name, label in wanted:
+                record = cfg.machine(machine_name)
+                try:
+                    got = control.log_records(service_name, machine_name, label,
+                                              hours or 168, record=record)
+                except Exception:
+                    got = []
+                if got:
+                    found.setdefault(machine_name, []).extend(got)
+        finally:
+            self._remote_logs = found
+            self._remote_key = key
+            self._remote_busy = False
+            self.remote_logs_arrived.emit()
+
+    def _draw(self):
         rows = self._current_rows()
         self._rows_cache = rows
         self.clear_filters.setVisible(self._filtered())

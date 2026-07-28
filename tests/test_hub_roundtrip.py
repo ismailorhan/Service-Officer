@@ -297,3 +297,44 @@ def test_the_engines_own_listener_still_hears_it():
 
     assert len(heard) == 2, "one of the two listeners was dropped"
     assert heard[0]["machine"] == "sc-sql"
+
+
+def test_a_client_is_told_when_its_action_finishes(system):
+    """The hub answers 202 to an action — accepted, not done. Nothing then closed the loop, so
+    a connected panel left the row reading "Stopping…" for the rest of the session, with all
+    four buttons disabled, while the counter beside it already said "1 stopped". Seen on
+    2026-07-29 on AppEngine, with services.msc confirming it had stopped."""
+    client, _engine, _server, states, _holder = system
+    heard = []
+    client._on_event = heard.append
+
+    client.act("stop", "AppEngine")
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "action" for e in heard), timeout=15),         "the action finished and the client was never told"
+    done = next(e for e in heard if e.get("kind") == "action")
+    assert done["service"] == "AppEngine"
+    assert done["action"] == "stop"
+    assert done["error"] == ""
+    assert done["status"], "no resulting status, so nothing can clear a busy label safely"
+    assert states["AppEngine"] == st.STOPPED
+
+
+def test_a_client_is_told_when_its_action_fails(system, monkeypatch):
+    """The worse half: a refused action changes no status at all, so a client watching only
+    status events hears nothing whatsoever. Press Stop, it is refused, and the panel says
+    nothing — which is how somebody concludes the product did it."""
+    client, engine, _server, _states, _holder = system
+    heard = []
+    client._on_event = heard.append
+
+    def refuse(name, machine=""):
+        raise OSError("Access is denied")
+
+    monkeypatch.setattr(engine_mod.control, "stop_service", refuse)
+    client.act("stop", "AppEngine")
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "action" for e in heard), timeout=15)
+    done = next(e for e in heard if e.get("kind") == "action")
+    assert "denied" in done["error"].lower(), f"the reason was lost: {done['error']!r}"

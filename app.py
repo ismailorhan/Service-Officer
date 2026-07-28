@@ -381,6 +381,16 @@ class Application(QObject):
     def _on_hub_event(self, payload) -> None:
         """Something happened on the hub. The store has already been updated by the
         client; this is the repaint, and the notifications that belong to this screen."""
+        if payload.get("kind") == "action":
+            # Through the same signal the engine uses, so one handler clears the busy
+            # label, counts a batch and reports a failure whether this panel owns an
+            # engine or reads a hub. announce=False: `_action_done` looks up `_announce`,
+            # which only has an entry for an action *this* panel started — somebody
+            # else's refusal must not raise a dialog here.
+            self.action_signals.done.emit(
+                payload.get("service", ""), payload.get("machine", ""),
+                payload.get("action", ""), payload.get("error", ""),
+                False, False, payload.get("status", ""))
         self._refresh_lists()
 
     def _on_hub_connected(self, connected: bool) -> None:

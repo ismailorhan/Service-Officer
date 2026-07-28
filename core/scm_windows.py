@@ -659,6 +659,25 @@ class WindowsConnector:
         return [f"{r['ts']}  {r['level']}  {r['summary'] or r['message']}"
                 for r in eventlog.read([name], [name], limit=lines)]
 
+    def log_records(self, name: str, label: str = "", hours: int = 168,
+                    levels=None, limit: int = 400) -> list:
+        """This service's event log entries as records, from here or from over there.
+
+        Over there it is WinRM, and only when the switch is on: reading a log is not worth
+        starting a PowerShell process against a machine whose owner has said no.
+        """
+        if not self.machine:
+            from . import eventlog
+            return eventlog.read([name], [label or name], hours=hours, levels=levels,
+                                 limit=limit)
+        winrm = self._winrm()
+        if not winrm.get("ok"):
+            return []
+        from . import winrm_windows
+        user, password = self._winrm_credentials()
+        return winrm_windows.log_records(self.host, name, limit, user, password,
+                                        label or name, hours, levels)
+
     def run(self, command: str, timeout: float = 10.0):
         """A command line, on whichever machine this is.
 

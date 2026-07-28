@@ -423,7 +423,8 @@ PENDING_STATES = ("Starting", "Stopping", "Resuming", "Pausing")
 
 def query(service_names=None, labels=None, service: str = None, hours: int = None,
           include_windows: bool = False, windows_levels=None, limit: int = 800,
-          path: str = None, full: bool = False, local_services=None) -> list:
+          path: str = None, full: bool = False, local_services=None,
+          remote_events=None) -> list:
     """One timeline, newest first, in a shape a table can render directly.
 
     Merges three kinds of row: what we asked for (action), what the SCM told us
@@ -433,6 +434,11 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
     full=False leaves out the halfway states, so a restart reads as "restart
     requested" then "Running" instead of four rows. Nothing is dropped from the
     store — this only decides what is worth looking at.
+
+    `remote_events` is {machine: [records]} for machines whose logs somebody else has already
+    read — see control.log_records. Passed in rather than fetched here because fetching means
+    a WinRM call of several seconds, and this function is called both from a window that must
+    not freeze and from a hub that has no window at all.
     """
     where: list = []
     args: list = []
@@ -529,18 +535,44 @@ def query(service_names=None, labels=None, service: str = None, hours: int = Non
                   if n in here]
         wanted_labels = ([label_of.get(service, service)] if service
                          else list(labels or []))
+    def as_row(rec, machine: str = ""):
+        """One event log record as a timeline row. One function, so a remote machine's
+        entry cannot end up reading differently from this computer's."""
+        name = rec.get("service") or ""
+        source = f"Windows event log · {rec.get('source', '')}"
+        return {
+            "ts": rec["ts"], "service": name,
+            "label": label_of.get(name, name), "kind": "windows",
+            "event": rec.get("summary") or f"event {rec.get('event_id', 0)}",
+            "detail": rec.get("message", ""), "level": rec.get("level", ""),
+            # Whose log it was. Without this a row from another machine is
+            # indistinguishable from one written here, which is exactly the confusion
+            # that kept remote logs out of this timeline until now.
+            "source": f"{source} · {machine}" if machine else source,
+        }
+
     if wanted:
         from . import eventlog
         for rec in eventlog.read(wanted, wanted_labels, hours=hours or 168,
                                  levels=windows_levels, limit=400):
+            rows.append(as_row(rec))
+
+    # Another machine's log, read by whoever called this rather than here: reaching a
+    # machine over WinRM takes seconds — 8.8 of them, measured against a real one — and
+    # this function is also called from a hub with no window to keep responsive. So the
+    # transport stays out of it and the records arrive already read.
+    # And only when the event log was asked for at all: the checkbox means the whole log, not
+    # this computer's half of it. Guarded here as well as by the caller, because a caller that
+    # keeps a cache of what it read last time would otherwise show it through a filter that
+    # says it is off.
+    for machine, records in ((remote_events or {}) if include_windows else {}).items():
+        for rec in records or ():
             name = rec.get("service") or ""
-            rows.append({
-                "ts": rec["ts"], "service": name,
-                "label": label_of.get(name, name), "kind": "windows",
-                "event": rec["summary"] or f"event {rec['event_id']}",
-                "detail": rec["message"], "level": rec["level"],
-                "source": f"Windows event log · {rec['source']}",
-            })
+            if service and name != service:
+                continue
+            if service_names and name not in set(service_names):
+                continue
+            rows.append(as_row(rec, machine))
 
     # By the moment, not by the string. Our rows and the Windows event log's are
     # both UTC now, but a file written before this change carries local offsets,

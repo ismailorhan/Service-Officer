@@ -102,6 +102,15 @@ class Connector(Protocol):
 
     def logs(self, name: str, lines: int = 50) -> list[str]: ...
 
+    def log_records(self, name: str, label: str = "", hours: int = 168,
+                    levels=None, limit: int = 400) -> list:
+        """The same entries as `logs`, as records a timeline can merge.
+
+        `logs` returns lines for a panel, including one that says why it could not read them.
+        A timeline needs the fields apart to sort and colour by them, and must not be handed
+        an explanation dressed as an event — so this returns [] instead.
+        """
+
     def run(self, command: str, timeout: float = 10.0) -> tuple[int, str]:
         """A command on the target. What a "command" health check needs, and what
         a service controlled by commands of its own needs."""

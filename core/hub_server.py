@@ -197,6 +197,10 @@ class HubServer:
         # a machine going quiet is not a service changing. Without this the chip on every
         # remote machine was frozen at whatever the client's first snapshot said.
         self.engine.also_on_machine(self._on_machine)
+        # And when one finishes. The hub answers 202 to an action — accepted, not done — so
+        # without this a client never learned the outcome: a busy label that never cleared,
+        # and a refusal nobody saw.
+        self.engine.also_on_action_done(self._on_action_done)
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         daemon=True, name="hub-http")
         self._thread.start()
@@ -264,6 +268,12 @@ class HubServer:
     def _on_machine(self, machine="", reachable=False, detail="") -> None:
         """A machine started or stopped answering: tell every open stream."""
         self.publish(wire.machine_event(machine, reachable, detail))
+
+    def _on_action_done(self, service="", machine="", action="", error="", status="",
+                        actor="", **_rest) -> None:
+        """An action finished. `**_rest` swallows `bulk` and anything added later: a
+        listener that raises on an unexpected fact would take out the engine's callback."""
+        self.publish(wire.action_event(service, machine, action, error, status, actor))
 
     def publish(self, payload: dict) -> None:
         with self._listeners_lock:
