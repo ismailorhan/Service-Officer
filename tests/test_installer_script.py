@@ -249,3 +249,22 @@ def test_the_firewall_rule_is_replaced_rather_than_appended(script):
         "copy behind")
     assert script.index(deletes[0]) < script.index(adds[0]), \
         "the delete has to come before the add"
+
+
+def test_a_locked_port_looks_locked(script):
+    """`ReadOnly` on a TNewEdit is invisible: it still takes focus, still lets its text be
+    selected, and keeps a white background. So a field with "this cannot be changed here"
+    written under it looked exactly like one that could — reported from a screenshot with
+    the text highlighted in it.
+
+    Whatever makes it unwritable has to also make it *look* unwritable.
+    """
+    routines = _routines(script)
+    changed = routines.get("CurPageChanged", "")
+    assert "ReadOnly := True" in changed
+    assert "clBtnFace" in changed, (
+        "the locked port field keeps a white background, so nothing on screen agrees "
+        "with the note that says it cannot be changed")
+    assert "clWindow" in changed, (
+        "nothing puts the background back when the field is editable again — stepping "
+        "back and forward would leave it grey and typable")

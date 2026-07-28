@@ -808,12 +808,20 @@ begin
     // field says what it is and does not invite a change that would break them.
     if InstallingHub() and HubInstalledHere() then
     begin
+      // ReadOnly on its own is invisible: a read-only TNewEdit still takes focus, still
+      // lets its text be selected, and keeps a white background — so a field the note
+      // above says cannot be changed looked exactly like one that could. The grey and the
+      // missing tab stop are what make the sentence and the field agree.
       PortEdit.ReadOnly := True;
+      PortEdit.Color := clBtnFace;
+      PortEdit.TabStop := False;
       PortNote.Caption := ExpandConstant('{cm:HubPortLocked}');
     end
     else
     begin
       PortEdit.ReadOnly := False;
+      PortEdit.Color := clWindow;
+      PortEdit.TabStop := True;
       PortNote.Caption := ExpandConstant('{cm:HubPortNew}');
     end;
     ShowTokenOnlyIfNeeded();
