@@ -99,13 +99,18 @@ class GeneralPage(_Page):
         self.root.addWidget(self.hub_state)
         self.root.addSpacing(8)
 
+        # Two fields, laid out like the installer's: a host is a host and a port is a
+        # port, and "ctl052:9100" asks somebody to know that a colon means something here.
         self.hub_url = QLineEdit()
         self.hub_url.setPlaceholderText("empty — this computer does the work itself")
-        self.hub_url.setMinimumWidth(260)
-        self.root.addWidget(_sentence("Address", self.hub_url))
+        self.hub_url.setMinimumWidth(220)
+        self.hub_port = QLineEdit()
+        self.hub_port.setFixedWidth(64)
+        self.hub_port.setPlaceholderText("8797")
+        self.root.addWidget(_sentence("Host", self.hub_url, "Port", self.hub_port))
         self.root.addWidget(_label(
-            "A host name or IP, with :port if it is not 8797. Leave it empty to watch "
-            "this computer's own services instead.", "hint", wrap=True))
+            "A host name or IP. Leave the host empty to watch this computer's own "
+            "services instead; leave the port empty for 8797.", "hint", wrap=True))
         self.root.addSpacing(10)
 
         self.hub_token = QLineEdit()
@@ -124,10 +129,18 @@ class GeneralPage(_Page):
         self.hub_result = _label("", "hint", wrap=True)
         self.root.addWidget(self.hub_result)
 
-    def _normalised(self, given: str) -> str:
-        """What the user typed, as a URL. "ctl052" is the common case and it should not
-        have to be spelled https://ctl052:8797 to be understood."""
-        host = (given or "").strip()
+    #: What the hub listens on unless somebody changed it. Named here rather than
+    #: repeated: it is also the installer's default and core/config's.
+    DEFAULT_PORT = "8797"
+
+    def _normalised(self, given: str = None, port: str = None) -> str:
+        """The two fields as one URL, tolerating a whole address pasted into the host box.
+
+        Somebody who copies "https://ctl052:9100" from a ticket and pastes it into Host
+        should get what they meant, not a refusal — so a port found there wins over the
+        port field, which is where it was typed.
+        """
+        host = (self.hub_url.text() if given is None else given).strip()
         if not host:
             return ""
         if "://" in host:
@@ -135,15 +148,36 @@ class GeneralPage(_Page):
         host = host.split("/", 1)[0].strip()
         if not host:
             return ""
+        pasted = ""
         bracketed = host.startswith("[")
-        if ":" not in (host.split("]", 1)[1] if bracketed else host):
-            host = f"{host}:8797"
-        return f"https://{host}"
+        tail = host.split("]", 1)[1] if bracketed else host
+        if ":" in tail:
+            host, _, pasted = host.rpartition(":")
+            pasted = pasted.strip()
+        wanted = pasted or (self.hub_port.text() if port is None else port).strip()
+        if not wanted.isdigit() or not 1 <= int(wanted) <= 65535:
+            wanted = self.DEFAULT_PORT
+        return f"https://{host}:{wanted}"
+
+    @staticmethod
+    def _split(url: str) -> tuple:
+        """A stored URL back into the two fields it is shown in."""
+        host = (url or "").strip()
+        if not host:
+            return "", ""
+        if "://" in host:
+            host = host.split("://", 1)[1]
+        host = host.split("/", 1)[0]
+        tail = host.split("]", 1)[1] if host.startswith("[") else host
+        if ":" in tail:
+            host, _, port = host.rpartition(":")
+            return host, port
+        return host, ""
 
     def _test_hub(self):
         """Ask before committing to it, because the answer names the machine and the
         version — the two things that make an address wrong in a way nobody notices."""
-        url = self._normalised(self.hub_url.text())
+        url = self._normalised()
         if not url:
             self.hub_result.setText("No address: this computer will do the work itself.")
             return
@@ -172,7 +206,7 @@ class GeneralPage(_Page):
         a poller, a watchdog and a scheduler in place. A restart is honest and takes a
         second; pretending would be neither.
         """
-        url = self._normalised(self.hub_url.text())
+        url = self._normalised()
         token = self.hub_token.text().strip()
         settings = local_mod.load()
         if url and url != settings.hub_url:
@@ -232,9 +266,11 @@ class GeneralPage(_Page):
 
     def load_from(self, cfg):
         settings = local_mod.load()
-        self.hub_url.blockSignals(True)
-        self.hub_url.setText(settings.hub_url)
-        self.hub_url.blockSignals(False)
+        host, port = self._split(settings.hub_url)
+        for field, value in ((self.hub_url, host), (self.hub_port, port)):
+            field.blockSignals(True)
+            field.setText(value)
+            field.blockSignals(False)
         self._describe_hub()
         for box, value in ((self.auto, cfg.auto_start),
                            (self.on_crash, cfg.notifications.on_crash),

@@ -609,7 +609,9 @@ procedure ShowTokenOnlyIfNeeded();
 var
   Local: Boolean;
 begin
-  Local := LooksLikeThisComputer(HostOfUrl(Trim(HostEdit.Text)));
+  // No Client, no token: nothing here will read a hub.
+  Local := (not InstallingClient())
+           or LooksLikeThisComputer(HostOfUrl(Trim(HostEdit.Text)));
   TokenCaption.Visible := not Local;
   TokenEdit.Visible := not Local;
   if Local then
@@ -767,7 +769,11 @@ begin
   if PageID = wpSelectComponents then
     Result := True
   else if (HubPage <> nil) and (PageID = HubPage.ID) then
-    Result := not InstallingClient();
+    // Shown when there is something on it to answer. A Client needs an address; a *new*
+    // Hub needs a port. "Hub only" used to skip the page altogether, which left somebody
+    // installing a hub on a server with no way to choose its port except /HUBPORT.
+    Result := not (InstallingClient()
+                   or (InstallingHub() and not HubInstalledHere()));
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -789,6 +795,10 @@ begin
       PortEdit.ReadOnly := False;
       PortNote.Caption := ExpandConstant('{cm:HubPortNew}');
     end;
+    // With no Client being installed there is nothing here to read a hub, so the address
+    // and the token are not questions — only the port the Hub will listen on.
+    HostCaption.Visible := InstallingClient();
+    HostEdit.Visible := InstallingClient();
     ShowTokenOnlyIfNeeded();
   end;
 end;
@@ -809,6 +819,12 @@ begin
   if AsPort(PortEdit.Text) = '' then
   begin
     Complaint := ExpandConstant('{cm:PortBad}');
+    Exit;
+  end;
+  if not InstallingClient() then
+  begin
+    // Hub only: the port is the whole of this page, and it has just been checked.
+    Result := True;
     Exit;
   end;
   Url := AddressFromFields();

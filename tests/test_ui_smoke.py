@@ -2090,6 +2090,7 @@ def test_general_shows_and_stores_the_hub_address(qapp, sample, monkeypatch, tmp
     page.hub_changed.connect(told.append)
 
     assert page.hub_url.text() == "", "a fresh install is not a client of anything"
+    assert page.hub_port.text() == ""
     assert "own services" in page.hub_state.text()
 
     # "ctl052" is what a person types; it should not have to be a URL.
@@ -2119,7 +2120,7 @@ def test_emptying_the_address_goes_back_to_watching_this_computer(qapp, sample,
     win = panel_mod.MainPanel(sample)
     page = win.general_page
     page.load_from(win.config())
-    assert page.hub_url.text() == "https://ctl052:8797"
+    assert (page.hub_url.text(), page.hub_port.text()) == ("ctl052", "8797")
 
     page.hub_url.setText("")
     page._apply_hub()
@@ -2145,7 +2146,8 @@ def test_pointing_at_a_different_hub_drops_the_old_pin(qapp, sample, monkeypatch
     win = panel_mod.MainPanel(sample)
     page = win.general_page
     page.load_from(win.config())
-    page.hub_url.setText("new:9000")
+    # A whole address pasted into the host box is what somebody copies out of a ticket.
+    page.hub_url.setText("https://new:9000")
     page._apply_hub()
 
     settings = local.load()
@@ -2267,4 +2269,38 @@ def test_revoking_asks_first_and_then_tells_the_hub(qapp, sample, monkeypatch):
                         lambda *a, **k: QMessageBox.Yes)
     page._revoke()
     assert hub.revoked == ["ismail-laptop"]
+    win.deleteLater()
+
+
+def test_the_port_is_its_own_field_and_tolerates_a_pasted_address(qapp, sample,
+                                                                 monkeypatch, tmp_path):
+    """Host and port are two fields, laid out like the installer's: "ctl052:9100" asks
+    somebody to know that a colon means something here.
+
+    But an address pasted whole into the host box is what people actually do, so a port
+    found there wins over the field it was not typed in.
+    """
+    from core import local, secrets
+
+    monkeypatch.setattr(local, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local, "MACHINE_PATH", str(tmp_path / "machine.json"))
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
+    win = panel_mod.MainPanel(sample)
+    page = win.general_page
+    page.load_from(win.config())
+
+    page.hub_url.setText("ctl052")
+    page.hub_port.setText("9100")
+    assert page._normalised() == "https://ctl052:9100"
+
+    page.hub_port.setText("")
+    assert page._normalised() == "https://ctl052:8797", "no port means the default"
+
+    page.hub_port.setText("not-a-port")
+    assert page._normalised() == "https://ctl052:8797", "nonsense is not a port"
+
+    page.hub_url.setText("https://elsewhere:9443/")
+    page.hub_port.setText("8797")
+    assert page._normalised() == "https://elsewhere:9443", \
+        "a port pasted with the address should win over the one left in the field"
     win.deleteLater()
