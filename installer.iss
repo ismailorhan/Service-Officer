@@ -23,7 +23,7 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "2.2.6"
+#define MyAppVersion     "2.2.7"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyHubExeName     "ServiceOfficerHub.exe"
@@ -74,9 +74,11 @@ english.RegisteringHub=Registering the hub service...
 english.PairingLocal=Pairing this computer with its hub...
 english.SecuringData=Setting permissions on the data folder...
 english.TypeCaption=Setup type
-english.TypeBody=What should this computer do?
-english.TypeBoth=Run a hub on this computer — it does the work, and the panel is here
-english.TypeClientOnly=Connect to an existing hub — another computer does the work
+english.TypeBody=What is this computer's part?
+english.TypeBothWhy=The services are watched from here: this computer asks them how they are, restarts them when they fail, runs the schedule and keeps the history — whether or not anybody is logged in, because that part is a Windows service. Other computers connect to it and read what it knows. The panel is installed here as well.
+english.TypeClientWhy=Another computer already does that work. This one shows what that hub knows and asks it to act — it watches nothing itself, so closing it stops nothing. You will need that computer's address, and a token issued on it.
+english.TypeBoth=This is the hub computer  (Hub + Client)
+english.TypeClientOnly=This computer reads a hub somewhere else  (Client)
 english.HubCaption=The hub
 english.HubBody=Which hub should the Client read? A hub on this computer counts — the address is checked either way.
 english.HubHostField=Host name or IP
@@ -108,9 +110,11 @@ turkish.RegisteringHub=Hub hizmeti kaydediliyor...
 turkish.PairingLocal=Bu makine hub'ına eşleştiriliyor...
 turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
 turkish.TypeCaption=Kurulum türü
-turkish.TypeBody=Bu bilgisayar ne yapsın?
-turkish.TypeBoth=Bu bilgisayarda bir hub çalıştır — işi o yapar, panel de burada
-turkish.TypeClientOnly=Mevcut bir hub'a bağlan — işi başka bir bilgisayar yapıyor
+turkish.TypeBody=Bu bilgisayarın rolü ne?
+turkish.TypeBothWhy=Servisler buradan izlenir: bu bilgisayar onlara durumlarını sorar, düştüklerinde yeniden başlatır, zamanlamayı çalıştırır ve geçmişi tutar — kimse oturum açmasa da, çünkü o kısım bir Windows hizmeti. Diğer bilgisayarlar buraya bağlanıp bildiklerini okur. Panel de buraya kurulur.
+turkish.TypeClientWhy=Bu işi başka bir bilgisayar yapıyor. Bu bilgisayar o hub'ın bildiklerini gösterir ve ondan işlem yapmasını ister — kendisi hiçbir şey izlemez, yani kapatmak hiçbir şeyi durdurmaz. O bilgisayarın adresi ve orada üretilmiş bir token gerekecek.
+turkish.TypeBoth=Bu bilgisayar hub bilgisayarı  (Hub + Client)
+turkish.TypeClientOnly=Bu bilgisayar başka bir yerdeki hub'ı okur  (Client)
 turkish.HubCaption=Hub
 turkish.HubBody=Client hangi hub'ı okusun? Bu bilgisayardaki bir hub da sayılır — adres her durumda denetlenir.
 turkish.HubHostField=Makine adı veya IP
@@ -286,6 +290,10 @@ var
   //: stacks full-width fields and the host and port belong side by side, and the token has
   //: to be able to disappear — a field shown with "leave this empty" under it is worse than
   //: no field at all.
+  //: What the chosen answer means, under the two of them. The labels used to carry this
+  //: themselves, and Inno's radio list gives each item one line — so the longer half of
+  //: each sentence was being cut off.
+  TypeNote: TNewStaticText;
   HubPage: TWizardPage;
   HostEdit, PortEdit: TNewEdit;
   //: TPasswordEdit, not TNewEdit with a flag: TNewEdit has no Password property, and this
@@ -617,6 +625,21 @@ begin
   ShowTokenOnlyIfNeeded();
 end;
 
+procedure DescribeChosenType();
+begin
+  if TypeNote = nil then
+    Exit;
+  if TypePage.SelectedValueIndex = TypeBoth then
+    TypeNote.Caption := ExpandConstant('{cm:TypeBothWhy}')
+  else
+    TypeNote.Caption := ExpandConstant('{cm:TypeClientWhy}');
+end;
+
+procedure TypeChosen(Sender: TObject);
+begin
+  DescribeChosenType();
+end;
+
 // Laid out here so the arithmetic is in one place: a wide host, a narrow port beside it,
 // and a token row underneath that is hidden more often than not.
 procedure BuildHubPage();
@@ -716,6 +739,16 @@ begin
     ExpandConstant('{cm:TypeBody}'), '', True, False);
   TypePage.Add(ExpandConstant('{cm:TypeBoth}'));
   TypePage.Add(ExpandConstant('{cm:TypeClientOnly}'));
+  TypePage.CheckListBox.OnClickCheck := @TypeChosen;
+
+  TypeNote := TNewStaticText.Create(TypePage);
+  TypeNote.Parent := TypePage.Surface;
+  TypeNote.WordWrap := True;
+  TypeNote.Width := TypePage.SurfaceWidth;
+  // Under the list, with the list shortened to make room: it is two items and does not
+  // need the whole page.
+  TypePage.CheckListBox.Height := ScaleY(46);
+  TypeNote.Top := TypePage.CheckListBox.Top + TypePage.CheckListBox.Height + ScaleY(14);
 
   BuildHubPage();
 
@@ -748,6 +781,7 @@ begin
     HostEdit.Text := GetComputerNameString;
   end;
   ShowTokenOnlyIfNeeded();
+  DescribeChosenType();
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
