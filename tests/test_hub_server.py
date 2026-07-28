@@ -397,3 +397,54 @@ def test_a_token_on_a_url_never_reaches_the_log():
         "GET /api/v1/events?token=[redacted] HTTP/1.1"
     assert hub_server.redacted("GET /api/v1/snapshot HTTP/1.1") == \
         "GET /api/v1/snapshot HTTP/1.1"
+
+
+# ---------------------------------------------------------------------------
+# which addresses it answers on
+# ---------------------------------------------------------------------------
+def test_it_answers_on_both_address_families(monkeypatch):
+    """Measured 2026-07-28 against the installed hub: connecting to `CTL052:8797` took
+    **2073 ms** while `10.77.3.50:8797` took 0 ms. The name resolved to a link-local IPv6
+    address first — this machine has five — and the hub was listening on 0.0.0.0, so every
+    connection waited for that attempt to give up. Two connections happen before a client
+    draws its first frame, so it took four seconds to show anything.
+
+    Nothing was misconfigured. One socket, both families, 2 ms.
+    """
+    import socket
+
+    from core import engine as engine_mod
+    from core import state as st
+
+    monkeypatch.setattr(hub_server.hub_auth, "check", lambda token: "tests")
+    monkeypatch.setattr(hub_server.hub_auth, "note_seen", lambda name: None)
+    engine = engine_mod.Engine(lambda: cfg_mod.Config(), store=st.Store())
+    # host="" is what hub.py passes when the config's `bind` is blank: every address.
+    server = hub_server.HubServer(engine, host="", port=0, insecure=True)
+    server.start()
+    try:
+        assert server._server.address_family == socket.AF_INET6
+        for family, address in ((socket.AF_INET, ("127.0.0.1", server.port)),
+                                (socket.AF_INET6, ("::1", server.port))):
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(5)
+                probe.connect(address)          # raises if that family is refused
+    finally:
+        server.stop()
+
+
+def test_a_named_address_is_taken_literally(monkeypatch):
+    """An administrator who put one address in `bind` meant that one — keeping the hub off
+    a second network card is the reason the field exists."""
+    import socket
+
+    from core import engine as engine_mod
+    from core import state as st
+
+    engine = engine_mod.Engine(lambda: cfg_mod.Config(), store=st.Store())
+    server = hub_server.HubServer(engine, host="127.0.0.1", port=0, insecure=True)
+    server.start()
+    try:
+        assert server._server.address_family == socket.AF_INET
+    finally:
+        server.stop()

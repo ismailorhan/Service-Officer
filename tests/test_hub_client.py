@@ -9,6 +9,7 @@ real hub over a real socket.
 
 import json
 import threading
+import time
 import urllib.error
 
 import pytest
@@ -300,3 +301,28 @@ def test_stop_actually_stops_so_start_works_again(pair):
     client.start()
     assert client.wait_for(lambda: client.connected is True, timeout=15), \
         "start() after stop() did nothing"
+
+
+def test_closing_the_app_is_not_logged_as_a_failure(pair, caplog):
+    """`stop()` shuts the socket down, so the reader's next read fails with
+    "an established connection was aborted by the software in your host machine".
+
+    That was logged as an ERROR with a full traceback — every time the app was closed
+    normally. Anybody reading the log to find out why something broke would find that
+    first, and it means nothing.
+    """
+    import logging
+
+    client, _engine, _server, _holder = pair
+    assert client.wait_for(lambda: client.connected is True, timeout=15)
+
+    with caplog.at_level(logging.DEBUG, logger="serviceofficer.hubclient"):
+        client.stop()
+        # The reader may still be unwinding; give it a moment to log if it is going to.
+        for _ in range(20):
+            if not (client._thread and client._thread.is_alive()):
+                break
+            time.sleep(0.1)
+
+    shouted = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert shouted == [], f"closing the app logged {[r.message for r in shouted]}"

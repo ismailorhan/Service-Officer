@@ -119,6 +119,31 @@ class _Listener:
         return found
 
 
+class _DualStack(ThreadingHTTPServer):
+    """One socket answering on IPv6 *and* IPv4.
+
+    Measured 2026-07-28 against the installed hub: `https://CTL052:8797` took **2073 ms
+    to connect** while `https://10.77.3.50:8797` took 0 ms. The name resolves to a
+    link-local IPv6 address first — this machine has eight addresses, and five of them are
+    IPv6 — so every connection waited for that attempt to give up before falling back to
+    IPv4. Two connections are made before the first frame is drawn, so a client took four
+    seconds to show anything.
+
+    Nothing was misconfigured; the hub simply listened on 0.0.0.0. Python's own
+    `http.server` does exactly this for the same reason.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        # Off, not on: with V6ONLY set, an IPv4 client of a v6 socket is refused.
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except OSError:
+            pass          # a host with IPv6 disabled: the IPv4 path is all there is
+        return super().server_bind()
+
+
 class HubServer:
     """The API in front of one engine."""
 
@@ -146,7 +171,17 @@ class HubServer:
                                "ensure_certificate")
 
         handler = _make_handler(self)
-        self._server = ThreadingHTTPServer((self.host, self.port), handler)
+        # Every address means both families — see _DualStack. A specific address is taken
+        # literally: an administrator who named one meant that one.
+        any_address = self.host in ("", "0.0.0.0", "::")
+        if any_address:
+            try:
+                self._server = _DualStack(("::", self.port), handler)
+            except OSError as exc:
+                log.warning("no IPv6 on this host (%s); listening on IPv4 only", exc)
+                self._server = ThreadingHTTPServer(("0.0.0.0", self.port), handler)
+        else:
+            self._server = ThreadingHTTPServer((self.host, self.port), handler)
         self._server.daemon_threads = True
         if not self.insecure:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

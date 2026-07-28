@@ -447,7 +447,15 @@ class HubClient:
                     log.info("hub unavailable: %s", exc)
             except Exception:
                 self._mark(False)
-                log.exception("the hub connection failed")
+                if self._stop.is_set():
+                    # We shut the socket down ourselves — see stop(). The read fails with
+                    # WinError 10053, and logging that as an ERROR with a stack put a
+                    # frightening entry in the log every time the app was closed
+                    # normally. The log is the file somebody reads when something has
+                    # actually gone wrong.
+                    log.info("hub connection closed on the way out")
+                else:
+                    log.exception("the hub connection failed")
             if self._stop.is_set():
                 return
             self._mark(False)
