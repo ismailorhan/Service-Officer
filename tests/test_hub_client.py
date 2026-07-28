@@ -239,3 +239,64 @@ def test_the_client_survives_the_hub_going_away_and_coming_back(pair):
     engine.store.update("AppEngine", st.STOPPED)
     assert client.wait_for(
         lambda: client.store.status_of("AppEngine") == st.STOPPED, timeout=15)
+
+
+def test_nothing_that_happens_while_it_connects_is_lost(pair):
+    """The gap this closes: a change that lands between the snapshot and the event stream
+    being opened.
+
+    It was found by the reconnect test above failing under load — the client announced
+    itself connected before its stream existed, so a status change in that window went
+    nowhere and, because a store only publishes *changes*, the client kept showing the old
+    status indefinitely rather than briefly.
+
+    The order is therefore: open the stream, then take the snapshot. The hub queues events
+    per listener from the moment the stream opens, so anything that happens during the
+    snapshot is delivered after it instead of being missed.
+    """
+    client, engine, _server, _holder = pair
+    assert client.wait_for(lambda: client.connected is True, timeout=15)
+    client.stop()
+
+    # A change made at the worst possible moment: after this connection's snapshot has
+    # been taken, which is exactly where the old order had no stream yet.
+    real_refresh = client.refresh_now
+
+    def refresh_then_change():
+        answer = real_refresh()
+        engine.store.update("AppEngine", st.STOPPED)
+        return answer
+
+    client.refresh_now = refresh_then_change
+    client.start()
+
+    assert client.wait_for(
+        lambda: client.store.status_of("AppEngine") == st.STOPPED, timeout=15), \
+        "a change during the handshake was lost"
+
+
+def test_stop_actually_stops_so_start_works_again(pair):
+    """`stop()` used to return while its reader was still blocked on the socket: `_stop`
+    is only looked at between lines, and an idle stream says nothing for twenty seconds.
+
+    That made the *next* `start()` a silent no-op — it refuses to run while the old
+    thread is alive — so a client that was stopped and started again went on reading a
+    stream nobody was managing. Two seconds, not twenty, and a live thread afterwards is
+    the failure.
+    """
+    import time
+
+    client, _engine, _server, _holder = pair
+    assert client.wait_for(lambda: client.connected is True, timeout=15)
+
+    began = time.monotonic()
+    client.stop()
+    took = time.monotonic() - began
+
+    assert took < 3.0, f"stop() took {took:.1f}s"
+    assert not (client._thread and client._thread.is_alive()), \
+        "the reader outlived the stop that claimed to have finished"
+
+    client.start()
+    assert client.wait_for(lambda: client.connected is True, timeout=15), \
+        "start() after stop() did nothing"

@@ -39,11 +39,13 @@ jobs:
       - name: Stamp the build
         run: python stamp_version.py
 
+      # No --uac-admin here: the tray application asks the hub to do the work, so
+      # it no longer needs to be elevated. Only the hub does.
       - name: Build ServiceOfficer (one-dir; a Qt app re-extracted on every
               launch starts slowly)
         run: >
           python -m PyInstaller
-          --noconfirm --clean --windowed --uac-admin
+          --noconfirm --clean --windowed
           --name ServiceOfficer --icon=icon.ico
           --add-data "icon.ico;."
           --hidden-import=win32timezone
@@ -57,6 +59,21 @@ jobs:
           $d = "dist/ServiceOfficer/_internal/PySide6"
           Remove-Item "$d/opengl32sw.dll","$d/libcrypto*","$d/libssl*","$d/Qt6Network.dll" -Force -ErrorAction SilentlyContinue
           "{0:N1} MB" -f ((Get-ChildItem dist/ServiceOfficer -Recurse | Measure-Object Length -Sum).Sum/1MB)
+
+      # The service, and the same exe is the console tool that installs it. No Qt
+      # in it: core/engine.py is Qt-free on purpose and a server has no display.
+      - name: Build ServiceOfficerHub (the Windows service)
+        run: >
+          python -m PyInstaller
+          --noconfirm --clean --console --uac-admin
+          --name ServiceOfficerHub --icon=icon.ico
+          --add-data "core/hub_pages;core/hub_pages"
+          --hidden-import=win32timezone
+          --hidden-import=servicemanager
+          --hidden-import=win32serviceutil
+          --exclude-module tkinter
+          --exclude-module PySide6 --exclude-module shiboken6
+          hub.py
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress

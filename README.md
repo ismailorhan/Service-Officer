@@ -4,7 +4,7 @@ A Windows tray app for the servers an ERP runs on. It watches services, restarts
 them when they fail, runs them in the right order, and tells you when one is
 running but not actually answering — without opening Services MMC and guessing.
 
-Version 2.1.0. Python 3.12 + PySide6, packaged with PyInstaller and Inno Setup.
+Version 2.2.0. Python 3.12 + PySide6, packaged with PyInstaller and Inno Setup.
 
 ## What it does
 
@@ -65,18 +65,41 @@ A Linux service is not a second-class one: the same rows, the same recovery, the
 same health checks, the same history. `sapb1servertools.service` and
 `CompuTec AppEngine` sit in one list.
 
+**One place doing the work, when there is more than one of you** — optional, and off
+unless you install it. A Windows service (the *hub*) owns the config, the connections
+and the history; every Service Officer on the network reads it and asks it to act.
+There is no mode to choose in the app: if the hub runs on this computer you point at
+this computer, and if it is elsewhere you point there.
+
+| | Without a hub | With a hub |
+|---|---|---|
+| Who polls the servers | every copy, separately | one service |
+| The configuration | a file per machine | one, on the hub |
+| Watchdog and schedule | while somebody is logged in | always — it is a service |
+| "Who restarted this at 03:00" | from memory | from the History page's *Asked by* column |
+| Administrator rights on the workstation | needed | not needed |
+
+Setting one up, the service account, the certificate and the troubleshooting table:
+**[docs/HUB.md](docs/HUB.md)**.
+
 ## Requirements
 
 - Windows 10 / 11
-- Administrator rights. Starting and stopping services needs them, and the data
-  directory under `%ProgramData%` only lets administrators write. The exe ships
-  with a `requireAdministrator` manifest, so UAC prompts on launch.
+- Administrator rights **when this copy does the work itself** — starting and stopping
+  services needs them, and the data directory under `%ProgramData%` only lets
+  administrators write. It is asked for at launch, and only then: a copy that reads a
+  hub controls nothing itself and never prompts, because the hub is the one holding the
+  rights.
 
 ## Install
 
 ```bat
 dist\ServiceOfficerSetup.exe
 ```
+
+One installer, three ways to use it: the **tray application**, the **hub service**,
+or both on one machine. A single-machine install is the first one and needs nothing
+else. Silent commands for the other two are in [docs/HUB.md](docs/HUB.md).
 
 Two optional tasks in the wizard: start automatically when Windows starts
 (checked), and a desktop shortcut (unchecked). Auto-start can be changed later

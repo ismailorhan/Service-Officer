@@ -550,3 +550,110 @@ create-run-read-delete round trip measured ~77 s against File's 9 ms.
 matter most — a machine where these need to work — is the same machine you would put the
 hub on, where they already do. A WinRM connector is the right next step *after* the hub, or
 for a Windows target that genuinely cannot host one.
+
+---
+
+## The hub: what was decided while building it, 2026-07-28
+
+The plan is
+[docs/superpowers/plans/2026-07-27-hub-service-and-clients.md](superpowers/plans/2026-07-27-hub-service-and-clients.md).
+These are the places where building it taught something the plan did not know, or where
+the plan was wrong and was overruled.
+
+### The client's administrator manifest: not moved, made conditional
+
+The plan said move `--uac-admin` from the tray application to the hub, because "the tray
+application no longer touches a service manager". That is true of a client of a hub and
+**false of the single-machine install everybody has today**, which drives this computer's
+SCM directly. Shipping it as written would have turned every button in that install into
+*access denied* — silently, because a query needs no rights and a control does.
+
+So the manifest is gone and the question is asked at run time (`app.needs_elevation`):
+elevate only when this launch will do the work itself, which means no hub address
+configured and none being passed. A client never prompts; an embedded install prompts
+exactly as it always did. Four tests, one per branch, because this is the kind of change
+that appears to work.
+
+### `Config.hub.enabled` removed before it could lie
+
+It existed, defaulted to False, and **nothing ever read it** — `hub.py` serves whenever
+the service runs. A second switch would have made "the service is running and nothing
+answers" possible, which is the worst kind of configuration. Installing the hub component
+is the decision to serve; there is no other.
+
+### A client added while the hub was running was refused
+
+Found by pasting a real token into the real page. The client list is cached to avoid a
+DPAPI decrypt per request — 13.2 ms, measured, against 0.27 ms to build a snapshot — and
+the cache was invalidated *on write*. But `client add` is a console command in a **different
+process** from the service, so the hub never did the write and never dropped the cache. The
+only cure would have been restarting the hub in the middle of pairing a client.
+
+Now the cache carries the store file's `(mtime_ns, size)` and re-reads when it changes:
+
+| | Cost |
+|---|---|
+`os.stat` on the store | 55 µs |
+warm token check, including the stat | 59 µs |
+cold check (DPAPI decrypt) | 13.2 ms |
+
+240× cheaper than what it saves, so it is taken on every request. Proved with a real
+second interpreter writing the same store, not with a monkeypatch.
+
+### A token on a URL, and out of the log
+
+`EventSource` cannot send an `Authorization` header, so the browser page's stream carries
+its token as a query parameter — **only** that endpoint; a token on any other path 401s,
+which is a test. And `hub_server.log_message` redacts `token=` before writing, because the
+log is the thing people paste into tickets.
+
+### The verdict goes on the wire, not into each UI
+
+`st.effective()` exists because the flyout, the hover card and the tray icon each worked
+out "Running but failing its checks means *Not responding*" separately, and disagreed with
+each other about the same service at the same moment. The browser page was about to be the
+fourth: it had a lookup table of its own. `wire.service_row` now sends `state_label` and
+`state_category`, and the page draws what it is told — including counting "N of M running"
+from the category, so the count cannot contradict the row beside it. The same bug, in the
+same shape, as the one fixed in the panel on 2026-07-26.
+
+### `events.actor`, and what stays blank
+
+Schema v3 adds one column by `ALTER TABLE`, so an existing history keeps its rows. The
+watchdog, the scheduler and a trigger write it **empty**: `source` already says what kind
+of thing asked, and inventing a name for something nobody asked for would be worse than
+the gap. The History page hides the column when nothing in view fills it — so the
+single-machine install never sees it — while the CSV export always carries it, because a
+file in a ticket is read by something that cannot cope with columns that come and go.
+
+### Two bugs in one flaky test, 2026-07-28
+
+The build failed on `test_the_client_survives_the_hub_going_away_and_coming_back`, which
+had passed twenty minutes earlier. Under load it was slower, and slower exposed both of
+these. Neither was flakiness.
+
+**The handshake had a gap.** The client fetched a snapshot, announced itself connected,
+*then* opened the event stream. A change published in that window went to nobody — and
+because a store publishes only *changes*, the client did not show a stale value for a
+moment, it showed the wrong one until the same service happened to change again. The order
+is now stream → snapshot → events: the hub queues per listener from the moment a stream
+opens, so anything during the snapshot arrives after it, in order.
+
+**`stop()` did not stop.** It set a flag the reader only looks at between lines, and an
+idle SSE stream says nothing for a keepalive interval — **20.1 s measured**. Worse, `start()`
+refuses to run while the old thread is alive, so a stop that had not finished made the next
+start a silent no-op. It now shuts the socket down, which is the only thing that interrupts
+a blocked read:
+
+| | Before | After |
+|---|---|---|
+`stop()` | 20.1 s | under 0.1 s |
+the client test file | 328 s | 30 s (the teardowns were the whole difference) |
+`start()` after `stop()` | silently did nothing | connects |
+
+Holding the socket meant using `http.client` for that one request instead of `urlopen`:
+an SSE response has no length and no chunked framing, so `getresponse()` hands the socket
+to the response and forgets it, and `urlopen` never exposed it in the first place.
+
+It also runs on the way out of the application, where twenty seconds is a window that does
+not close.

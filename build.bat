@@ -2,11 +2,17 @@
 setlocal
 
 REM ----------------------------------------------------------------------
-REM Build ServiceOfficer with the requireAdministrator manifest baked in.
+REM Build both halves of the product:
+REM
+REM   dist\ServiceOfficer\ServiceOfficer.exe        the tray application (the client)
+REM   dist\ServiceOfficerHub\ServiceOfficerHub.exe  the Windows service (the hub)
 REM
 REM One-dir, not one-file: a Qt app unpacked from a single exe on every launch
 REM starts noticeably slower, and Inno Setup is packaging it anyway.
-REM Output: dist\ServiceOfficer\ServiceOfficer.exe
+REM
+REM Only the hub asks for administrator. It is the half that talks to a service
+REM manager; the tray application asks the hub, and a UAC prompt on every launch
+REM was the most visible cost this app used to charge.
 REM ----------------------------------------------------------------------
 
 cd /d "%~dp0"
@@ -55,6 +61,7 @@ echo === Cleaning previous build ===
 if exist build rmdir /s /q build
 if exist dist  rmdir /s /q dist
 if exist ServiceOfficer.spec del ServiceOfficer.spec
+if exist ServiceOfficerHub.spec del ServiceOfficerHub.spec
 
 echo.
 echo === Stamping the build ===
@@ -71,7 +78,6 @@ echo === Building ServiceOfficer.exe ===
     --noconfirm ^
     --clean ^
     --windowed ^
-    --uac-admin ^
     --name ServiceOfficer ^
     --icon=icon.ico ^
     --add-data "icon.ico;." ^
@@ -84,12 +90,43 @@ echo === Building ServiceOfficer.exe ===
     app.py
 set BUILD_RESULT=%errorlevel%
 
+if not "%BUILD_RESULT%"=="0" (
+    "%PY%" stamp_version.py --restore
+    echo [ERROR] PyInstaller build failed.
+    exit /b 1
+)
+
+echo.
+echo === Building ServiceOfficerHub.exe (the service; no Qt in it at all) ===
+REM --console: a Windows service exe, and the same file is the console tool that
+REM installs it, pairs clients and prints the certificate fingerprint.
+REM
+REM PySide6 excluded outright rather than trimmed: core/engine.py is deliberately
+REM Qt-free (there is a test that reads it and fails if PySide6 appears), and a
+REM service on a server has no display to draw on. It is also 60 MB.
+"%PY%" -m PyInstaller ^
+    --noconfirm ^
+    --clean ^
+    --console ^
+    --uac-admin ^
+    --name ServiceOfficerHub ^
+    --icon=icon.ico ^
+    --add-data "core/hub_pages;core/hub_pages" ^
+    --hidden-import=win32timezone ^
+    --hidden-import=servicemanager ^
+    --hidden-import=win32serviceutil ^
+    --exclude-module tkinter ^
+    --exclude-module PySide6 ^
+    --exclude-module shiboken6 ^
+    hub.py
+set HUB_RESULT=%errorlevel%
+
 REM Put version.py back whatever happened, so a build never leaves the tree dirty
 REM and the next build doesn't stamp a stamp.
 "%PY%" stamp_version.py --restore
 
-if not "%BUILD_RESULT%"=="0" (
-    echo [ERROR] PyInstaller build failed.
+if not "%HUB_RESULT%"=="0" (
+    echo [ERROR] PyInstaller build of the hub failed.
     exit /b 1
 )
 
@@ -104,5 +141,7 @@ del /q "dist\ServiceOfficer\_internal\PySide6\libssl*" 2>nul
 del /q "dist\ServiceOfficer\_internal\PySide6\Qt6Network.dll" 2>nul
 
 echo.
-echo Build OK -^> dist\ServiceOfficer\ServiceOfficer.exe
+echo Build OK
+echo   client: dist\ServiceOfficer\ServiceOfficer.exe
+echo   hub:    dist\ServiceOfficerHub\ServiceOfficerHub.exe
 endlocal

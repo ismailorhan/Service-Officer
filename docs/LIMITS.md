@@ -1,7 +1,7 @@
 # What it cannot do
 
-Version 2.1.0, checked against the code on 2026-07-27 rather than written from memory —
-three entries here were found to be *lies* while this page was being compiled, and were
+Version 2.2.0, checked against the code on 2026-07-28 rather than written from memory —
+three entries here were found to be *lies* while this page was first compiled, and were
 fixed instead of documented.
 
 The rule this page exists to enforce: **a limit that is visible is a limit; a limit that
@@ -57,15 +57,22 @@ disappears if the *Remote Service Management (RPC)* rule is enabled on the targe
 
 ## By feature
 
-### Only one operator, only one machine
-The app is a tray application. Close it, log off, or shut down and **nothing watches
-anything**: no recovery, no schedule, no history. The engine is UI-free and ready to be a
-service, and that is the whole of
-[the hub plan](superpowers/plans/2026-07-27-hub-service-and-clients.md), but today it is
-not built. This is the largest limit on the page.
+### Only one operator, only one machine — **fixed in 2.2.0, if you install the hub**
+This used to be the largest limit on the page: close the tray app, log off or shut down and
+nothing watched anything.
 
-There is also no shared truth: two installations have two `services.json` files and know
-nothing of each other.
+With the hub installed, the engine is a Windows service — it watches, restarts, runs the
+schedule and records history whether or not anybody is logged in, and every client reads
+the same one. See [HUB.md](HUB.md).
+
+**Without** the hub, the limit is unchanged and deliberately so: a single-machine install
+is still a tray application, and closing it still stops everything. That is the right shape
+for one administrator on one machine, and it is what an upgrade keeps.
+
+Still true either way: **there is no clustering**. One hub is one point of failure. Windows
+restarts it if it dies (`sc failure`, 5 s / 10 s / 30 s) and it comes back at boot, but a
+hub whose machine is off is a landscape nobody is watching — and the clients say so rather
+than showing stale rows.
 
 ### No agent, so no unreachable machines
 A machine is manageable only if this computer can reach its service manager (RPC) or its
@@ -74,10 +81,20 @@ allows outbound connections cannot be managed. An agent would solve it and is de
 not planned — see the reasoning in `ROADMAP.md`.
 
 ### No permissions
-Whoever can run the app can control every service in it. There is no read-only mode, no
-per-service rights, no audit of *who* — only of what and when. With one operator that was
-adequate; the hub plan adds the actor to the history, and read-only tokens are named there
-as a deliberate not-yet.
+Whoever can run the app can control every service in it, and **every client of a hub can do
+everything any other client can** — this was asked for explicitly and is not an oversight.
+There is no read-only mode and no per-service rights.
+
+What 2.2.0 adds is the *record*: every action carries the name of whoever asked
+(`events.actor`, the History page's "Asked by" column, and a line in the hub's log). So
+"who restarted this at 03:00" is answerable, and "who was allowed to" still is not.
+
+A read-only token is the obvious next step and is not built. Revoking a client is the only
+control there is today:
+
+```bat
+ServiceOfficerHub.exe client revoke ismail-laptop
+```
 
 ### Notifications
 Windows toasts only, on the machine the app runs on. No mail, no Teams, no webhook.
@@ -92,7 +109,9 @@ Windows toasts only, on the machine the app runs on. No mail, no Teams, no webho
 - **Auto-update.** Releases are published on GitHub; the app never looks.
 - **Code signing.** The installer is unsigned, so SmartScreen warns on a customer's
   machine.
-- **A web interface.** Planned as the hub's second client.
+- **A web interface.** The hub serves one read-only page at `https://<hub>:8797/` — the
+  services, their states, and live updates. That is a proof that the API can carry a
+  browser UI, not a browser UI: nothing on it acts, configures or filters.
 - **Service dependencies.** Windows knows which services depend on which; this does not
   read them. A stack is the manual answer.
 - **Changing a service's start type**, installing or removing a service, or editing

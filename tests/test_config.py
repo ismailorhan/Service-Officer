@@ -206,15 +206,12 @@ def test_the_hub_section_defaults_and_round_trips():
     """A config written before the hub existed has to load, and default to off —
     installing an update must never open a port on its own."""
     loaded = cfg.from_dict({"services": [{"name": "AppEngine"}]})
-    assert loaded.hub.enabled is False
     assert loaded.hub.port == 8797
     assert loaded.hub.bind == ""
 
-    loaded.hub.enabled = True
     loaded.hub.port = 9000
     loaded.hub.bind = "10.77.3.50"
     back = cfg.from_dict(cfg.to_dict(loaded))
-    assert back.hub.enabled is True
     assert back.hub.port == 9000
     assert back.hub.bind == "10.77.3.50"
 

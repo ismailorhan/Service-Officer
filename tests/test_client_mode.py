@@ -162,3 +162,48 @@ def test_an_action_goes_to_whichever_is_there(qapp, monkeypatch):
     embedded.tray.action_started = lambda: None
     embedded.do_action("restart", "AppEngine")
     assert asked[-1] == ("engine", "restart", "AppEngine")
+
+
+# ---------------------------------------------------------------------------
+# administrator rights, asked for only when they are needed
+# ---------------------------------------------------------------------------
+def test_a_client_of_a_hub_never_asks_for_administrator(monkeypatch):
+    """The UAC prompt on every launch was the most visible cost this app charged, and a
+    client that only reads a hub has no reason to charge it: the hub does the work, and
+    the hub runs as LocalSystem."""
+    from core import local
+
+    settings = local.load()
+    settings.hub_url = "https://hub:8797"
+    local.save(settings)
+    monkeypatch.setattr(app_mod, "_is_elevated", lambda: False)
+
+    assert app_mod.needs_elevation(["ServiceOfficer.exe"]) is False
+
+
+def test_an_embedded_install_still_asks_for_it(monkeypatch):
+    """Because it drives this computer's service manager itself, and without the rights
+    every button would fail with access denied — which is worse than a prompt.
+
+    This is the deviation from the plan, which had the manifest simply moved to the hub:
+    that is right for a client and wrong for the single-machine install everybody has
+    today, so the answer is asked at run time instead of baked into a manifest.
+    """
+    monkeypatch.setattr(app_mod, "_is_elevated", lambda: False)
+
+    assert app_mod.needs_elevation(["ServiceOfficer.exe"]) is True
+
+
+def test_already_elevated_is_not_asked_twice(monkeypatch):
+    monkeypatch.setattr(app_mod, "_is_elevated", lambda: True)
+
+    assert app_mod.needs_elevation(["ServiceOfficer.exe"]) is False
+
+
+def test_pairing_on_the_command_line_counts_as_being_a_client(monkeypatch):
+    """The installer's own call, before client.json exists: `--connect ... --store-only`
+    must not raise a prompt in the middle of an unattended install."""
+    monkeypatch.setattr(app_mod, "_is_elevated", lambda: False)
+
+    assert app_mod.needs_elevation(
+        ["ServiceOfficer.exe", "--connect", "https://hub:8797"]) is False

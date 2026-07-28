@@ -43,6 +43,40 @@ BACKOFF = (1, 2, 4, 8, 15, 30)
 TIMEOUT = 15
 
 
+class _Stream:
+    """An open event stream as a context manager. Iterating it yields lines.
+
+    It carries the socket as well as the response because an SSE response has no length
+    and no chunked framing, so `HTTPConnection.getresponse()` hands the socket over to
+    the response and forgets it — and the socket is the only thing that can interrupt a
+    blocked read. See HubClient.stop.
+    """
+
+    def __init__(self, answer, sock):
+        self._answer, self.sock = answer, sock
+
+    def __iter__(self):
+        return iter(self._answer)
+
+    def shutdown(self) -> None:
+        """Unblock whoever is reading. Called from another thread, on purpose."""
+        try:
+            if self.sock is not None:
+                self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass          # already gone, which is the outcome we wanted
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        try:
+            self._answer.close()
+        except Exception:
+            pass
+        return False
+
+
 class Unreachable(RuntimeError):
     """The hub did not answer at all."""
 
@@ -214,6 +248,8 @@ class HubClient:
         self._on_connected = on_connected
         self._stop = threading.Event()
         self._thread = None
+        #: The open event stream, so stop() can close it from another thread — see stop().
+        self._stream = None
         self._events = threading.Event()      # set whenever anything arrives
         self._last_snapshot: dict = {}
 
@@ -355,7 +391,23 @@ class HubClient:
         self._thread.start()
 
     def stop(self) -> None:
+        """Stop reading, and mean it.
+
+        The reader spends its life blocked in a socket read, and `_stop` is only looked
+        at between lines — a stream is silent for up to KEEPALIVE_SECONDS at a time, so
+        waiting politely took 20.1 s, measured. Shutting the socket down from here is
+        what unblocks it: the read returns nothing, and `_listen` sees `_stop`.
+
+        It has to be honest about this because `start()` refuses to run while the old
+        thread is alive — a stop that had not finished made the next start a silent
+        no-op, and the client then sat on a stream nobody was managing. It also runs on
+        the way out of the application, where twenty seconds is a window that will not
+        close.
+        """
         self._stop.set()
+        held = self._stream
+        if held is not None:
+            held.shutdown()
         thread = self._thread
         if thread and thread.is_alive():
             thread.join(timeout=5)
@@ -366,13 +418,24 @@ class HubClient:
         while not self._stop.is_set():
             try:
                 self.check_identity()
-                # The snapshot first, then the stream: the other order leaves a gap in
-                # which a change arrives, is applied to nothing, and is then overwritten
-                # by a snapshot taken before it.
-                self.refresh_now()
-                self._mark(True)
-                attempt = 0
-                self._read_stream()
+                # The stream first, then the snapshot, then the events.
+                #
+                # The hub queues events per listener from the moment the stream is
+                # opened, so anything that happens while the snapshot is being taken is
+                # waiting in that queue and lands *after* it — in order, and applied to
+                # a store that already has the snapshot under it.
+                #
+                # The other order leaves a gap between the snapshot and the stream in
+                # which a change is published to nobody. That is not a moment of
+                # staleness: a store publishes only *changes*, so the client would go on
+                # showing the old status until the same service changed again. Found by
+                # the reconnect test failing under load, which is the only reason it was
+                # ever more than theoretical.
+                with self._open_stream() as stream:
+                    self.refresh_now()
+                    self._mark(True)
+                    attempt = 0
+                    self._pump(stream)
             except (Unreachable, WrongHub, Refused) as exc:
                 self._mark(False)
                 if attempt == 0:
@@ -387,23 +450,57 @@ class HubClient:
             attempt += 1
             self._stop.wait(delay)
 
-    def _read_stream(self) -> None:
-        request = urllib.request.Request(
-            self.url + "/api/v1/events",
-            headers={"Authorization": f"Bearer {self.token}"})
-        with urllib.request.urlopen(request, timeout=None,
-                                    context=self._context()) as stream:
-            for raw in stream:
-                if self._stop.is_set():
-                    return
-                line = raw.decode("utf-8", "replace").strip()
-                if not line.startswith("data:"):
-                    continue          # a comment: the keepalive, or ": open"
-                try:
-                    payload = json.loads(line[5:])
-                except ValueError:
-                    continue
-                self._handle(payload)
+    def _open_stream(self):
+        """Subscribe, and keep the connection so `stop()` can reach its socket.
+
+        `http.client` rather than `urlopen` for this one request, deliberately: urlopen
+        hands back a response with no way to get at the socket underneath, and closing
+        the response does **not** interrupt a read that is already blocked on it —
+        measured at 20.1 s to stop, which is the keepalive interval, because that is how
+        long it took for something to arrive and the loop to look at `_stop`.
+
+        A shutdown on the socket does interrupt it. Everything else here (the pin, the
+        token) is the same as any other request.
+        """
+        parsed = urllib.parse.urlparse(self.url)
+        port = parsed.port or 8797
+        if parsed.scheme == "https":
+            conn = http.client.HTTPSConnection(parsed.hostname, port,
+                                               timeout=TIMEOUT,
+                                               context=self._context())
+        else:
+            conn = http.client.HTTPConnection(parsed.hostname, port, timeout=TIMEOUT)
+        conn.request("GET", "/api/v1/events",
+                     headers={"Authorization": f"Bearer {self.token}"})
+        # Taken before getresponse(), which gives the socket away — see _Stream.
+        sock = conn.sock
+        # No socket timeout while reading: a stream is meant to say nothing for long
+        # stretches, and the keepalive is what proves it is alive.
+        if sock is not None:
+            sock.settimeout(None)
+        answer = conn.getresponse()
+        if answer.status != 200:
+            conn.close()
+            answer.close()
+            raise Refused(f"the hub refused the event stream: {answer.status}")
+        self._stream = _Stream(answer, sock)
+        return self._stream
+
+    def _pump(self, stream) -> None:
+        """Every event, until the stream ends or this client is asked to stop."""
+        for raw in stream:
+            if self._stop.is_set():
+                return
+            if not raw:
+                return          # the socket was shut down under us: see stop()
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue          # a comment: the keepalive, or ": open"
+            try:
+                payload = json.loads(line[5:])
+            except ValueError:
+                continue
+            self._handle(payload)
 
     def _handle(self, payload: dict) -> None:
         kind = payload.get("kind")

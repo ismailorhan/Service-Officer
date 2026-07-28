@@ -427,10 +427,14 @@ class Hub:
     """How this installation serves its clients.
 
     Absent from a config written before hubs existed, so every field has a default and
-    such a file still loads. `enabled` is False on purpose: installing an update must
-    never open a port on its own — that is a decision somebody makes.
+    such a file still loads.
+
+    There is no `enabled` here. Installing the hub component *is* the decision to serve:
+    the service exists or it does not, and a second switch inside the config would only
+    make "the service is running and nothing answers" possible. It was here briefly and
+    nothing ever read it, which is the same thing as it not existing except for the
+    reader who trusts it.
     """
-    enabled: bool = False
     port: int = 8797
     #: "" means every address on this machine. A single address is how the hub is kept
     #: off a second network card the machine happens to have.
@@ -780,7 +784,6 @@ def from_dict(data: dict) -> Config:
             on_give_up=bool(n.get("on_give_up", True)),
         ),
         hub=Hub(
-            enabled=bool(hub.get("enabled", False)),
             # Clamped rather than trusted: a hand-edited port outside the range would
             # leave the service unable to start with nothing to say about why. 0 is not
             # "any free port" here — a hub whose port moved every restart is a hub no

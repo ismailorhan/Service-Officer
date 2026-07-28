@@ -18,16 +18,23 @@ what changes the product most per unit of work, not by ease.
 > sentence-style settings to labelled fields was reviewed and **deferred**: it
 > changes what people see, unlike the rest.
 >
+> **Status, 2026-07-28. v2.2.0: the hub.** The engine now runs as a Windows service
+> and the tray application can read it over HTTPS instead of doing the work itself —
+> one place polling, one config, one history, and every action recorded with the name
+> of whoever asked. Credentialed access to Windows machines in another domain came
+> with it. Details in [HUB.md](HUB.md); the boundary in
+> [ARCHITECTURE.md](ARCHITECTURE.md); what is still not possible in
+> [LIMITS.md](LIMITS.md).
+>
 > **Agreed next**, in order: maintenance windows (9), post-reboot verification
 > (7), then mail notifications.
 >
 > **Designed but not built** — reasoning in [DECISIONS.md](DECISIONS.md):
-> auto-update, how remote machines are reached, the agent-then-hub path to a web
-> console, and mail.
+> auto-update, WinRM for remote Kill / File / Command checks, and mail.
 >
-> **Parked deliberately:** code signing (needs a purchased certificate), profile
-> export / silent deploy (waits on the hub), uptime & SLA reporting, resource
-> sparklines.
+> **Parked deliberately:** code signing (needs a purchased certificate), uptime &
+> SLA reporting, resource sparklines. Profile export / silent deploy is no longer
+> waiting on anything — a hub *is* the shared profile.
 
 **Positioning.** This isn't a generic "Windows services" utility. Its centre of
 gravity is the *ERP server*: a SAP Business One box running SQL Server, a
@@ -182,14 +189,23 @@ Monthly per-service availability, derived from the history in feature 3.
 - Cross-platform *clients*. The whole value is Win32/SCM depth; Linux is a
   **target**, not a place this runs.
 
-### No longer a non-feature: a central service
+### No longer a non-feature: a central service — **built, v2.2.0**
 
 The line above used to read "central server, agents, dashboards — the point of
 this tool is that it needs none of that", and half of that stopped being true the
-moment a second person wanted to see the same landscape. A hub is now planned:
-one Windows service owning the config, the connections and the history, with the
-tray app and later a browser page reading it. Agents are still out; the hub
-reaches its targets itself.
+moment a second person wanted to see the same landscape.
+
+Shipped 2026-07-28: one Windows service (`ServiceOfficerHub`) owns the config, the
+connections and the history; the tray application either runs its own engine (the
+single-machine install, unchanged) or reads a hub over HTTPS. There is no *mode* to
+choose — there is an address. See [HUB.md](HUB.md).
+
+**Agents are still out**, and the hub does not change that reasoning: it reaches
+its targets itself, over SCM and SSH, exactly as the tray application used to.
+What the hub adds is one place doing it instead of five.
+
+**Dashboards and metric stores are still out.** The hub serves one read-only page
+to prove the API can carry a browser UI; that is a proof, not a product.
 
 The reasoning and the task-by-task plan:
 [docs/superpowers/plans/2026-07-27-hub-service-and-clients.md](superpowers/plans/2026-07-27-hub-service-and-clients.md).

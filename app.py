@@ -8,6 +8,7 @@ substance lives in core/ or ui/.
 from __future__ import annotations
 
 import ctypes
+import subprocess
 import sys
 import threading
 import time
@@ -66,6 +67,57 @@ class HubSignals(QObject):
     """A hub's answers arrive on its reader thread; the widgets are on Qt's."""
     event = Signal(object)          # one wire event
     connected = Signal(bool)
+
+
+# ---------------------------------------------------------------------------
+# administrator rights
+# ---------------------------------------------------------------------------
+# Not a manifest. A client of a hub controls nothing itself — it asks the hub, and the
+# hub is a LocalSystem service — so requiring elevation on every launch would charge
+# every workstation for something only the single-machine install needs. But that
+# install does drive this computer's service manager directly, and without the rights
+# every button on it fails with access denied, which is worse than a prompt.
+#
+# So the question is asked at run time: am I about to do the work myself?
+def _is_elevated() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        # Not Windows, or the call is unavailable: assume yes rather than relaunch in
+        # a loop. Being wrong here costs a clear "access denied"; a loop costs the app.
+        return True
+
+
+def needs_elevation(argv=None) -> bool:
+    """Whether this launch has to be elevated to do what it is about to do."""
+    if _is_elevated():
+        return False
+    argv = list(argv if argv is not None else sys.argv)
+    if any(flag in argv for flag in ("--connect", "-c")):
+        return False                      # being pointed at a hub right now
+    return not local_mod.load().hub_url    # "" means the engine runs here
+
+
+def relaunch_elevated(argv=None) -> bool:
+    """Ask Windows for the rights and start again. True if the new process started, in
+    which case this one should exit quietly — two panels would fight over one tray."""
+    argv = list(argv if argv is not None else sys.argv)
+    if getattr(sys, "frozen", False):
+        program, arguments = sys.executable, argv[1:]
+    else:
+        program, arguments = sys.executable, argv
+    try:
+        answer = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", program, subprocess.list2cmdline(arguments), None, 1)
+    except Exception as exc:
+        log.warning("could not ask for administrator rights: %s", exc)
+        return False
+    # Anything above 32 is success; 5 is "the user said no", and that is an answer, not
+    # an error — they keep an unelevated app that will say so when a button fails.
+    if answer <= 32:
+        log.info("administrator rights were refused (%s); carrying on without", answer)
+        return False
+    return True
 
 
 def _pair(argv) -> str:
@@ -861,6 +913,13 @@ def main() -> int:
     # Pair and leave, without a QApplication or a tray icon. The installer's path.
     if "--store-only" in sys.argv:
         return pair_only(sys.argv)
+
+    # Only the install that does the work itself asks for administrator rights, and it
+    # asks here rather than in a manifest — see needs_elevation. Before the QApplication,
+    # so the relaunched process is the only one that ever draws anything.
+    if needs_elevation(sys.argv) and relaunch_elevated(sys.argv):
+        log.info("restarting with administrator rights")
+        return 0
 
     prepare_history()
     # No manual DPI call here: Qt already opts into per-monitor v2 awareness
