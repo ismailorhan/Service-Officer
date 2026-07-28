@@ -175,3 +175,29 @@ def test_the_data_folder_is_locked_down(script):
     # groups have Turkish names and an English one silently matches nothing.
     for name in ("BUILTIN\\Users", "Authenticated Users", "Administrators"):
         assert name not in granted, f"{name} is named in the icacls command; use its SID"
+
+
+def test_a_port_read_from_outside_is_validated_before_it_is_used(script):
+    """The third round trip through "build, hand it over, watch it fail", and the reason
+    this one is a test: `ServiceOfficerHub.exe port` was run and its first line used as the
+    port. During an upgrade the exe still on disk is the *previous* release, and one that
+    predates that command answers "Unknown command - 'port'" — which went straight into the
+    address field as `CTL052:Unknown command - 'port'`. Everything after it followed
+    honestly from a nonsense address, including asking for a token for this computer's own
+    hub.
+
+    An external command's output is input. Every path that produces a port has to go
+    through the one function that will only ever return a port or nothing.
+    """
+    routines = _routines(script)
+    assert "AsPort" in routines, "there is no validator any more"
+    for name in ("PortAlreadyHere", "GetHubPort"):
+        assert name in routines, f"{name} is gone"
+        assert "AsPort" in routines[name], (
+            f"{name} does not validate what it returns; a command that prints an error "
+            "message would have that message used as a port")
+    # The raw output must not be assigned anywhere without going through it.
+    for name, listed in routines.items():
+        if "LoadStringsFromFile" in listed:
+            assert "AsPort" in listed or "Result := Trim(Lines[0]);" not in listed, \
+                f"{name} uses a line of external output unvalidated"

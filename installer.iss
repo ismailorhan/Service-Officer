@@ -23,7 +23,7 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "2.2.4"
+#define MyAppVersion     "2.2.5"
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyHubExeName     "ServiceOfficerHub.exe"
@@ -488,8 +488,44 @@ begin
   Result := TypePage.SelectedValueIndex <> TypeHubOnly;
 end;
 
-// The port the hub here already serves on, asked of the hub itself rather than guessed
-// from a file: `ServiceOfficerHub.exe port` prints it, and it is the only thing that knows.
+// A port, or ''. Never anything else — which is the whole lesson of this function.
+function AsPort(Given: String): String;
+var
+  Number: Integer;
+begin
+  Number := StrToIntDef(Trim(Given), -1);
+  if (Number >= 1) and (Number <= 65535) then
+    Result := IntToStr(Number)
+  else
+    Result := '';
+end;
+
+// The port out of the config the hub reads. The "hub" section is located first: a health
+// check has a "port" too, and the first match in the file would be somebody's TCP check.
+function PortFromConfig(): String;
+var
+  Body: AnsiString;
+  Path, Section: String;
+  At: Integer;
+begin
+  Result := '';
+  Path := ExpandConstant('{commonappdata}\{#MyDataDir}\services.json');
+  if not (FileExists(Path) and LoadStringFromFile(Path, Body)) then
+    Exit;
+  Section := String(Body);
+  At := Pos('"hub"', Section);
+  if At = 0 then
+    Exit;
+  Result := AsPort(JsonValue(Copy(Section, At, Length(Section)), 'port'));
+end;
+
+// The port the hub here already serves on.
+//
+// Asked of the hub itself first, because it is the thing that knows — but *validated*,
+// because during an upgrade the exe still under {app} is the previous release. One that
+// predates the `port` command answers "Unknown command - 'port'", and that went into the
+// address field as `CTL052:Unknown command - 'port'` before this checked. An external
+// command's output is input.
 function PortAlreadyHere(): String;
 var
   Exe, Output: String;
@@ -498,14 +534,16 @@ var
 begin
   Result := '';
   Exe := ExpandConstant('{app}\{#MyHubService}\{#MyHubExeName}');
-  if not FileExists(Exe) then
-    Exit;
-  Output := ExpandConstant('{tmp}\port.txt');
-  if not Exec(ExpandConstant('{cmd}'), '/C ""' + Exe + '" port > "' + Output + '""',
-              '', SW_HIDE, ewWaitUntilTerminated, Code) then
-    Exit;
-  if LoadStringsFromFile(Output, Lines) and (GetArrayLength(Lines) > 0) then
-    Result := Trim(Lines[0]);
+  if FileExists(Exe) then
+  begin
+    Output := ExpandConstant('{tmp}\port.txt');
+    if Exec(ExpandConstant('{cmd}'), '/C ""' + Exe + '" port > "' + Output + '" 2>&1"',
+            '', SW_HIDE, ewWaitUntilTerminated, Code) then
+      if LoadStringsFromFile(Output, Lines) and (GetArrayLength(Lines) > 0) then
+        Result := AsPort(Lines[0]);
+  end;
+  if Result = '' then
+    Result := PortFromConfig();
 end;
 
 // ---------------------------------------------------------------------------
@@ -538,14 +576,11 @@ end;
 // clients have it stored, and moving it would leave every one of them looking at nothing.
 function GetHubPort(Param: String): String;
 begin
-  if ParamValue('HUBPORT') <> '' then
-    Result := ParamValue('HUBPORT')
-  else if ExistingPort <> '' then
-    Result := ExistingPort
-  else if PortPage <> nil then
-    Result := Trim(PortPage.Values[0])
-  else
-    Result := '{#MyHubPort}';
+  Result := AsPort(ParamValue('HUBPORT'));
+  if Result = '' then
+    Result := AsPort(ExistingPort);
+  if (Result = '') and (PortPage <> nil) then
+    Result := AsPort(PortPage.Values[0]);
   if Result = '' then
     Result := '{#MyHubPort}';
 end;
@@ -571,8 +606,9 @@ begin
     PortPage.Values[0] := ExistingPort;
     // The client here reads the hub by name, so it has to be told the port that hub
     // actually serves on rather than the default.
-    if (HubPage <> nil) and LooksLikeThisComputer(HostOfUrl(NormalisedUrl(HubPage.Values[0]))) then
-      HubPage.Values[0] := GetComputerNameString + ':' + ExistingPort;
+    if (HubPage <> nil) and (AsPort(ExistingPort) <> '')
+       and LooksLikeThisComputer(HostOfUrl(NormalisedUrl(HubPage.Values[0]))) then
+      HubPage.Values[0] := GetComputerNameString + ':' + AsPort(ExistingPort);
   end;
 end;
 
@@ -830,8 +866,9 @@ begin
     end;
     // The client on this machine reads the hub through its host name, so the port it is
     // told about has to be the one just chosen.
-    if (HubPage <> nil) and LooksLikeThisComputer(HostOfUrl(NormalisedUrl(HubPage.Values[0]))) then
-      HubPage.Values[0] := GetComputerNameString + ':' + Trim(PortPage.Values[0]);
+    if (HubPage <> nil) and (AsPort(PortPage.Values[0]) <> '')
+       and LooksLikeThisComputer(HostOfUrl(NormalisedUrl(HubPage.Values[0]))) then
+      HubPage.Values[0] := GetComputerNameString + ':' + AsPort(PortPage.Values[0]);
     Exit;
   end;
 
