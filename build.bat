@@ -74,6 +74,15 @@ if errorlevel 1 (
 
 echo.
 echo === Building ServiceOfficer.exe ===
+REM `core/i18n.py` loads a catalogue by *name*, at run time, from the code in the
+REM settings — and a dynamic import is invisible to PyInstaller. Without this the build
+REM succeeded and the frozen app fell back to English with nothing but a line in its log:
+REM picking Türkçe did nothing at all, which is the worst kind of nothing. Verified by
+REM reading the built archive's module list, not by trusting the build.
+REM
+REM Here rather than in the .spec files: those are deleted and regenerated a few lines above,
+REM so editing them changes nothing. A test asserts every language named in i18n.LANGUAGES
+REM appears here.
 "%PY%" -m PyInstaller ^
     --noconfirm ^
     --clean ^
@@ -82,6 +91,7 @@ echo === Building ServiceOfficer.exe ===
     --icon=icon.ico ^
     --add-data "icon.ico;." ^
     --hidden-import=win32timezone ^
+    --hidden-import=core.translations.tr ^
     --exclude-module tkinter ^
     --exclude-module PySide6.QtQml ^
     --exclude-module PySide6.QtQuick ^
@@ -115,6 +125,7 @@ REM service on a server has no display to draw on. It is also 60 MB.
     --hidden-import=win32timezone ^
     --hidden-import=servicemanager ^
     --hidden-import=win32serviceutil ^
+    --hidden-import=core.translations.tr ^
     --exclude-module tkinter ^
     --exclude-module PySide6 ^
     --exclude-module shiboken6 ^
