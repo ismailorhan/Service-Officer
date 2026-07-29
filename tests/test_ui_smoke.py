@@ -3045,3 +3045,65 @@ def test_a_quiet_button_looks_like_a_button(qapp):
         assert edge_colours(quiet) != edge_colours(primary),             "the two kinds of button are indistinguishable"
     finally:
         holder.close()
+
+
+def test_a_fields_note_lives_behind_a_dot(qapp, sample):
+    """The forms had a column of prose beside every row — four or five lines each, so six
+    fields was thirty lines of text and the fields got what was left. The words are worth
+    keeping; showing all of them at once was what was wrong.
+    """
+    from PySide6.QtWidgets import QLabel
+    from ui.widgets import InfoDot
+
+    win = panel_mod.MainPanel(sample)
+    win.show()
+    try:
+        detail = win.machines_page.detail
+        dots = [w for w in detail.findChildren(InfoDot)]
+        assert len(dots) >= 8, f"only {len(dots)} fields explain themselves"
+
+        # None of those sentences is on the page any more.
+        prose = [lb.text() for lb in detail.findChildren(QLabel)
+                 if len(lb.text()) > 60 and lb.isVisible()]
+        assert not [p for p in prose if "DOMAIN\account" in p],             "a field's note is still spread across the form"
+
+        # It is one click away, to the right of the dot, and it says the same thing.
+        dot = detail._hints["username"]
+        assert "log in as" in dot.text()
+        dot._show_popup()
+        qapp.processEvents()
+        popup = dot._popup
+        # Not isVisible(): a Qt.Popup window's visibility depends on the window manager and on
+        # what else the suite has on screen, and asserting it was flaky within a minute of
+        # being written. What matters is that there is one, it says the words, and it is where
+        # the words used to be.
+        assert popup is not None
+        shown = " ".join(lb.text() for lb in popup.findChildren(QLabel))
+        assert "log in as" in shown, shown
+        assert popup.x() > dot.mapToGlobal(dot.rect().topLeft()).x(),             "the popup is not to the right of the dot, which is where the words used to be"
+        popup.close()
+    finally:
+        win.close()
+
+
+def test_rewording_a_note_reaches_the_dot_and_an_open_popup(qapp, sample):
+    """The pages keep these in a dict so a field's note can change with the machine's type —
+    "User" means different things on Windows and on Linux. That code calls setText, so InfoDot
+    answers to the same two methods a label does."""
+    from PySide6.QtWidgets import QLabel
+    from ui.widgets import InfoDot
+
+    dot = InfoDot("the first thing")
+    try:
+        dot._show_popup()
+        qapp.processEvents()
+        dot.setText("something else entirely")
+
+        assert dot.text() == "something else entirely"
+        assert dot.toolTip() == "something else entirely",             "hovering still says the old sentence"
+        shown = " ".join(lb.text() for lb in dot._popup.findChildren(QLabel))
+        assert shown == "something else entirely",             "the popup was left showing a sentence that is no longer true"
+    finally:
+        if dot._popup is not None:
+            dot._popup.close()
+        dot.close()

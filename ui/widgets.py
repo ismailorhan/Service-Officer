@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFrame,
                                QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QPushButton,
                                QSpinBox, QVBoxLayout, QWidget)
 
-from . import theme
+from . import icons, theme
 
 
 def label(text, role=None, wrap=False) -> QLabel:
@@ -27,6 +27,104 @@ def button(text, kind=None, slot=None) -> QPushButton:
         b.clicked.connect(slot)
     b.setCursor(Qt.PointingHandCursor)
     return b
+
+
+class InfoDot(QWidget):
+    """The explanation for a field, behind a small i.
+
+    The forms had a column of prose beside every row — four or five lines each, so a page of
+    six fields was a page of thirty lines of text and the fields themselves were squeezed into
+    what was left. The words are worth keeping; showing all of them at once is what was wrong.
+
+    `setText` and `text` are this widget's own, deliberately named after QLabel's: the pages
+    keep a dict of these so they can reword a field's note when the machine's type changes —
+    "User" means different things on Windows and on Linux — and that code did not have to
+    learn anything new.
+    """
+
+    SIZE = 16
+    #: Wide enough for a sentence to breathe, narrow enough to read in one eye movement.
+    POPUP_WIDTH = 330
+
+    def __init__(self, note: str = "", parent=None):
+        super().__init__(parent)
+        self._note = note or ""
+        self._popup = None
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(self._note)
+
+    # -- the pages' API ----------------------------------------------------
+    def setText(self, note: str) -> None:
+        self._note = note or ""
+        self.setToolTip(self._note)
+        # Refreshed whenever one exists, not only when Qt says it is visible: a popup opened
+        # a moment ago is not `isVisible()` until the event loop has run, so that test left a
+        # sentence on screen which was no longer true.
+        if self._popup is not None:
+            self._fill(self._popup)
+        self.update()
+
+    def text(self) -> str:
+        return self._note
+
+    # -- what it looks like ------------------------------------------------
+    def paintEvent(self, event):
+        from PySide6.QtGui import QPainter
+        painter = QPainter(self)
+        icons.info_dot(self.SIZE, theme.FG2 if self.underMouse() else theme.FG3)             .paint(painter, self.rect())
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
+
+    # -- and what it does --------------------------------------------------
+    def mousePressEvent(self, event):
+        if not self._note:
+            return
+        self._show_popup()
+
+    def _show_popup(self) -> None:
+        popup = QFrame(self, Qt.Popup)
+        popup.setObjectName("infoPopup")
+        popup.setAttribute(Qt.WA_StyledBackground, True)
+        lay = QVBoxLayout(popup)
+        lay.setContentsMargins(12, 10, 12, 10)
+        self._fill(popup)
+        popup.adjustSize()
+        # To the right of the dot, which is where the words used to be — so the eye goes where
+        # it already expected them. Nudged back onto the screen if there is no room there.
+        at = self.mapToGlobal(QPoint(self.width() + 8, -6))
+        screen = self.screen().availableGeometry() if self.screen() else None
+        if screen is not None:
+            if at.x() + popup.width() > screen.right():
+                at.setX(max(screen.left(), self.mapToGlobal(QPoint(0, 0)).x()
+                            - popup.width() - 8))
+            if at.y() + popup.height() > screen.bottom():
+                at.setY(max(screen.top(), screen.bottom() - popup.height()))
+        popup.move(at)
+        popup.show()
+        self._popup = popup
+
+    def _fill(self, popup) -> None:
+        """(Re)word the popup. Separate, so setText while it is open rewrites it rather than
+        leaving a sentence on screen that is no longer true."""
+        lay = popup.layout()
+        while lay.count():
+            item = lay.takeAt(0)
+            stale = item.widget()
+            if stale is not None:
+                # Unparented as well as deleted: deleteLater() alone leaves it in the child
+                # list until the event loop runs, so the popup briefly holds both sentences.
+                stale.setParent(None)
+                stale.deleteLater()
+        words = label(self._note, "hint", wrap=True)
+        words.setFixedWidth(self.POPUP_WIDTH)
+        lay.addWidget(words)
 
 
 class Chip(QLabel):

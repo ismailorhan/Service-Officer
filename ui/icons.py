@@ -35,7 +35,7 @@ _cache: dict = {}
 
 def clear_cache() -> None:
     """Drop everything painted with palette colours — call after a theme change."""
-    for key in [k for k in _cache if k[0] in ("nav", "dot")]:
+    for key in [k for k in _cache if k[0] in ("nav", "dot", "info")]:
         del _cache[key]
 
 
@@ -139,6 +139,37 @@ def dot(colour: str, size: int = 9) -> QPixmap:
 
 def status_dot(category: str, size: int = 9) -> QPixmap:
     return dot(theme.dot_colour(category), size)
+
+
+def info_dot(size: int = 15, colour: str = None) -> QIcon:
+    """A lower-case i in a circle. Drawn, like every other icon here, because a font glyph
+    cannot be sized against a 15px row and reads as a speck or a blot depending on the
+    machine's fonts."""
+    key = ("info", size, colour)
+    if key in _cache:
+        return _cache[key]
+    ink = QColor(colour or theme.FG3)
+    scale = 3                                   # drawn large and scaled down, for the curve
+    pm = QPixmap(size * scale, size * scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    s = float(size * scale)
+    pen = QPen(ink)
+    pen.setWidthF(s * 0.085)
+    p.setPen(pen)
+    p.drawEllipse(QRectF(pen.widthF(), pen.widthF(),
+                         s - pen.widthF() * 2, s - pen.widthF() * 2))
+    # The dot and the stem of the i, drawn rather than typed for the same reason.
+    p.setBrush(ink)
+    p.drawEllipse(QRectF(s * 0.44, s * 0.24, s * 0.12, s * 0.12))
+    pen.setWidthF(s * 0.11)
+    p.setPen(pen)
+    p.drawLine(QPointF(s * 0.5, s * 0.43), QPointF(s * 0.5, s * 0.73))
+    p.end()
+    _cache[key] = QIcon(pm.scaled(size, size, Qt.KeepAspectRatio,
+                                  Qt.SmoothTransformation))
+    return _cache[key]
 
 
 def nav_icon(kind: str, size: int = 19, colour: str = None) -> QIcon:

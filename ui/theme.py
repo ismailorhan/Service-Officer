@@ -489,6 +489,12 @@ def sheet() -> str:
     #row:hover, #steprow:hover {{ background: {BG_HOVER}; }}
     #navPanel {{ background: {BG_BAND}; border-right: 1px solid {LINE}; }}
     #footerBar {{ background: {BG_BAND}; border-top: 1px solid {LINE}; }}
+    /* The popup behind a field's info dot. A border and a lifted background, because it
+       floats over the form and has to read as a thing in front rather than a paragraph that
+       appeared. */
+    #infoPopup {{
+        background: {BG_RAISE}; border: 1px solid {LINE2}; border-radius: 6px;
+    }}
     #columnHeader {{ background: {BG_BAND}; }}
     #hline {{ background: {LINE}; border: none; }}
     #flyoutTitle {{ color: {FG}; font-size: {T_H2}pt; font-weight: 600; }}

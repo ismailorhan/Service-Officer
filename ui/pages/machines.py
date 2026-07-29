@@ -21,7 +21,7 @@ from core import config as cfg_mod
 from core import connectors, control, secrets
 
 from .. import theme
-from ..widgets import button as _button, label as _label
+from ..widgets import button as _button, label as _label, InfoDot
 from .base import _ListRow, _Page, _spin
 
 
@@ -388,6 +388,9 @@ class MachineDetail(_Page):
         form.setVerticalSpacing(theme.SP_10)
         form.setColumnMinimumWidth(0, 108)
         form.setColumnStretch(1, 1)
+        # Column 2 holds a 16px dot, not a paragraph. Stretch nothing there, so what used to be
+        # a column of prose is now width the fields keep.
+        form.setColumnStretch(2, 0)
         self.form = form
         self._rows: dict = {}
         #: the note beside a field, kept so it can be rewritten: what "User" means
@@ -404,9 +407,13 @@ class MachineDetail(_Page):
                 form.addWidget(widget, row, 1)
             else:
                 form.addLayout(widget, row, 1)
-            hint = _label(note, "hint", wrap=True) if note else None
+            # Behind a dot rather than spread across the page. Six fields' worth of notes was
+            # thirty lines of prose beside them, and the fields got what was left — see
+            # InfoDot. Its setText/text are the same as the label's, so _describe_fields did
+            # not have to change at all.
+            hint = InfoDot(note) if note else None
             if hint is not None:
-                form.addWidget(hint, row, 2)
+                form.addWidget(hint, row, 2, Qt.AlignLeft | Qt.AlignVCenter)
                 self._hints[key] = hint
             self._rows[key] = [w for w in (caption, widget, hint) if w is not None]
             return row
