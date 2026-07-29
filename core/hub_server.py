@@ -94,6 +94,62 @@ def page(name: str = "index.html") -> bytes:
         return b""
 
 
+def _can_bind(host: str, port: int) -> tuple:
+    """(True, "") if that port is free, else (False, why) — asked before anything moves.
+
+    A probe rather than an attempt, because the attempt is what cannot be undone: the old
+    socket has to be closed before the new one can be opened on the same address family, and
+    a failure after that is a hub nobody can reach.
+    """
+    import socket as socket_mod
+
+    family = socket_mod.AF_INET6 if ":" in (host or "") or host in ("", "::")         else socket_mod.AF_INET
+    probe = socket_mod.socket(family, socket_mod.SOCK_STREAM)
+    try:
+        if family == socket_mod.AF_INET6:
+            try:
+                probe.setsockopt(socket_mod.IPPROTO_IPV6, socket_mod.IPV6_V6ONLY, 0)
+            except OSError:
+                pass
+        probe.bind((host or "::", int(port)))
+        probe.listen(1)
+        return True, ""
+    except OSError as exc:
+        return False, f"could not listen on {port}: {exc}"
+    finally:
+        probe.close()
+
+
+def _open_firewall(port: int, was: int = 0) -> None:
+    """Move the inbound rule to the new port.
+
+    A port nothing can reach is the same as a hub that did not come back, and the installer's
+    rule names the old one. Best effort and never fatal: a machine with the firewall off, or
+    managed by policy, is somebody else's arrangement — the log says what was attempted.
+
+    The same name and profile the installer uses, deleted before adding, because two rules
+    for one thing was a real bug here once.
+    """
+    import subprocess
+
+    name = "Service Officer Hub"
+    for arguments in (
+            ["advfirewall", "firewall", "delete", "rule", f"name={name}"],
+            ["advfirewall", "firewall", "add", "rule", f"name={name}", "dir=in",
+             "action=allow", "protocol=TCP", f"localport={int(port)}", "profile=domain"]):
+        try:
+            done = subprocess.run(["netsh", *arguments], capture_output=True, text=True,
+                                  timeout=20,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if done.returncode != 0 and arguments[2] == "add":
+                log.warning("could not open port %s in the firewall: %s", port,
+                            (done.stdout or done.stderr).strip()[:200])
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("could not reach netsh to open port %s: %s", port, exc)
+            return
+    log.info("firewall: port %s open%s", port, f", {was} closed" if was else "")
+
+
 class _Listener:
     """One open event stream. Its queue is bounded: a client that has stopped reading
     must not grow the hub's memory until something dies — better to drop events and let
@@ -288,6 +344,58 @@ class HubServer:
         with self._listeners_lock:
             return len(self._listeners)
 
+    def rebind(self, port: int) -> tuple:
+        """Listen on `port` instead. Returns (ok, what to say).
+
+        The socket is closed and another opened — the service is not restarted. Stopping a
+        LocalSystem service from inside itself leaves nothing to start it again, and the panel
+        that would otherwise have to do it has no administrator rights by design. Nothing else
+        about the hub is disturbed: the engine, the poller and the watchdog never stop.
+
+        If the new port cannot be bound the old one is taken again, so a mistyped number
+        costs a message rather than a hub nobody can reach.
+        """
+        port = int(port)
+        if not 1 <= port <= 65535:
+            return False, f"a port has to be between 1 and 65535, not {port}"
+        if port == self.port:
+            return True, f"already listening on {port}"
+        was = self.port
+        free, why = _can_bind(self.host, port)
+        if not free:
+            # Refused before anything is announced. Announcing first and failing afterwards
+            # left every client retrying an address nothing was on, with the correction
+            # unable to reach them because they had already left — the hub was up and
+            # unreachable, which is worse than a refusal.
+            log.info("not moving to %s: %s", port, why)
+            return False, why
+
+        # Now it is safe to say so, while the old socket is still open to carry it.
+        self.publish(wire.hub_port_event(port))
+        time.sleep(0.4)          # long enough for a queued event to be written out
+
+        self.stop()
+        self.port = port
+        try:
+            self.start()
+        except OSError as exc:
+            log.error("could not listen on %s (%s); taking %s again", port, exc, was)
+            self.port = was
+            try:
+                self.start()
+            except OSError as fatal:
+                # Both gone. Said as loudly as a log can, because there is now nothing
+                # listening and the only way back is the command line and a restart.
+                log.critical("could not listen on %s either (%s) — this hub is not "
+                             "answering anything", was, fatal)
+                return False, (f"could not listen on {port} ({exc}), and {was} could not be "
+                               f"taken back either — restart the Hub service")
+            self.publish(wire.hub_port_event(was))
+            return False, f"could not listen on {port}: {exc}"
+        _open_firewall(port, was)
+        log.info("now listening on %s (was %s)", port, was)
+        return True, f"listening on {port}"
+
     # -- events ------------------------------------------------------------
     def _on_state(self, state_event) -> None:
         """A status changed: fan it out to every open stream. Called on whatever
@@ -466,7 +574,9 @@ def _make_handler(hub: HubServer):
                 self._refuse(400, f"the body is not JSON: {exc}")
                 return
             path = self.path.partition("?")[0]
-            if path == "/api/v1/actions":
+            if path == "/api/v1/hub/port":
+                self._hub_port(body, who)
+            elif path == "/api/v1/actions":
                 self._action(body, who)
             elif path == "/api/v1/stacks/run":
                 self._run("stack", body, who)
@@ -619,6 +729,35 @@ def _make_handler(hub: HubServer):
                 return
             log.info("%s saved the config", actor)
             self._send(204)
+
+        def _hub_port(self, body: dict, who: str) -> None:
+            """Change the port this hub listens on, and move to it.
+
+            Answered *before* the move, or the answer would go down with the socket it is
+            being written to. The rebinding happens on its own thread a moment later, by
+            which time this reply and the hub_port event are both out.
+            """
+            try:
+                wanted = int(body.get("port") or 0)
+            except (TypeError, ValueError):
+                self._refuse(400, f"not a port number: {body.get('port')!r}")
+                return
+            if not 1 <= wanted <= 65535:
+                self._refuse(400, f"a port has to be between 1 and 65535, not {wanted}")
+                return
+            cfg = hub.engine.config()
+            if wanted != cfg.hub.port:
+                cfg.hub.port = wanted
+                try:
+                    hub.engine.save_config(cfg)
+                except Exception as exc:
+                    self._refuse(500, f"could not store the port: {exc}")
+                    return
+            log.info("%s asked this hub to listen on %s", who, wanted)
+            self._send(202, {"port": wanted, "was": hub.port})
+            if wanted != hub.port:
+                threading.Thread(target=lambda: hub.rebind(wanted), daemon=True,
+                                 name="hub-rebind").start()
 
         def _history(self, query: str) -> None:
             from urllib.parse import parse_qs

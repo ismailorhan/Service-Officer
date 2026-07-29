@@ -14,6 +14,13 @@ retrofitted rather than written for two languages from the start:
 The cost is that editing an English sentence orphans its translation. That is what
 `missing()` is for, and a test uses it.
 
+**What must not be translated: anything worded on the hub and sent to a client.** A hub is a
+service on somebody's server and its language is that machine's; the reader is at a workstation
+with a language of their own. A refusal worded on the hub arrives in the wrong one, and no
+amount of care at the reading end can undo it. So `core/hub_server.py`'s refusals stay English —
+they are protocol-level, aimed at a log and at whoever meets them with curl — and a client words
+its own sentence about what came back.
+
 Sentences with values in them are templates: `t("Could not {action} {name}", action=…,
 name=…)`. Formatting happens here so a translation with a wrong placeholder cannot take a
 window down — it falls back to the English, which at least says something true.

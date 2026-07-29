@@ -171,6 +171,16 @@ def error_event(kind: str, text: str) -> dict:
     return {"kind": "error", "what": kind or "", "text": text or "", "at": time.time()}
 
 
+def hub_port_event(port: int) -> dict:
+    """The hub is about to listen somewhere else.
+
+    Sent *before* it moves, because every client is connected to the old socket and only the
+    one that asked knows the new number. Without this the rest would reconnect for ever to a
+    port nothing is on.
+    """
+    return {"kind": "hub_port", "port": int(port), "at": time.time()}
+
+
 def config_event(actor: str = "", etag: str = "") -> dict:
     """The landscape was edited. Carries no config: it is large, every client holds a copy
     already, and one that wants the new one asks — which also gets it the etag it will need

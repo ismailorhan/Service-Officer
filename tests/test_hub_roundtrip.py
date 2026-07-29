@@ -585,3 +585,74 @@ def test_a_trigger_hears_a_stack_that_finishes_instantly(system, monkeypatch):
         time.sleep(0.01)
     assert outcomes, "the stack finished and the trigger never heard how it went"
     assert outcomes[0] in ("done", "failed", "cancelled"), outcomes
+
+
+def test_the_hub_moves_to_another_port_and_its_clients_follow(system, monkeypatch):
+    """It was a command line and a service restart, and the config field could be changed with
+    no effect at all — the port is read once, when the socket is bound.
+
+    Rebound in place rather than restarted: stopping a LocalSystem service from inside itself
+    leaves nothing to start it again, and the panel that would have to do it has no
+    administrator rights by design.
+
+    And every client is told *before* the move, because they are all on the old socket and only
+    whoever asked knows the new number.
+    """
+    from core import hub_server
+
+    client, _engine, server, _states, holder = system
+    monkeypatch.setattr(hub_server, "_open_firewall", lambda port, was=0: None)
+    was = server.port
+    free = _a_free_port()
+
+    said = client.set_hub_port(free)
+    assert said.get("port") == free and said.get("was") == was, said
+
+    assert client.wait_for(lambda: server.port == free, timeout=20),         f"still listening on {server.port}"
+    assert holder["cfg"].hub.port == free, "the new port was not stored"
+
+    # The client was told and followed, so it is connected again — to the new place.
+    assert client.wait_for(lambda: str(free) in client.url, timeout=20), client.url
+    assert client.wait_for(lambda: client.connected, timeout=30), "it never reconnected"
+    assert client.ping()["protocol"] >= 1
+
+
+def test_a_port_it_cannot_take_leaves_the_hub_where_it_was(system, monkeypatch):
+    """A mistyped number must cost a message, not a hub nobody can reach."""
+    import socket as socket_mod
+
+    from core import hub_server
+
+    client, _engine, server, _states, _holder = system
+    monkeypatch.setattr(hub_server, "_open_firewall", lambda port, was=0: None)
+    was = server.port
+
+    # Something else is already on it.
+    blocker = socket_mod.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    taken = blocker.getsockname()[1]
+    try:
+        ok, why = server.rebind(taken)
+        assert ok is False and str(taken) in why, why
+        assert server.port == was, f"the hub moved anyway, to {server.port}"
+        assert client.wait_for(lambda: client.connected, timeout=30),             "it did not come back on the port it was already on"
+    finally:
+        blocker.close()
+
+
+def test_a_port_that_is_refused_is_refused_before_anything_moves(system):
+    client, _engine, server, _states, _holder = system
+    was = server.port
+
+    for silly in (0, -1, 70000):
+        ok, why = server.rebind(silly)
+        assert ok is False and "between 1 and 65535" in why, why
+    assert server.port == was
+
+
+def _a_free_port() -> int:
+    import socket as socket_mod
+    with socket_mod.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]

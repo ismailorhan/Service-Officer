@@ -120,7 +120,7 @@ class MainPanel(QDialog):
         self.machines_page = MachinesPage(get, self._store, self._hub)
         self.history_page = HistoryPage(get, self._hub)
         self.clients_page = ClientsPage(self._hub)
-        self.hub_page = HubPage()
+        self.hub_page = HubPage(get, self._hub)
         self.general_page = GeneralPage(get)
         self.services_page.changed.connect(self.stacks_page.refresh)
         self.services_page.changed.connect(self.schedule_page.refresh)

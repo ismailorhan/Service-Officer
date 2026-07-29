@@ -13,9 +13,11 @@ in this product; there is an address.
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QMessageBox
+from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QMessageBox, QVBoxLayout,
+                               QWidget)
 
 from core import local as local_mod
+from core.i18n import t
 from core import version
 
 from ..widgets import button as _button, label as _label
@@ -32,9 +34,14 @@ class HubPage(_Page):
     #: repeated: it is also the installer's default and core/config's.
     DEFAULT_PORT = "8797"
 
-    def __init__(self):
+    def __init__(self, cfg_ref=None, hub=None):
         super().__init__("Hub", "Where this panel gets its services from. A hub watches "
                                 "and controls; this window is a view of one.", scroll=True)
+
+        #: The config, for the hub's *own* port — the one it listens on, which is a
+        #: different thing from the address above. A getter or None.
+        self.cfg = cfg_ref
+        self._hub = hub if callable(hub) else (lambda: hub)
 
         self.hub_state = _label("", "hint", wrap=True)
         self.root.addWidget(self.hub_state)
@@ -77,11 +84,76 @@ class HubPage(_Page):
         self.root.addLayout(row)
         self.hub_result = _label("", "hint", wrap=True)
         self.root.addWidget(self.hub_result)
+
+        # -- and the other port, which is a different thing entirely -----------
+        self.serving = QWidget()
+        serving = QVBoxLayout(self.serving)
+        serving.setContentsMargins(0, 22, 0, 0)
+        serving.setSpacing(0)
+        serving.addWidget(_label(t("SERVING"), "section"))
+        serving.addSpacing(9)
+        self.listen_port = QLineEdit()
+        self.listen_port.setFixedWidth(80)
+        serving.addWidget(_sentence(t("This computer serves clients on port"),
+                                    self.listen_port))
+        serving.addWidget(_label(
+            t("The port the Hub service listens on — not the one above, which is where this "
+            "panel reads from. Applying it moves the socket and the firewall rule, and every "
+            "client is told the new number first so they follow rather than losing the hub.\n"
+            "ServiceOfficerHub.exe port <n> does the same from a command line, which is the "
+            "way in when the hub cannot be reached at all."),
+            "hint", wrap=True))
+        serving.addSpacing(10)
+        moving = QHBoxLayout()
+        moving.addWidget(_button(t("Move to this port"), "primary", self._move_port))
+        moving.addStretch(1)
+        serving.addLayout(moving)
+        self.serve_result = _label("", "hint", wrap=True)
+        serving.addWidget(self.serve_result)
+        self.root.addWidget(self.serving)
         # Without this the layout hands the spare height to the gaps between sections, and
         # a page with six widgets on it drifts into a page with six widgets *spread* over
         # it — 50 pixels between a heading and its field where General has 10. Every other
         # page here ends with one; measured against General's screenshot.
         self.root.addStretch(1)
+
+    def _serves_here(self) -> bool:
+        """Whether the hub being read is *this* computer's.
+
+        Only then is its listening port something to offer. On a workstation it belongs to
+        somebody else's machine, and a field that moves a server's socket sitting under a
+        field about this panel's own address is two subjects in one place.
+        """
+        hub = self._hub()
+        if hub is None:
+            return False
+        from core import control
+        here = (control.host_name() or "").lower()
+        return bool(here) and here == (getattr(hub, "host", "") or "").lower()
+
+    def _move_port(self):
+        """Ask the hub to listen somewhere else."""
+        hub = self._hub()
+        if hub is None:
+            return
+        text = self.listen_port.text().strip()
+        if not text.isdigit() or not 1 <= int(text) <= 65535:
+            self.serve_result.setText(t("A port is a number between 1 and 65535."))
+            return
+        wanted = int(text)
+        self.serve_result.setText(t("Moving to {port}…", port=wanted))
+        self.serve_result.repaint()
+        try:
+            said = hub.set_hub_port(wanted)
+        except Exception as exc:
+            self.serve_result.setText(t("The hub refused that: {why}", why=exc))
+            return
+        # It answers before it moves — the reply would otherwise go down with the socket it is
+        # being written to — so this says asked and accepted, not done.
+        self.serve_result.setText(t(
+            "The hub is moving from {was} to {port}. This panel follows it, and the other "
+            "clients were told first.",
+            was=said.get("was", "?"), port=said.get("port", wanted)))
 
     # -- the two fields as one address -------------------------------------
     def _normalised(self, given: str = None, port: str = None) -> str:
@@ -193,7 +265,7 @@ class HubPage(_Page):
 
     # -- the panel's contract ---------------------------------------------
     def refresh(self):
-        self.load_from(None)
+        self.load_from(self.cfg() if callable(self.cfg) else None)
 
     def load_from(self, _cfg=None):
         host, port = self._split(local_mod.load().hub_url)
@@ -202,3 +274,7 @@ class HubPage(_Page):
             field.setText(value)
             field.blockSignals(False)
         self._describe_hub()
+        shown = self._serves_here()
+        self.serving.setVisible(shown)
+        if shown and _cfg is not None:
+            self.listen_port.setText(str(getattr(getattr(_cfg, "hub", None), "port", "")))

@@ -426,6 +426,35 @@ class HubClient:
         self._ask("POST", "/api/v1/triggers/run", {"name": name, "actor": actor})
         return True
 
+    def set_hub_port(self, port: int) -> dict:
+        """Ask the hub to listen somewhere else. It answers before it moves."""
+        _status, said = self._ask("POST", "/api/v1/hub/port", {"port": int(port)})
+        return said or {}
+
+    def follow_to_port(self, port: int) -> str:
+        """Point this client at the same hub on a different port, and reconnect.
+
+        Every client gets this, not only whoever asked: they are all on the old socket, and a
+        client that kept retrying the old number would sit disconnected for ever with nothing
+        on screen to explain it.
+        """
+        parsed = urllib.parse.urlparse(self.url)
+        host = parsed.hostname or ""
+        if not host or not port:
+            return self.url
+        where = f"[{host}]" if ":" in host else host
+        self.url = f"{parsed.scheme}://{where}:{int(port)}"
+        log.info("the hub moved to port %s; following it", port)
+        # Drop the stream so the reader stops waiting on a socket that is about to close and
+        # reconnects to the new address on its next turn.
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        return self.url
+
     def refresh_machine(self, machine: str = None) -> None:
         self._ask("POST", "/api/v1/refresh", {"machine": machine or ""})
 
@@ -626,6 +655,10 @@ class HubClient:
             # Nothing to store: an action is a moment, not a state. It goes straight to
             # _on_event, which is where the window is.
             pass
+        elif kind == "hub_port":
+            # Before the hub moves, so this client knows where to reconnect. The stored
+            # address is updated too, or the next launch would go to the old port.
+            self.follow_to_port(payload.get("port", 0))
         elif kind == "gap":
             # The hub dropped events for this connection, so what is held is no longer
             # reliable and it cannot be told which are missing. One fresh snapshot is the
