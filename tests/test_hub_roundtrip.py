@@ -10,6 +10,8 @@ service cannot run on a build agent — but everything between the client's requ
 control call is exactly what ships.
 """
 
+import time
+
 import pytest
 
 from core import config as cfg_mod
@@ -537,3 +539,49 @@ def test_a_trigger_whose_stack_fails_says_failed(system, monkeypatch):
         lambda: any(e.get("kind") == "trigger" for e in heard), timeout=20)
     fired = next(e for e in heard if e.get("kind") == "trigger")
     assert fired["outcome"] == "failed", fired
+
+
+def test_a_trigger_hears_a_stack_that_finishes_instantly(system, monkeypatch):
+    """The outcome must not depend on who wins a race.
+
+    `run_trigger` used to start the stack and *then* write down that it was waiting. A
+    one-step stack that fails at once can finish in between, and the outcome was lost — no
+    history row, no notification, nothing on any panel. It failed once in a full-suite run
+    and passed a hundred times on its own, which is how a race announces itself.
+
+    Forced here rather than hoped for: the run completes before run_stack has returned.
+    """
+    client, engine, _server, _states, holder = system
+
+    holder["cfg"].stacks.append(cfg_mod.Stack(
+        name="instant", steps=[cfg_mod.Step(service="AppEngine", action="stop")]))
+    holder["cfg"].triggers.append(cfg_mod.Trigger(
+        name="nightly", action="stack", stack="instant"))
+
+    real_run_stack = engine.run_stack
+    started = []
+
+    def run_and_finish_before_returning(stack_or_name, actor="", **rest):
+        # **rest, so this reads the same against a build that has no `then=`: there the
+        # outcome is simply lost, which is the failure being ruled out.
+        answer = real_run_stack(stack_or_name, actor=actor, **rest)
+        for _ in range(200):
+            if not engine.runner.busy:
+                break
+            time.sleep(0.01)
+        started.append(True)
+        return answer
+
+    monkeypatch.setattr(engine, "run_stack", run_and_finish_before_returning)
+
+    outcomes = []
+    engine.also_on("trigger", lambda **f: outcomes.append(f.get("outcome")))
+    engine.run_trigger("nightly")
+
+    assert started, "the stand-in was not used"
+    for _ in range(200):
+        if outcomes:
+            break
+        time.sleep(0.01)
+    assert outcomes, "the stack finished and the trigger never heard how it went"
+    assert outcomes[0] in ("done", "failed", "cancelled"), outcomes

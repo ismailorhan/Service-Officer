@@ -71,12 +71,6 @@ class Engine:
         self._on_error = on_error
         self._on_config_saved = on_config_saved
 
-        #: The outcome a trigger that started a *stack* is waiting for. One slot, because
-        #: one stack runs at a time. A service trigger needs no slot — it hands `act` a
-        #: closure, which cannot race the way a later registration did.
-        self._stack_wait = None
-        self._waiting_lock = threading.Lock()
-
         #: action ids in flight, so a caller in another process can be told what
         #: happened to the one it asked for, and so shutdown can wait for them.
         self._in_flight: set = set()
@@ -531,14 +525,17 @@ class Engine:
         if not stack or not stack.steps:
             finish("skipped", "the stack has no steps")
             return False
-        if not self.run_stack(stack, actor=actor or "the schedule"):
+        # Handed to run_stack rather than written down after it returns. A one-step stack
+        # that fails immediately can finish before the caller has recorded that it is
+        # waiting, and the outcome was then lost — the same race `act(then=…)` exists for.
+        # It showed up once in a full-suite run and passed a hundred times alone, which is
+        # how a race announces itself.
+        if not self.run_stack(stack, actor=actor or "the schedule", then=finish):
             finish("skipped", "a stack run is already in progress")
             return False
-        with self._waiting_lock:
-            self._stack_wait = finish
         return True
 
-    def run_stack(self, stack_or_name, actor: str = "") -> bool:
+    def run_stack(self, stack_or_name, actor: str = "", then=None) -> bool:
         """Run a stack by name, or a Stack object (a test run from Settings uses the
         values on screen, not the saved ones). Returns False if it could not start —
         already running, or empty."""
@@ -562,13 +559,11 @@ class Engine:
                     self._call(self._on_stack_step, index=i, total=total,
                                service=svc, action=act, phase=phase),
                 machine_for=lambda n: machine_for.get(n, ""))
-            with self._waiting_lock:
-                waiting, self._stack_wait = self._stack_wait, None
             # Whether a trigger owns this run travels *with* it. Whoever shows a
             # notification has to know, or a trigger's stack is announced twice: once as
             # the trigger's outcome and once as a stack somebody asked for.
-            self._call(self._on_stack_done, result=result,
-                       by_trigger=waiting is not None)
+            self._call(self._on_stack_done, result=result, by_trigger=then is not None)
+            waiting = then
             if waiting is not None:
                 # `ok` and `cancelled` are what a RunResult actually has, and `summary()` is
                 # the sentence it words for a notification — so a trigger's history row says
