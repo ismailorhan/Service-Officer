@@ -105,7 +105,8 @@ def test_the_conversion_does_not_go_backwards():
     # flyout's not-connected state. Two of the three landed on screen and were wrapped and
     # translated; the rest are log lines. Raising this is deliberate, and the reason belongs
     # here — see the two entries above.
-    STILL_BARE = 745
+    # 745 → 749 on 2026-07-29: the guards for a click while the hub is down.
+    STILL_BARE = 749
 
     loose = strings_tool.bare()
     assert len(loose) <= STILL_BARE, (

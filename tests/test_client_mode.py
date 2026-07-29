@@ -576,3 +576,71 @@ def test_the_first_connection_that_gets_through_pins_it(qapp, tmp_path, monkeypa
 
     app_mod.Application._pin_hub(stub, local_mod.load())
     assert local_mod.load().hub_fingerprint == "SHA256:abc"
+
+
+def test_pressing_a_button_while_the_hub_is_down_is_a_message_not_a_crash(qapp,
+                                                                             monkeypatch):
+    """Asked what happens if the Hub service is stopped. Measured: the client notices in 203 ms
+    and the flyout reads "not connected". *Pressing* something was a different story — every
+    call into a hub raises `Unreachable`, only `Busy` was ever caught, and Start on a row gave
+    the same "Failed to execute script 'app'" dialog as the startup crash, from a click.
+    """
+    import app as app_mod
+    from core import hub_client
+
+    said = []
+    # A modal blocks for ever with no one to click it. Recorded instead, so what it *would*
+    # have said is part of what this test checks.
+    told = []
+    monkeypatch.setattr(app_mod.QMessageBox, "information",
+                        staticmethod(lambda *a, **k: told.append(a[2] if len(a) > 2 else a)))
+
+    class Gone:
+        def act(self, *a, **k):
+            raise hub_client.Unreachable("https://ctl052:8797 did not answer")
+
+        def run_stack(self, *a, **k):
+            raise hub_client.Unreachable("https://ctl052:8797 did not answer")
+
+        def refresh_machine(self, *a, **k):
+            raise hub_client.Unreachable("https://ctl052:8797 did not answer")
+
+        def refresh_now(self, *a, **k):
+            raise hub_client.Unreachable("https://ctl052:8797 did not answer")
+
+    app = _Quiet()
+    app.hub = Gone()
+    app.engine = None
+    app._announce = {}
+    app._bulk = None
+    app._pending_trigger = None
+    app._actor = lambda: "tests"
+    app._mark_busy = lambda name, machine, why: said.append(why)
+    app._clear_busy = lambda name, machine: None
+    app._ask_for = lambda action, name, machine="", bulk=False: app.hub.act(action)
+
+    # A row's Start. It must come back, and say so where the click was.
+    app_mod.Application.do_action(app, "start", "AppEngine")
+    assert any("not answering" in str(x).lower() for x in said), said
+
+    # A stack's Run, and Refresh. Neither may raise.
+    app_mod.Application.run_stack(app, "evening")
+    assert told and "not answering" in str(told[0]).lower(), told
+    # Refresh says nothing: it is the button somebody presses *because* something looks
+    # wrong, and the badge already explains it.
+    told.clear()
+    app_mod.Application.refresh(app)
+    assert not told, told
+
+
+def test_every_way_the_hub_can_be_missing_is_in_one_list():
+    """Four call sites share it, and a fifth will be added by somebody who did not write
+    these. A missing exception is not a message on a row — it is "Failed to execute script"."""
+    import app as app_mod
+    from core import hub_client
+
+    for kind in (hub_client.Unreachable, hub_client.Refused, hub_client.WrongHub):
+        assert issubclass(kind, app_mod.HUB_IS_DOWN), kind
+    # A refused *request* is not a missing hub: Busy means somebody else is doing it, and
+    # NotFound means this hub is older than the client. Both have their own answers.
+    assert not issubclass(hub_client.Busy, app_mod.HUB_IS_DOWN)

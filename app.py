@@ -20,12 +20,19 @@ import autostart
 from core import (applog, config as cfg_mod, control, db, engine as engine_mod,
                   health, history, hub_client, local as local_mod)
 from core import i18n
+from core.i18n import t
 from core import state as st
 from ui import flyout as flyout_mod, hover as hover_mod, icons, panel as panel_mod
 from ui import theme
 from ui.tray import StateBridge, Tray
 
 log = applog.get("app")
+
+
+#: Everything a call into a hub raises when the hub is the problem rather than the request.
+#: Named once, because there are four call sites and a fifth will be added by somebody who did
+#: not write these: a missing one is not a message on a row, it is "Failed to execute script".
+HUB_IS_DOWN = (hub_client.Unreachable, hub_client.Refused, hub_client.WrongHub, OSError)
 
 
 class StackSignals(QObject):
@@ -642,6 +649,14 @@ class Application(QObject):
             self.tray.action_finished()
             self._mark_busy(name, machine, str(clash))
             log.info("%s %s: %s", action, name, clash)
+        except HUB_IS_DOWN as gone:
+            # The hub went away between the click and the request. Same treatment: undo
+            # what was set optimistically and say it on the row. Unhandled, this was the
+            # startup crash again — from a click instead of a reboot.
+            self._clear_busy(name, machine)
+            self.tray.action_finished()
+            self._mark_busy(name, machine, t("the hub is not answering"))
+            log.info("%s %s: the hub is not answering (%s)", action, name, gone)
 
     def _kill(self, name: str, machine: str = "") -> str:
         """Terminate the process, here or over there. The confirmation happened before
@@ -889,11 +904,19 @@ class Application(QObject):
         """
         self.hover.dismiss()
         self.tray.action_started()
-        started = (self.hub.run_stack(
-                       stack_or_name if isinstance(stack_or_name, str)
-                       else stack_or_name.name, actor=self._actor())
-                   if self.hub is not None
-                   else self.engine.run_stack(stack_or_name, actor=self._actor()))
+        try:
+            started = (self.hub.run_stack(
+                           stack_or_name if isinstance(stack_or_name, str)
+                           else stack_or_name.name, actor=self._actor())
+                       if self.hub is not None
+                       else self.engine.run_stack(stack_or_name, actor=self._actor()))
+        except HUB_IS_DOWN as gone:
+            self.tray.action_finished()
+            log.info("could not run that stack: the hub is not answering (%s)", gone)
+            QMessageBox.information(None, "Service Officer",
+                                    t("The hub is not answering, so nothing was run. It is "
+                                      "being retried; the tray shows when it is back."))
+            return
         if not started:
             self.tray.action_finished()
             if self.runner.busy:
@@ -957,8 +980,14 @@ class Application(QObject):
         knows that another machine goes through the poller rather than being waited
         for on this thread."""
         if self.hub is not None:
-            self.hub.refresh_machine()
-            self.hub.refresh_now()
+            try:
+                self.hub.refresh_machine()
+                self.hub.refresh_now()
+            except HUB_IS_DOWN as gone:
+                # Refresh is the button somebody presses *because* something looks wrong, so
+                # it is the most likely one to be pressed while the hub is down. Nothing to
+                # say here beyond what the badge already says.
+                log.info("could not refresh: the hub is not answering (%s)", gone)
         else:
             self.engine.refresh()
         self.flyout.refresh()

@@ -33,4 +33,10 @@ WORDS = {
     "answers.":
         "{where} adresine ulaşılamıyor — yeniden denenecek. Cevap verene kadar bu servislerin "
         "ne durumda olduğu bilinmiyor.",
+    # ── a click while the hub is down ────────────────────────────────────
+    "the hub is not answering": "hub cevap vermiyor",
+    "The hub is not answering, so nothing was run. It is being retried; the tray shows when "
+    "it is back.":
+        "Hub cevap vermiyor, bu yüzden hiçbir şey çalıştırılmadı. Yeniden denenecek; geri "
+        "geldiğinde tray'de görünür.",
 }
