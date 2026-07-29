@@ -2920,3 +2920,38 @@ def test_a_row_can_carry_two_chips(qapp):
     one = _ListRow("sc-sql", "1 service", tag="connected", tag_category="running")
     assert [lb.text() for lb in one.findChildren(QLabel)
             if lb.text() == "connected"] == ["connected"]
+
+
+def test_a_checkbox_does_not_paint_a_notch_beside_itself(qapp):
+    """Styling a QCheckBox at all hands it to QStyleSheetStyle, which fills the widget's rect
+    from the *palette* — the window colour — rather than leaving it alone. The indicator covers
+    its own 15px, so the 8px of `spacing` shows through as a dark notch beside the box on any
+    banded background. Measured on the flyout's SERVICE header: #191919 where the band is
+    #242424, exactly eight pixels wide, on every text-less checkbox in the app.
+    """
+    from core import config as cfg_mod, state as st
+    from ui import flyout as flyout_mod
+
+    theme.set_mode("dark")
+    qapp.setStyleSheet(theme.sheet())
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(name="AppEngine", label="CompuTec")])
+    fly = flyout_mod.Flyout(lambda: cfg, st.Store())
+    try:
+        fly.rebuild()
+        fly.resize(700, 420)
+        fly.show()
+        qapp.processEvents()
+        image = fly.grab().toImage()
+        box = fly.tick_all
+        at = box.mapTo(fly, box.rect().topLeft())
+        y = at.y() + box.height() // 2
+        # Past the indicator and its border, up to the end of the widget.
+        beside = [image.pixelColor(x, y).name().lower()
+                  for x in range(at.x() + 18, at.x() + box.width())]
+
+        assert beside, "nothing to measure — the checkbox is no wider than its indicator"
+        assert set(beside) == {theme.BG_BAND.lower()}, (
+            f"a notch beside the box: {sorted(set(beside))}, "
+            f"where the band is {theme.BG_BAND}")
+    finally:
+        fly.close()

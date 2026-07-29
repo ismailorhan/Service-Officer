@@ -371,7 +371,13 @@ def sheet() -> str:
         selection-background-color: {RUN_DIM}; selection-color: {FG}; color: {FG};
     }}
 
-    QCheckBox {{ spacing: 8px; color: {FG}; }}
+    /* `background: transparent` is not decoration. Styling a QCheckBox at all hands it to
+       QStyleSheetStyle, which fills the widget's rect from the *palette* — the window
+       colour — instead of leaving it alone. The indicator is then drawn over its own 15px,
+       so on a banded background the leftover 8px of spacing shows through as a dark notch
+       beside the box. Measured on the flyout's SERVICE header: #191919 where the band is
+       #242424, exactly eight pixels wide. Visible on every text-less checkbox. */
+    QCheckBox {{ spacing: 8px; color: {FG}; background: transparent; }}
     QCheckBox::indicator {{
         width: 15px; height: 15px; border-radius: 3px;
         border: 1px solid {LINE2}; background: {BG_INPUT};

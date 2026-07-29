@@ -63,9 +63,10 @@ class GeneralPage(_Page):
         build.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.root.addWidget(build)
         self.root.addSpacing(4)
-        where = _label(f"Installed in  {version.install_dir()}\n"
-                       f"Settings and history in  {cfg_mod.APP_DIR}",
-                       "hint", wrap=True)
+        # Where it is installed, and not where the data lives: that path is on the History
+        # page, under the rows it holds, which is where somebody looking for it already is.
+        # Copy build details still carries both, because a ticket wants both.
+        where = _label(f"Installed in  {version.install_dir()}", "hint", wrap=True)
         where.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.root.addWidget(where)
         self.root.addSpacing(8)

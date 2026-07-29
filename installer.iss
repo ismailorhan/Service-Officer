@@ -190,7 +190,9 @@ Source: "dist\ServiceOfficer\*"; DestDir: "{app}"; Components: client; Flags: ig
 ; keeping them apart means a client-only install carries nothing of the service.
 Source: "dist\ServiceOfficerHub\*"; DestDir: "{app}\{#MyHubService}"; Components: hub; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "icon.ico";          DestDir: "{app}"; Flags: ignoreversion
-Source: "README.md";         DestDir: "{app}"; Flags: ignoreversion isreadme
+; No `isreadme`: that flag is what puts "View README.md" on the last page, ticked, and
+; nobody finishing an install of a service manager wants a markdown file. It still ships.
+Source: "README.md";         DestDir: "{app}"; Flags: ignoreversion
 Source: "docs\HUB.md";       DestDir: "{app}\docs"; Components: hub; Flags: ignoreversion
 
 [Icons]
