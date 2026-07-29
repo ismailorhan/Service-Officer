@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QDialog, QDoubleSpinBox, QFrame, QHBoxLayout,
 from core import control
 
 from .. import icons, theme
-from ..widgets import Chip, Spin, button as _button, label as _label
+from ..widgets import Chip, Spin, button as _button, label as _label, InfoDot
 
 
 def _spin(value, lo, hi, width=64, step=1):
@@ -39,14 +39,23 @@ def _dspin(value, lo, hi, width=64):
     return s
 
 
-def _sentence(*parts) -> QWidget:
-    """Lay widgets and text fragments out as one line of prose."""
+def _sentence(*parts, note: str = "") -> QWidget:
+    """Lay widgets and text fragments out as one line of prose.
+
+    `note` puts an InfoDot at the end of the line, before the stretch, so the explanation is
+    one click away *on the row it belongs to*. It used to be a paragraph underneath, and a tab
+    of six settings was a page where every other line was prose — see InfoDot for the rest of
+    that argument.
+    """
     w = QWidget()
     lay = QHBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(6)
     for p in parts:
         lay.addWidget(_label(p) if isinstance(p, str) else p)
+    if note:
+        lay.addSpacing(2)
+        lay.addWidget(InfoDot(note))
     lay.addStretch(1)
     return w
 

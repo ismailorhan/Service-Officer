@@ -20,8 +20,8 @@ from core import control
 from core import state as st
 
 from .. import theme
-from ..widgets import (Duration, FlatFactor, FlatSpin, button as _button,
-                       label as _label)
+from ..widgets import (Duration, FlatFactor, FlatSpin, InfoDot,
+                       button as _button, label as _label)
 from .base import _Page, _sentence, _spin
 
 
@@ -86,10 +86,10 @@ class ServiceDetail(_Page):
         self.category = QComboBox()
         self.category.setFixedWidth(240)
         self.category.currentIndexChanged.connect(self._category_changed)
-        body.addWidget(self.category)
-        body.addWidget(_label("Groups this service under a heading in the "
-                              "dashboard and the tray panel. Define the headings "
-                              "on the Categories page.", "hint", wrap=True))
+        body.addWidget(_sentence(
+            self.category,
+            note="Groups this service under a heading in the dashboard and the tray panel. "
+                 "Define the headings on the Categories page."))
         body.addStretch(1)
 
         body = recovery
@@ -127,11 +127,10 @@ class ServiceDetail(_Page):
 
         self.clean = QCheckBox("Also restart after a clean stop")
         self.clean.toggled.connect(self._save_rules)
-        body.addWidget(self.clean)
-        body.addWidget(_label(
-            "Off by default, only crashes are recovered — a non-zero exit code. "
-            "A service you stopped yourself in services.msc is left alone.",
-            "hint", wrap=True))
+        body.addWidget(_sentence(
+            self.clean,
+            note="Off by default, only crashes are recovered — a non-zero exit code. A "
+                 "service you stopped yourself in services.msc is left alone."))
         body.addStretch(1)
 
         # -- health ---------------------------------------------------------
@@ -148,13 +147,14 @@ class ServiceDetail(_Page):
                                   "off.")
         self.h_enabled.toggled.connect(self._health_switched)
         head_row.addWidget(self.h_enabled)
+        head_row.addSpacing(2)
+        head_row.addWidget(InfoDot(
+            "Windows reports Running as soon as a process exists. These say whether anyone "
+            "can actually use it — the “running but dead” case that a service list cannot "
+            "show. Every check has to pass.\n\n"
+            "Off keeps the checks below but stops asking, and nothing is reported as "
+            "unhealthy while it is off."))
         body.addLayout(head_row)
-        body.addSpacing(9)
-        body.addWidget(_label(
-            "Windows reports Running as soon as a process exists. These say "
-            "whether anyone can actually use it — the “running but dead” case "
-            "that a service list cannot show. Every check has to pass.",
-            "hint", wrap=True))
         body.addSpacing(12)
 
         # What has actually happened, in plain times. Without this the schedule is
@@ -192,24 +192,30 @@ class ServiceDetail(_Page):
             w.changed.connect(self._save_health)
         # No trailing full stop: _sentence joins with spaces, so one would sit a
         # space away from the number and look like a typo.
-        hl.addWidget(_sentence("Ask every", self.h_interval))
+        hl.addWidget(_sentence(
+            "Ask every", self.h_interval,
+            note="How often to run the checks below, while the service is running."))
         # "Ask every 1 min, starting 1 min after it comes up" was asked about, and
         # fairly: two durations in one sentence, and "starting" reads as starting
         # the service. Its own line, with the reason underneath.
-        hl.addWidget(_sentence("Ignore the first", self.h_grace,
-                               "after it starts."))
-        hl.addWidget(_label(
-            "A service that has just come up hasn't opened its port yet, so "
-            "asking straight away would report every restart as a failure.",
-            "hint", wrap=True))
-        hl.addWidget(_sentence("Call it unhealthy after", self.h_failures,
-                               "failures in a row."))
+        hl.addWidget(_sentence(
+            "Ignore the first", self.h_grace, "after it starts.",
+            note="A service that has just come up hasn't opened its port yet, so asking "
+                 "straight away would report every restart as a failure."))
+        hl.addWidget(_sentence(
+            "Call it unhealthy after", self.h_failures, "failures in a row.",
+            note="Consecutive failures before it is called unhealthy. One bad answer is "
+                 "usually load, not death."))
         self.h_action = QComboBox()
         self.h_action.addItem("Just tell me", "notify")
         self.h_action.addItem("Restart the service", "restart")
         self.h_action.setFixedWidth(220)
         self.h_action.currentIndexChanged.connect(self._save_health)
-        hl.addWidget(_sentence("Then:", self.h_action))
+        hl.addWidget(_sentence(
+            "Then:", self.h_action,
+            note="What to do about a service that has stopped answering. Restarting is the "
+                 "obvious fix and also the one that hides a problem, so it is not the "
+                 "default."))
 
         # This was a hidden five-minute constant, and it made a delayed restart
         # look like the checks were unreliable. It belongs on screen.

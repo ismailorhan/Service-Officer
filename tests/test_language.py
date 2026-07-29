@@ -106,7 +106,9 @@ def test_the_conversion_does_not_go_backwards():
     # translated; the rest are log lines. Raising this is deliberate, and the reason belongs
     # here — see the two entries above.
     # 745 → 749 on 2026-07-29: the guards for a click while the hub is down.
-    STILL_BARE = 749
+    # 749 -> 747 on 2026-07-30: two paragraphs on the service detail tabs became notes on an
+    # InfoDot, which is one string where there were two labels.
+    STILL_BARE = 747
 
     loose = strings_tool.bare()
     assert len(loose) <= STILL_BARE, (
