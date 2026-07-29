@@ -3107,3 +3107,66 @@ def test_rewording_a_note_reaches_the_dot_and_an_open_popup(qapp, sample):
         if dot._popup is not None:
             dot._popup.close()
         dot.close()
+
+
+def test_the_settings_pages_have_no_wall_of_prose_left(qapp, sample):
+    """Every page in the screenshots that came with "put the descriptions behind an icon". The
+    Machines detail and the service tabs were done first and Hub and General were missed, which
+    is what the follow-up was about — so this counts them all rather than trusting a memory of
+    which ones were converted.
+    """
+    from PySide6.QtWidgets import QLabel
+    from ui.widgets import InfoDot
+
+    win = panel_mod.MainPanel(sample, hub=lambda: None)
+    win.show()
+    try:
+        for key in ("hub", "general", "machines"):
+            page = win._by_name[key]
+            win._select(page, win._buttons_by_name[key])
+            qapp.processEvents()
+            assert page.findChildren(InfoDot), f"{key} explains nothing behind a dot"
+            # Nothing longer than a caption is sitting on the page itself. A page's own
+            # subtitle is allowed — it says what the page is for, once, at the top — and it is
+            # found through the _Page inside, because the list pages wrap one rather than being
+            # one.
+            subtitle = _page_subtitles(page)
+            walls = [lb.text() for lb in page.findChildren(QLabel)
+                     if lb.isVisible() and len(lb.text()) > 110
+                     and lb.text() not in subtitle]
+            assert walls == [], f"{key} still has prose on the page: {walls}"
+
+        detail = win.services_page.detail
+        detail.load(sample.services[0], sample.categories)
+        for tab in ("General", "Recovery", "Health"):
+            detail._select_tab(tab)
+            qapp.processEvents()
+            walls = [lb.text() for lb in detail.findChildren(QLabel)
+                     if lb.isVisible() and len(lb.text()) > 110]
+            assert walls == [], f"{tab} still has prose on the page: {walls}"
+    finally:
+        win.close()
+
+
+def _page_subtitles(widget) -> set:
+    """Every heading and subtitle of every _Page inside this widget.
+
+    Through the head layout rather than by length or by role: a page's subtitle is prose and is
+    meant to be, and telling it apart from a wall of notes by counting characters would be
+    guessing.
+    """
+    from PySide6.QtWidgets import QLabel
+    from ui.pages.base import _Page
+
+    pages = [widget] if isinstance(widget, _Page) else []
+    pages += widget.findChildren(_Page)
+    found = set()
+    for page in pages:
+        head = getattr(page, "head", None)
+        if head is None:
+            continue
+        for i in range(head.count()):
+            item = head.itemAt(i).widget()
+            if isinstance(item, QLabel):
+                found.add(item.text())
+    return found

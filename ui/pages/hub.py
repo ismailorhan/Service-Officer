@@ -57,14 +57,12 @@ class HubPage(_Page):
         self.hub_port = QLineEdit()
         self.hub_port.setFixedWidth(64)
         self.hub_port.setPlaceholderText("8797")
-        self.root.addWidget(_sentence("Host", self.hub_url, "Port", self.hub_port))
-        self.root.addWidget(_label(
-            "A host name or IP; leave the host empty to watch this computer's own services "
-            "instead, and the port empty for 8797.\n"
-            "This is not the port a hub on this computer listens on — that is the hub's "
-            "own setting, stored by every client of it: "
-            "ServiceOfficerHub.exe port <n>, then restart the service.",
-            "hint", wrap=True))
+        self.root.addWidget(_sentence(
+            "Host", self.hub_url, "Port", self.hub_port,
+            note="A host name or IP; leave the host empty to watch this computer's own "
+                 "services instead, and the port empty for 8797.\n\n"
+                 "This is not the port a hub on this computer listens on — that one is under "
+                 "SERVING below."))
         self.root.addSpacing(20)
 
         self.root.addWidget(_label("TOKEN", "section"))
@@ -94,15 +92,14 @@ class HubPage(_Page):
         serving.addSpacing(9)
         self.listen_port = QLineEdit()
         self.listen_port.setFixedWidth(80)
-        serving.addWidget(_sentence(t("This computer serves clients on port"),
-                                    self.listen_port))
-        serving.addWidget(_label(
-            t("The port the Hub service listens on — not the one above, which is where this "
-            "panel reads from. Applying it moves the socket and the firewall rule, and every "
-            "client is told the new number first so they follow rather than losing the hub.\n"
-            "ServiceOfficerHub.exe port <n> does the same from a command line, which is the "
-            "way in when the hub cannot be reached at all."),
-            "hint", wrap=True))
+        serving.addWidget(_sentence(
+            t("This computer serves clients on port"), self.listen_port,
+            note=t("The port the Hub service listens on — not the one above, which is where "
+                   "this panel reads from. Applying it moves the socket and the firewall "
+                   "rule, and every client is told the new number first so they follow "
+                   "rather than losing the hub.\n"
+                   "ServiceOfficerHub.exe port <n> does the same from a command line, which "
+                   "is the way in when the hub cannot be reached at all.")))
         serving.addSpacing(10)
         moving = QHBoxLayout()
         moving.addWidget(_button(t("Move to this port"), "primary", self._move_port))

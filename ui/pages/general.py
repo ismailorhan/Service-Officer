@@ -37,10 +37,9 @@ class GeneralPage(_Page):
         self.theme.addItems(["System", "Dark", "Light"])
         self.theme.setFixedWidth(150)
         self.theme.currentIndexChanged.connect(self._set_theme)
-        self.root.addWidget(_sentence("Theme", self.theme))
-        self.root.addWidget(_label(
-            "System follows the Windows setting and switches with it.",
-            "hint", wrap=True))
+        self.root.addWidget(_sentence(
+            "Theme", self.theme,
+            note="System follows the Windows setting and switches with it."))
         self.root.addSpacing(10)
 
         self.language = QComboBox()
@@ -48,12 +47,11 @@ class GeneralPage(_Page):
             self.language.addItem(name)
         self.language.setFixedWidth(150)
         self.language.currentIndexChanged.connect(self._set_language)
-        self.root.addWidget(_sentence("Language", self.language))
-        self.root.addWidget(_label(
-            "Windows opened after this read the new language. This one keeps the words it "
-            "was built with — its labels are set when it opens, and rewriting them under "
-            "somebody mid-sentence is worse than reopening a window.",
-            "hint", wrap=True))
+        self.root.addWidget(_sentence(
+            "Language", self.language,
+            note="Windows opened after this read the new language. This one keeps the words "
+                 "it was built with — its labels are set when it opens, and rewriting them "
+                 "under somebody mid-sentence is worse than reopening a window."))
         self.root.addSpacing(24)
 
         self.root.addWidget(_label("STARTUP", "section"))
