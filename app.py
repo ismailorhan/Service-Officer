@@ -315,6 +315,12 @@ class Application(QObject):
                     self.trigger_signals.done.emit(
                         getattr(trigger, "name", str(trigger)), outcome, detail),
                 on_error=lambda kind, text: self.tray.notify("Service Officer", text),
+                # Through the wire-shaped event path even without a hub: `_on_hub_event`
+                # repaints for anything that arrives, so one handler serves both installs.
+                on_start_type=lambda service, machine, start_type, disabled:
+                    self.hub_signals.event.emit(
+                        {"kind": "start_type", "service": service, "machine": machine,
+                         "start_type": start_type, "disabled": disabled}),
             )
 
             # Once shortly after start, then daily. A server runs for weeks without
@@ -347,13 +353,10 @@ class Application(QObject):
 
         self._wire_flyout()
 
-        # Start type is not pushed to us — the SCM only reports status — so
-        # disabling a service in services.msc was invisible until someone hit
-        # Refresh. Reading it costs 0.2 ms per service, measured, so poll.
-        self.start_type_timer = QTimer(self)
-        self.start_type_timer.setInterval(30_000)
-        self.start_type_timer.timeout.connect(self._poll_start_types)
-        self.start_type_timer.start()
+        # No timer here for the start types any more. It was a QTimer, so it existed only in
+        # this process — and a hub has no Qt, which is why disabling a service in services.msc
+        # reached no client at all. The engine owns that schedule now and sends an event when
+        # anything moves, so both installs learn it the same way.
 
     # The engine's parts, under the names the rest of this file and the wiring tests
     # already use. Properties rather than copies: there is one poller, and a second

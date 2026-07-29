@@ -286,6 +286,10 @@ class HubServer:
         self.engine.also_on("stack_done", self._on_stack_done)
         self.engine.also_on("trigger", self._on_trigger)
         self.engine.also_on("error", self._on_error)
+        # Somebody disabling a service in services.msc. Nothing pushes it, so the engine
+        # re-reads it on a timer — and without this a client heard about it only when it
+        # happened to take a fresh snapshot.
+        self.engine.also_on("start_type", self._on_start_type)
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         daemon=True, name="hub-http")
         self._thread.start()
@@ -401,6 +405,10 @@ class HubServer:
         """A status changed: fan it out to every open stream. Called on whatever
         thread the change happened on, which is why the queues are locked."""
         self.publish(wire.event_from_state(state_event))
+
+    def _on_start_type(self, service="", machine="", start_type="", disabled=False,
+                       **_rest) -> None:
+        self.publish(wire.start_type_event(service, machine, start_type, disabled))
 
     def _on_stack_step(self, index=0, total=0, service="", action="", phase="",
                        **_rest) -> None:

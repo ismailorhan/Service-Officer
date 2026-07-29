@@ -10,6 +10,7 @@ service cannot run on a build agent — but everything between the client's requ
 control call is exactly what ships.
 """
 
+import threading
 import time
 
 import pytest
@@ -656,3 +657,62 @@ def _a_free_port() -> int:
     with socket_mod.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def test_disabling_a_service_outside_the_app_reaches_a_client(system, monkeypatch):
+    """Reported from services.msc: stopping AppEngine showed at once — the SCM pushes status —
+    and then setting it to **Disabled** changed nothing on screen.
+
+    Two gaps stacked. A start type is *configuration*: `NotifyServiceStatusChange` reports
+    transitions and has no notification for this at all, so it has to be re-read — and the
+    re-reading was a QTimer in app.py, the Qt layer, which a hub does not have. Even re-read,
+    `set_start_type` notified nobody, so a client would learn it only from a fresh snapshot.
+    """
+    client, engine, _server, _states, _holder = system
+    heard = []
+    client._on_event = heard.append
+
+    kinds = {"AppEngine": "Automatic"}
+    monkeypatch.setattr(engine_mod.control, "start_type",
+                        lambda name, machine="": kinds.get(name, "Automatic"))
+
+    assert engine.poll_start_types() is False, "nothing changed, so nothing to say"
+
+    kinds["AppEngine"] = "Disabled"
+    assert engine.poll_start_types() is True
+
+    assert client.wait_for(
+        lambda: any(e.get("kind") == "start_type" for e in heard), timeout=10),         "the client was never told"
+    said = next(e for e in heard if e.get("kind") == "start_type")
+    assert said["service"] == "AppEngine"
+    assert said["start_type"] == "Disabled"
+    assert said["disabled"] is True
+
+    # And the client's store agrees, so a row can grey its Start button without a snapshot.
+    assert client.wait_for(
+        lambda: client.store.is_disabled("AppEngine") is True, timeout=10),         "the store did not take it"
+    assert client.store.start_type("AppEngine") == "Disabled"
+
+
+def test_the_engine_re_reads_start_types_on_its_own(system, monkeypatch):
+    """Not a QTimer in the Qt layer. A hub has no Qt, so on a hub install nothing ever
+    re-read one and the whole path was dead."""
+    client, engine, _server, _states, _holder = system
+
+    swept = []
+    monkeypatch.setattr(engine, "poll_start_types", lambda: swept.append(True) or False)
+    monkeypatch.setattr(type(engine), "START_TYPE_SECONDS", 0.05)
+
+    engine._stop_sweeping.clear()
+    thread = threading.Thread(target=engine._sweep_start_types, daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if len(swept) >= 2:
+                break
+            time.sleep(0.02)
+        assert len(swept) >= 2, f"the sweep ran {len(swept)} time(s)"
+    finally:
+        engine._stop_sweeping.set()
+        thread.join(timeout=2)
+    assert not thread.is_alive(), "stop() does not end the sweep"

@@ -181,6 +181,20 @@ def hub_port_event(port: int) -> dict:
     return {"kind": "hub_port", "port": int(port), "at": time.time()}
 
 
+def start_type_event(service: str, machine: str, start_type: str,
+                     disabled: bool) -> dict:
+    """A service's startup type changed — Automatic, Manual, Disabled.
+
+    Configuration, not status: the service control manager pushes transitions and has no
+    notification for this at all, so it is re-read on a timer. Sent as an event because a
+    client that only hears status events showed a Start button on a service Windows will
+    refuse to start, until it happened to take a fresh snapshot.
+    """
+    return {"kind": "start_type", "service": service or "", "machine": machine or "",
+            "start_type": start_type or "", "disabled": bool(disabled),
+            "at": time.time()}
+
+
 def config_event(actor: str = "", etag: str = "") -> dict:
     """The landscape was edited. Carries no config: it is large, every client holds a copy
     already, and one that wants the new one asks — which also gets it the etag it will need

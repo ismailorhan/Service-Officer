@@ -58,7 +58,8 @@ class Engine:
     def __init__(self, config_getter, store=None, *,
                  on_event=None, on_health=None, on_machine=None,
                  on_action_done=None, on_stack_step=None, on_stack_done=None,
-                 on_trigger=None, on_error=None, on_config_saved=None):
+                 on_trigger=None, on_error=None, on_config_saved=None,
+                 on_start_type=None):
         self._config = config_getter
         self.store = store if store is not None else st.store
         self._on_event = on_event
@@ -70,6 +71,10 @@ class Engine:
         self._on_trigger = on_trigger
         self._on_error = on_error
         self._on_config_saved = on_config_saved
+        self._on_start_type = on_start_type
+        #: Set on stop(), so the start-type sweep leaves promptly rather than sleeping out its
+        #: thirty seconds while the process waits to exit.
+        self._stop_sweeping = threading.Event()
 
         #: action ids in flight, so a caller in another process can be told what
         #: happened to the one it asked for, and so shutdown can wait for them.
@@ -169,6 +174,8 @@ class Engine:
         self.scheduler.start()
         self.scheduler.run_startup_triggers()
         self.health.start()
+        threading.Thread(target=self._sweep_start_types, daemon=True,
+                         name="start-types").start()
         cfg = self._config()
         watched = sum(1 for s in cfg.services if s.health.active)
         log.info("started with %d service(s), %d stack(s), %d trigger(s), "
@@ -176,6 +183,7 @@ class Engine:
                  len(cfg.services), len(cfg.stacks), len(cfg.triggers), watched)
 
     def stop(self) -> None:
+        self._stop_sweeping.set()
         self.watcher.stop()
         self.poller.stop()
         self.scheduler.stop()
@@ -215,7 +223,32 @@ class Engine:
                 self.store.set_start_type(svc.name, found, machine=svc.machine)
                 changed = True
                 log.info("%s start type is now %s", svc.name, found or "unknown")
+                # Said, not just stored. A start type is configuration rather than status, so
+                # nothing pushes it — and a client that only hears status events would show a
+                # Start button on a service Windows will refuse to start until it happened to
+                # take a fresh snapshot.
+                self._call(self._on_start_type, service=svc.name, machine=svc.machine or "",
+                           start_type=found,
+                           disabled=self.store.is_disabled(svc.name, svc.machine))
         return changed
+
+    #: How often the start types are re-read. Configuration, so nothing announces it: this is
+    #: the only way "somebody disabled it in services.msc" is ever noticed. Thirty seconds
+    #: because it costs 0.2 ms per local service and nobody disables a service twice a minute.
+    START_TYPE_SECONDS = 30
+
+    def _sweep_start_types(self) -> None:
+        """The thirty-second re-read, on its own thread.
+
+        In the engine rather than in a QTimer in app.py, which is where it was: a hub has no
+        Qt, so on a hub install nothing ever re-read a start type and disabling a service
+        outside the app reached no screen at all.
+        """
+        while not self._stop_sweeping.wait(self.START_TYPE_SECONDS):
+            try:
+                self.poll_start_types()
+            except Exception:
+                log.exception("re-reading the start types failed")
 
     def prime_states(self) -> None:
         """Fill the store before the first paint so nothing shows as Unknown.
@@ -652,7 +685,7 @@ class Engine:
     #: The callbacks a second listener may be added to. Named, so a typo is a refusal
     #: rather than a listener quietly attached to nothing.
     LISTENABLE = ("event", "health", "machine", "action_done", "stack_step",
-                  "stack_done", "trigger", "error", "config_saved")
+                  "stack_done", "trigger", "error", "config_saved", "start_type")
 
     def also_on(self, kind: str, fn) -> None:
         """Add a listener beside whoever already has one.

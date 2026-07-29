@@ -167,6 +167,17 @@ class RemoteStore:
             row["at"] = raw.get("at", 0)
             self._machines[name] = row
 
+    def apply_start_type(self, raw: dict) -> None:
+        """A service's startup type changed. Kept even for a row no snapshot has mentioned,
+        the same way a status event is."""
+        key = (raw.get("machine", "") or "", raw.get("service", ""))
+        with self._lock:
+            row = dict(self._services.get(key) or
+                       {"name": key[1], "machine": key[0], "label": key[1]})
+            row["start_type"] = raw.get("start_type", "")
+            row["disabled"] = bool(raw.get("disabled"))
+            self._services[key] = row
+
     def apply_health(self, raw: dict) -> None:
         key = (raw.get("machine", "") or "", raw.get("service", ""))
         with self._lock:
@@ -651,6 +662,8 @@ class HubClient:
             self.store.apply_health(payload)
         elif kind == "machine":
             self.store.apply_machine(payload)
+        elif kind == "start_type":
+            self.store.apply_start_type(payload)
         elif kind == "action":
             # Nothing to store: an action is a moment, not a state. It goes straight to
             # _on_event, which is where the window is.
