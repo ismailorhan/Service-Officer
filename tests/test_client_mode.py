@@ -505,3 +505,74 @@ def test_every_config_section_is_on_one_side_or_the_other():
     assert cfg_mod.unclassified() == [], (
         "these Config fields are in neither LANDSCAPE nor LOCAL_TASTE: "
         f"{cfg_mod.unclassified()}")
+
+
+def test_a_hub_that_is_not_up_yet_does_not_stop_the_app(qapp, tmp_path, monkeypatch):
+    """After a Windows restart the tray application is launched from this user's Run key while
+    the Hub service is still coming up, so the first thing it does is connect to something that
+    is not listening. Only `WrongHub` was caught, and a ConnectionRefusedError went all the way
+    out: "Failed to execute script 'app'" with a traceback, at every reboot that lost the race.
+
+    Reported by somebody restarting Windows, which is the ordinary case and not an edge one.
+    """
+    import app as app_mod
+    from core import local as local_mod
+
+    monkeypatch.setattr(local_mod, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local_mod, "MACHINE_PATH", str(tmp_path / "machine.json"))
+
+    class NotUpYet:
+        def check_identity(self):
+            raise ConnectionRefusedError(
+                10061, "No connection could be made because the target machine actively "
+                       "refused it")
+
+    stub = _Quiet()
+    stub.hub = NotUpYet()
+    stub.hub_url = "https://ctl052:8797"
+
+    # The whole point: it returns rather than raising.
+    app_mod.Application._pin_hub(stub, local_mod.load())
+
+    # And nothing was pinned, because being refused is not a decision about a certificate.
+    assert local_mod.load().hub_fingerprint == ""
+
+
+def test_a_changed_certificate_is_still_refused(qapp, tmp_path, monkeypatch):
+    """The one thing that must not be swallowed with the rest. Silently accepting a changed
+    certificate is exactly what a pin exists to prevent."""
+    import app as app_mod
+    from core import hub_client, local as local_mod
+
+    monkeypatch.setattr(local_mod, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local_mod, "MACHINE_PATH", str(tmp_path / "machine.json"))
+
+    class Changed:
+        def check_identity(self):
+            raise hub_client.WrongHub("the hub's certificate has changed")
+
+    stub = _Quiet()
+    stub.hub = Changed()
+    stub.hub_url = "https://ctl052:8797"
+
+    app_mod.Application._pin_hub(stub, local_mod.load())
+    assert local_mod.load().hub_fingerprint == "", "a changed certificate was pinned anyway"
+
+
+def test_the_first_connection_that_gets_through_pins_it(qapp, tmp_path, monkeypatch):
+    import app as app_mod
+    from core import local as local_mod
+
+    monkeypatch.setattr(local_mod, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local_mod, "MACHINE_PATH", str(tmp_path / "machine.json"))
+
+    class Answers:
+        def check_identity(self):
+            return "SHA256:abc"
+
+    stub = _Quiet()
+    stub.hub = Answers()
+    stub.hub_url = "https://ctl052:8797"
+
+    app_mod.Application._pin_hub(stub, local_mod.load())
+    assert local_mod.load().hub_fingerprint == "SHA256:abc"

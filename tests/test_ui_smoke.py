@@ -2955,3 +2955,46 @@ def test_a_checkbox_does_not_paint_a_notch_beside_itself(qapp):
             f"where the band is {theme.BG_BAND}")
     finally:
         fly.close()
+
+
+def test_a_flyout_that_cannot_reach_its_hub_says_so(qapp):
+    """"Does not crash" was only half of what was asked. A first launch against a hub that is
+    still coming up showed no error and no explanation either: "0 of 4 running", every chip
+    Unknown, and nothing anywhere saying the hub had not answered — four services that are
+    probably fine, reading as four that are not.
+
+    There is no toast for it and cannot be: `_on_hub_connected` fires on a *change*, and a
+    client that starts disconnected never changes. So it has to be visible where the count is.
+    """
+    from core import config as cfg_mod, state as st
+    from ui import flyout as flyout_mod
+
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(name="A", label="CompuTec A"),
+                                   cfg_mod.Service(name="B", label="CompuTec B")])
+
+    class Down:
+        connected = False
+        url = "https://ctl052:8797"
+
+    class Up:
+        connected = True
+        url = "https://ctl052:8797"
+
+    down = flyout_mod.Flyout(lambda: cfg, st.Store(), hub=lambda: Down())
+    up = flyout_mod.Flyout(lambda: cfg, st.Store(), hub=lambda: Up())
+    alone = flyout_mod.Flyout(lambda: cfg, st.Store())
+    try:
+        for fly in (down, up, alone):
+            fly.rebuild()
+            fly.apply_states()
+
+        assert "not connected" in down.badge.text().lower(), down.badge.text()
+        assert "ctl052" in down.summary.text(), down.summary.text()
+        assert "0 of 2" not in down.summary.text(),             "counted services nothing has answered about"
+
+        # Connected, and watching alone, both say what they know.
+        assert "running" in up.badge.text().lower(), up.badge.text()
+        assert "running" in alone.badge.text().lower(), alone.badge.text()
+    finally:
+        for fly in (down, up, alone):
+            fly.close()

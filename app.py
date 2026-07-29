@@ -280,16 +280,7 @@ class Application(QObject):
                 fingerprint=settings.hub_fingerprint,
                 on_event=lambda payload: self.hub_signals.event.emit(payload),
                 on_connected=lambda ok: self.hub_signals.connected.emit(ok))
-            try:
-                pinned = self.hub.check_identity()
-                if pinned and pinned != settings.hub_fingerprint:
-                    settings.hub_fingerprint = pinned
-                    local_mod.save(settings)
-            except hub_client.WrongHub as exc:
-                # Not fatal, and not accepted either: the panel shows it and the client
-                # keeps refusing until somebody decides. Silently trusting a changed
-                # certificate is the one thing a pin must never do.
-                log.error("%s", exc)
+            self._pin_hub(settings)
             self.store = self.hub.store
             # The landscape is the hub's, not this disk's. Without this a client listed
             # whatever was in its own services.json, which on a fresh client machine is
@@ -330,7 +321,7 @@ class Application(QObject):
 
         # --- ui -----------------------------------------------------------
         self.tray = Tray(lambda: self.cfg, self.store)
-        self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store)
+        self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store, hub=lambda: self.hub)
         self.hover = hover_mod.HoverCard(lambda: self.cfg, self.store)
         self.panel = None
 
@@ -458,6 +449,38 @@ class Application(QObject):
                 payload.get("action", ""), payload.get("error", ""),
                 False, False, payload.get("status", ""))
         self._refresh_lists()
+
+    def _pin_hub(self, settings) -> None:
+        """Pin the hub's certificate on the first connection, if it can be reached at all.
+
+        **Nothing here may stop the app from starting.** After a Windows restart the tray
+        application is launched from this user's Run key while the Hub service is still coming
+        up, so the very first thing it does is connect to something that is not listening yet.
+        Only `WrongHub` was caught and a ConnectionRefusedError went all the way out: "Failed
+        to execute script 'app'" and a traceback, at every reboot that lost the race. Reported
+        by somebody restarting Windows, which is the ordinary case rather than an edge one.
+
+        Unreachable is not a decision, so there is nothing to refuse and nothing to pin: the
+        client's own reader loop asks again on every attempt, and the first one that gets
+        through pins it. A *changed* certificate is still refused, because silently accepting
+        one is what a pin exists to prevent.
+        """
+        try:
+            pinned = self.hub.check_identity()
+        except hub_client.WrongHub as exc:
+            # Not fatal, and not accepted either: the panel shows it and the client keeps
+            # refusing until somebody decides.
+            log.error("%s", exc)
+            return
+        except Exception as exc:
+            # Refused, timed out, DNS, a proxy — one answer for all of them: not now. The
+            # reader loop keeps trying and the tray shows disconnected, which is the truth.
+            log.info("cannot reach %s yet (%s); it will be pinned on the first connection "
+                     "that gets through", self.hub_url, exc)
+            return
+        if pinned and pinned != settings.hub_fingerprint:
+            settings.hub_fingerprint = pinned
+            local_mod.save(settings)
 
     def _adopt_hub_config(self) -> None:
         """Take the hub's landscape and keep this computer's own taste.
@@ -953,7 +976,7 @@ class Application(QObject):
         was_visible = self.flyout.isVisible()
         was_pinned = self.flyout.pinned
         self.flyout.deleteLater()
-        self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store)
+        self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store, hub=lambda: self.hub)
         self.flyout.pin.setChecked(was_pinned)     # a repaint isn't an unpin
         self._wire_flyout()
         if was_visible:

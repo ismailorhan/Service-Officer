@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
 from core import state as st
+from core.i18n import t
 from . import icons, theme
 from .rows import ServiceRow
 from .servicelist import ServiceListMixin
@@ -39,12 +40,16 @@ class Flyout(ServiceListMixin, QWidget):
     open_settings = Signal()
     open_services_mmc = Signal()
 
-    def __init__(self, config_getter, store: st.Store, parent=None):
+    def __init__(self, config_getter, store: st.Store, parent=None, hub=None):
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint |
                          Qt.WindowStaysOnTopHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_ShowWithoutActivating, False)
         self._config = config_getter
         self._store = store
+        #: Set when the services in this list come from a hub. Then "0 of 4 running" is only
+        #: true if the hub answered — and a client that starts while the Hub service is still
+        #: coming up has to say so rather than showing four services as not running.
+        self._hub = hub if callable(hub) else (lambda: hub)
         self._rows: dict = {}
         self._stack_widgets: list = []
         self._signature = None
@@ -255,6 +260,16 @@ class Flyout(ServiceListMixin, QWidget):
                 stopped += 1
 
         total = len(cfg.services)
+        hub = self._hub()
+        if hub is not None and not getattr(hub, "connected", True):
+            # Not a count. Every status here is Unknown because nothing has answered, and
+            # "0 of 4 running" about four services that are probably running fine is the
+            # kind of wrong that gets somebody out of bed.
+            self.badge.set_state(t("not connected"), "none")
+            self.summary.setText(t(
+                "Cannot reach {where} — trying again. What these services are doing is "
+                "unknown until it answers.", where=getattr(hub, "url", "the hub")))
+            return
         # The badge takes the worst state in the list, so a green pill is never the
         # summary of something that is starting or not answering.
         worst = ("stopped" if unwell else

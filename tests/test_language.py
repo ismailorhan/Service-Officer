@@ -101,7 +101,11 @@ def test_the_conversion_does_not_go_backwards():
     # another (see core/i18n.py). The eight sentences that landed on screen were wrapped and
     # translated instead, which is what this test is for: it failed, and the failing is the
     # mechanism working. Raising it must always be deliberate, and the reason belongs here.
-    STILL_BARE = 742
+    # 742 → 745 on 2026-07-29: three more sentences in app.py's startup guard and the
+    # flyout's not-connected state. Two of the three landed on screen and were wrapped and
+    # translated; the rest are log lines. Raising this is deliberate, and the reason belongs
+    # here — see the two entries above.
+    STILL_BARE = 745
 
     loose = strings_tool.bare()
     assert len(loose) <= STILL_BARE, (

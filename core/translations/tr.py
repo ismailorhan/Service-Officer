@@ -27,4 +27,10 @@ WORDS = {
     "were told first.":
         "Hub {was} portundan {port} portuna taşınıyor. Bu panel onu takip ediyor, diğer "
         "istemcilere de önceden bildirildi.",
+    # ── not connected ────────────────────────────────────────────────────
+    "not connected": "bağlantı yok",
+    "Cannot reach {where} — trying again. What these services are doing is unknown until it "
+    "answers.":
+        "{where} adresine ulaşılamıyor — yeniden denenecek. Cevap verene kadar bu servislerin "
+        "ne durumda olduğu bilinmiyor.",
 }
