@@ -26,7 +26,11 @@ class ServicesPage(QWidget):
 
     changed = Signal()
 
-    def __init__(self, cfg_ref, store=None):
+    def __init__(self, cfg_ref, store=None, hub=None):
+        #: Whether this panel reads a hub. Only used so the service picker asks the hub
+        #: what exists rather than this computer — see ServicePicker. A getter or the client
+        #: itself; both accepted, see MachinesPage.
+        self._hub = hub if callable(hub) else (lambda: hub)
         super().__init__()
         self.cfg = cfg_ref
         self.stack = QStackedWidget()
@@ -206,7 +210,7 @@ class ServicesPage(QWidget):
         # The record travels with the name: this config is the panel's copy, and a
         # machine added here is not in what the transport registry can see yet.
         picker = ServicePicker(taken, self, machine=machine,
-                               record=cfg.machine(machine))
+                               record=cfg.machine(machine), hub=self._hub())
         if picker.exec() != QDialog.Accepted:
             return
         for s in picker.picked:

@@ -421,6 +421,41 @@ ACTION_TEXT = {"start": "start requested", "stop": "stop requested",
 PENDING_STATES = ("Starting", "Stopping", "Resuming", "Pausing")
 
 
+def remote_events_for(cfg, service: str = "", hours: int = None, levels=None,
+                      limit: int = 400) -> dict:
+    """{machine: [records]} from every machine that can be asked for its event log.
+
+    Whoever owns the engine calls this — a standalone app for itself, and a hub for its
+    clients. Never a client of a hub: it has neither the credentials for those machines nor
+    the WinRM trust, and asking each workstation to acquire both is the opposite of what a
+    hub is for.
+
+    Only machines whose WinRM switch is on. Reading a log is not worth starting a PowerShell
+    process against a machine whose owner has said no, and every call writes a logon record
+    to that machine's Security log.
+    """
+    from . import control
+
+    found: dict = {}
+    for svc in getattr(cfg, "services", ()):
+        machine = getattr(svc, "machine", "") or ""
+        if not machine or (service and svc.name != service):
+            continue
+        record = cfg.machine(machine)
+        if record is None or record.is_linux or not getattr(record, "winrm", False):
+            continue
+        try:
+            got = control.log_records(svc.name, machine, svc.display(), hours or 168,
+                                     levels, limit, record=record)
+        except Exception as exc:
+            from . import applog
+            applog.get("history").info("could not read %s's event log: %s", machine, exc)
+            continue
+        if got:
+            found.setdefault(machine, []).extend(got)
+    return found
+
+
 def query(service_names=None, labels=None, service: str = None, hours: int = None,
           include_windows: bool = False, windows_levels=None, limit: int = 800,
           path: str = None, full: bool = False, local_services=None,

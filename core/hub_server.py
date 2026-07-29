@@ -624,13 +624,22 @@ def _make_handler(hub: HubServer):
                 limit = min(int(one("limit", 200)), HISTORY_LIMIT)
             except ValueError:
                 limit = 200
+            hours = int(one("hours")) if (one("hours") or "").isdigit() else None
+            windows = one("windows") == "1"
+            # This one waits on a machine, deliberately — the exception to the rule at the
+            # top of this file, and the right place for it: the hub holds the credentials
+            # and the WinRM trust for those machines, and a client holds neither. Its own
+            # window stays responsive because it asks on a worker thread.
+            remote = (history.remote_events_for(cfg, one("service") or "", hours)
+                      if windows else {})
             rows = history.query(
                 service_names=[s.name for s in cfg.services],
                 labels=[s.display() for s in cfg.services],
                 local_services=[s.name for s in cfg.services if not s.machine],
                 service=one("service"),
-                hours=int(one("hours")) if (one("hours") or "").isdigit() else None,
-                include_windows=one("windows") == "1",
+                hours=hours,
+                include_windows=windows,
+                remote_events=remote,
                 full=one("full") == "1",
                 limit=limit)
             self._send(200, {"rows": rows})

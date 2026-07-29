@@ -62,7 +62,7 @@ class _ListRow(QWidget):
     """A row in a master list: dot, name, secondary line, chip, chevron."""
 
     def __init__(self, name: str, secondary: str, category: str = None,
-                 tag: str = "", tag_category: str = "running"):
+                 tag: str = "", tag_category: str = "running", tags=()):
         super().__init__()
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 9, 4, 9)
@@ -78,8 +78,11 @@ class _ListRow(QWidget):
         col.addWidget(n)
         col.addWidget(s)
         lay.addLayout(col, 1)
-        if tag:
-            lay.addWidget(Chip(tag, tag_category))
+        # More than one, because a row can be more than one thing: the computer somebody
+        # is sitting at *and* the one running the engine are two separate facts, and a
+        # machine can be both.
+        for text, kind in ((tags or ()) if tags else ([(tag, tag_category)] if tag else [])):
+            lay.addWidget(Chip(text, kind))
         lay.addWidget(_label(theme.GLYPH_CRUMB, "hint"))
 
 
@@ -91,10 +94,15 @@ class ServicePicker(QDialog):
     #: the listing, or an empty list and a reason, from the reading thread
     loaded = Signal(list, str)
 
-    def __init__(self, taken, parent=None, machine="", record=None):
+    def __init__(self, taken, parent=None, machine="", record=None, hub=None):
         super().__init__(parent)
         self.setWindowTitle("Add services")
         self.resize(520, 560)
+        #: Set when this panel reads a hub. Then the hub is asked what exists: it is the
+        #: computer the services live on, and asking here would list whichever workstation
+        #: the panel happens to be running on — for `machine == ""` that is not even the
+        #: right machine.
+        self._hub = hub
         self.picked = []
         self._all = []
         self._taken = set(taken)
@@ -142,7 +150,7 @@ class ServicePicker(QDialog):
         unresponsive and titled "Not Responding", because the listing ran on the
         thread that draws it.
         """
-        if not self._machine:
+        if not self._machine and self._hub is None:
             try:
                 self._all = control.list_all_services(self._machine, self._record)
             except Exception as exc:
@@ -156,10 +164,16 @@ class ServicePicker(QDialog):
 
         def work():
             try:
-                self.loaded.emit(control.list_all_services(where, self._record), "")
+                self.loaded.emit(self._listing(where), "")
             except Exception as exc:
                 self.loaded.emit([], self._why(exc))
         threading.Thread(target=work, daemon=True).start()
+
+    def _listing(self, where: str) -> list:
+        """What is installed on that machine, asked of whoever can see it."""
+        if self._hub is not None:
+            return self._hub.services_on(where)
+        return control.list_all_services(where, self._record)
 
     def _arrived(self, found: list, problem: str) -> None:
         """Back on the UI thread. Guarded, because the dialog may be gone: fifteen

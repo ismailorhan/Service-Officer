@@ -36,6 +36,11 @@ class MachinesPage(QWidget):
         super().__init__()
         self.cfg = cfg_ref
         self.store = store
+        # Normalised the way panel.py does it: the panel is built before anybody knows
+        # whether this is a client of a hub, so what arrives may be a getter or the thing
+        # itself. Both are accepted and it is called from here on — a getter stored as if it
+        # were the client is never None, so every "am I connected" test silently passed.
+        self._hub = hub if callable(hub) else (lambda: hub)
         self.address_found.connect(self.refresh)
 
         self.stack = QStackedWidget()
@@ -100,7 +105,7 @@ class MachinesPage(QWidget):
             reach, tag, tag_kind, why = self._reachability(machine)
             widget = _ListRow(self._title(machine),
                               self._summary(machine, count, reach),
-                              tag=tag, tag_category=tag_kind)
+                              tags=self._chips(machine, tag, tag_kind))
             if why:
                 widget.setToolTip(why)
             item.setSizeHint(widget.sizeHint())
@@ -137,11 +142,44 @@ class MachinesPage(QWidget):
         called "hanadev" went on reading "sd (hanadev)", and the Called field looked
         like it did nothing.
         """
-        name = (control.host_name() if machine.is_local else "") or machine.display()
+        name = (self._engine_host() if machine.is_local else "") or machine.display()
         address = machine.address or control.cached_address(machine.name)
         if address and address != name:
             return f"{name}  ({address})"
         return name
+
+    def _engine_host(self) -> str:
+        """The name of the computer the engine runs on.
+
+        Not this one, when a hub is being read: the machine that owns the engine has an empty
+        name and no address, so a client used to fill the gap with `control.host_name()` —
+        its *own* name — for a machine whose services live somewhere else. The hub says which
+        computer it is in every snapshot.
+        """
+        hub = self._hub()
+        if hub is not None:
+            return getattr(hub, "host", "") or ""
+        return control.host_name() or ""
+
+    def _chips(self, machine, reach_tag: str, reach_kind: str) -> list:
+        """The chips for this row. Two are possible, because they are two facts.
+
+        "This PC" is where somebody is sitting. "Hub" is where the engine runs. On a
+        single-machine install they are the same computer and it gets both; on a workstation
+        reading a hub they are different computers, and the hub's row used to claim to be
+        this one.
+        """
+        if not machine.is_local:
+            return [(reach_tag, reach_kind)] if reach_tag else []
+        chips = []
+        connected = self._hub() is not None
+        here = control.host_name() or ""
+        engine_on = self._engine_host()
+        if not connected or (here and engine_on and here.lower() == engine_on.lower()):
+            chips.append(("This PC", "running"))
+        if connected:
+            chips.append(("Hub", "running"))
+        return chips
 
     def _reachability(self, machine) -> tuple:
         """(what to add to the summary, chip text, chip category, the full reason).
@@ -326,9 +364,10 @@ class MachineDetail(_Page):
     def __init__(self, hub=None):
         super().__init__("", "", scroll=True)
         self.machine = None
-        #: Set when this panel talks to a hub rather than watching by itself. Only used to
-        #: say whose reach a connection test proved — see _run_test.
-        self._hub = hub
+        #: Whether this panel talks to a hub rather than watching by itself. Only used to
+        #: say whose reach a connection test proved — see _run_test. A getter or the client
+        #: itself; both accepted, see MachinesPage.
+        self._hub = hub if callable(hub) else (lambda: hub)
 
         crumb = QHBoxLayout()
         crumb.setSpacing(6)
@@ -838,7 +877,7 @@ class MachineDetail(_Page):
         # *hub* found, and this test ran here, as whoever is signed in — two different
         # subjects, and saying only "answered" invites the reading that they are one. Seen
         # on 2026-07-28: sc-sql answered a test while its chip said `waiting`.
-        whose = " (from this computer)" if self._hub is not None else ""
+        whose = " (from this computer)" if self._hub() is not None else ""
         said = [f"{machine.where()} answered{whose}."]
         if machine.auth == "password" and not machine.is_linux:
             said.append(f"Signed in as {machine.username}.")

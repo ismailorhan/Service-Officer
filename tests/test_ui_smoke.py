@@ -2586,12 +2586,11 @@ def test_a_row_nobody_told_offers_no_remote_kill(qapp):
     assert here.buttons["kill"].isEnabled() is True
 
 
-def test_history_never_asks_a_machine_whose_switch_is_off(qapp, monkeypatch):
+def test_only_a_machine_with_winrm_on_is_asked_for_its_log(monkeypatch):
     """Reading a log is not worth starting a PowerShell process against a machine whose owner
     has said no — and every WinRM call writes a logon record to that machine's Security log,
     which is the whole reason the switch exists."""
-    from core import config as cfg_mod
-    from ui.pages import history as page_mod
+    from core import config as cfg_mod, control, history
 
     cfg = cfg_mod.Config(
         machines=[cfg_mod.Machine(),
@@ -2603,69 +2602,321 @@ def test_history_never_asks_a_machine_whose_switch_is_off(qapp, monkeypatch):
                   cfg_mod.Service(name="B", machine="off"),
                   cfg_mod.Service(name="C", machine="linux")])
 
-    page = page_mod.HistoryPage(lambda: cfg)
-    page.include_windows.setChecked(True)
+    asked = []
 
-    asked = [m for m, _s, _l in page._remote_machines()]
+    def fake(service, machine="", label="", hours=168, levels=None, limit=400,
+             record=None):
+        asked.append(machine)
+        return [{"ts": "2026-07-16T10:00:00", "service": service, "level": "Error",
+                 "event_id": 1, "message": "x", "source": "SCM", "summary": ""}]
+
+    monkeypatch.setattr(control, "log_records", fake)
+    found = history.remote_events_for(cfg)
 
     assert asked == ["on"], f"asked {asked}"
+    assert list(found) == ["on"]
 
 
-def test_history_reads_a_remote_log_off_the_gui_thread(qapp, monkeypatch):
-    """One of these calls took 8.8 seconds against a real machine. The Machines page already
-    learned this: a frozen window with no cursor and no explanation for 42 seconds."""
+def test_the_history_page_asks_the_hub_and_never_the_gui_thread(qapp, monkeypatch):
+    """Two things at once, because they are the same fix.
+
+    The rows are the *hub's*: only an engine writes them, and a client has no engine — so this
+    page read an empty database on a real client machine and showed nothing at all. And the
+    reading is off the GUI thread, because the hub reads the machines' event logs inside that
+    request: seconds against a real one, and the Machines page already paid for that lesson
+    with 42 seconds of a frozen window.
+    """
     import threading
     import time
-    from core import config as cfg_mod, control
+    from core import config as cfg_mod, history
     from ui.pages import history as page_mod
 
-    cfg = cfg_mod.Config(
-        machines=[cfg_mod.Machine(),
-                  cfg_mod.Machine(name="on", address="10.0.0.1", winrm=True)],
-        services=[cfg_mod.Service(name="A", machine="on")])
-
+    cfg = cfg_mod.Config(services=[cfg_mod.Service(name="A")])
     gui = threading.current_thread()
     seen = {}
 
-    def fake_read(service, machine="", label="", hours=168, levels=None, limit=400,
-                  record=None):
-        seen["thread"] = threading.current_thread()
-        seen["args"] = (service, machine, label, hours)
-        return [{"ts": "2026-07-16T10:00:00", "service": service, "level": "Error",
-                 "event_id": 7011, "message": "x", "source": "SCM", "summary": "timed out"}]
+    class Hub:
+        def history(self, **filters):
+            seen["thread"] = threading.current_thread()
+            seen["filters"] = filters
+            return [{"ts": "2026-07-16T10:00:00", "service": "A", "kind": "action",
+                     "event": "stop", "detail": "", "source": "panel"}]
 
-    monkeypatch.setattr(control, "log_records", fake_read)
+    def refuse(*a, **k):
+        raise AssertionError("read the local database while connected to a hub")
 
-    page = page_mod.HistoryPage(lambda: cfg)
-    # Ticking the box is what a person does, and it reloads — which would start the worker
-    # before this test has connected to hear it finish. Set it without the side effect, then
-    # ask on purpose.
-    page.include_windows.blockSignals(True)
-    page.include_windows.setChecked(True)
-    page.include_windows.blockSignals(False)
+    monkeypatch.setattr(history, "query", refuse)
+
+    page = page_mod.HistoryPage(lambda: cfg, Hub())
     drawn = []
-    page.remote_logs_arrived.connect(lambda: drawn.append(True))
-    page._fetch_remote_logs()
+    page.rows_arrived.connect(lambda: drawn.append(True))
+    page.reload()
 
-    # Spin the event loop rather than blocking on it. `remote_logs_arrived` is a queued
-    # cross-thread connection — which is the point, the drawing must happen here — so a
-    # thread that waits on the GUI thread waits for a slot that can never run.
     for _ in range(200):
-        if not page._remote_busy and page._remote_key is not None:
+        if not page._fetching and page._rows_key is not None:
             break
         qapp.processEvents()
         time.sleep(0.02)
 
-    assert page._remote_key is not None, "the worker never came back"
+    assert seen.get("thread") is not None, "the hub was never asked"
+    assert seen["thread"] is not gui, "asked on the GUI thread — the window would freeze"
     qapp.processEvents()
     assert drawn, "it came back and nothing was told to repaint"
-    assert seen["thread"] is not gui, "read on the GUI thread — the window would freeze"
-    assert seen["args"][:3] == ("A", "on", "A")
-    assert page._remote_logs["on"], "what it read was thrown away"
+    assert [r["service"] for r in page._current_rows()] == ["A"]
 
-    # Asked once: sorting a column must not cost a WinRM call, nor a logon record.
-    before = seen["thread"]
-    seen.clear()
-    page._fetch_remote_logs()
-    assert "thread" not in seen, "asked the same machine twice for the same view"
-    assert before is not None
+
+def test_a_connection_test_says_whose_reach_it_proved(qapp, tmp_path, monkeypatch):
+    """With a hub, the chip on a machine shows what the *hub* found, and Test connection runs
+    here as whoever is signed in. Two subjects — and on 2026-07-28 sc-sql answered a test
+    while its own chip said `waiting`, which read as a contradiction rather than as two
+    different questions."""
+    from core import config as cfg_mod, connectors
+    from ui.pages import machines as machines_mod
+
+    machine = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
+    cfg = cfg_mod.Config(machines=[machine])
+
+    class Answers:
+        def reachable(self): return True
+        def abilities(self): return connectors.Abilities(control=True)
+
+    monkeypatch.setattr(connectors, "for_machine", lambda name, record=None: Answers())
+    monkeypatch.setattr(connectors, "forget", lambda name=None: None)
+
+    alone = machines_mod.MachineDetail()
+    with_hub = machines_mod.MachineDetail(object())
+    for page in (alone, with_hub):
+        page.machine = machine
+        monkeypatch.setattr(page, "_test_winrm", lambda m: "")
+
+    said = []
+    alone.tested.connect(said.append)
+    with_hub.tested.connect(said.append)
+    alone._run_test(machine)
+    with_hub._run_test(machine)
+
+    assert "from this computer" not in said[0], "watching alone, there is no other computer"
+    assert "from this computer" in said[1], "did not say whose reach answered"
+
+
+class _Nods:
+    """Answers anything with a shrug. For the parts of an Application a test is not about."""
+
+    def __getattr__(self, _name):
+        return _Nods()
+
+    def __call__(self, *a, **k):
+        return None
+
+    def isVisible(self):
+        return False
+
+
+def test_a_machine_answering_repaints_the_machines_page(qapp, sample, monkeypatch):
+    """It was only redrawn on the way in. So a machine that started answering while the page
+    was open kept its `waiting` chip while the very services on it streamed in as Running —
+    the hub appearing to contradict itself. Seen on 2026-07-29.
+
+    Every screen that shows state is repainted from one place, and the Machines page was not
+    one of them. Driven through that one place rather than around it.
+    """
+    import app as app_mod
+
+    win = panel_mod.MainPanel(sample)
+    win.show()
+    try:
+        drawn = []
+        monkeypatch.setattr(win.machines_page, "refresh", lambda: drawn.append(True))
+
+        stub = _Nods()
+        stub.panel = win
+
+        app_mod.Application._refresh_lists(stub)
+
+        assert drawn, "the one place that repaints state does not reach the Machines page"
+    finally:
+        win.close()
+
+
+def test_the_hub_is_infrastructure_and_comes_first(qapp, sample):
+    """It was the last section of General, under appearance, startup and notifications —
+    four scrolls past the things it outranks. A hub decides where every service in this
+    window comes from and whether this computer does the watching at all, so it sits with
+    Machines and Clients, and above them: those two are what a hub *has*."""
+    win = panel_mod.MainPanel(sample)
+    try:
+        order = list(win._buttons_by_name)
+
+        assert "hub" in order, "there is nowhere to set the address"
+        assert order.index("hub") < order.index("machines"), "Machines came first"
+        assert order.index("hub") < order.index("general"), "still buried in Settings"
+
+        assert not win._buttons_by_name["hub"].icon().isNull(),             "the only nav entry without a picture reads as unfinished"
+
+        win._select(win.hub_page, win._buttons_by_name["hub"])
+        assert win.pages.currentWidget() is win.hub_page
+    finally:
+        win.close()
+
+
+def test_the_hub_page_is_there_without_a_hub(qapp, sample):
+    """Unlike Clients. A panel watching its own services still has to be able to point at
+    one — that field is how it becomes a client at all."""
+    win = panel_mod.MainPanel(sample)
+    try:
+        assert win._buttons_by_name["hub"].isVisible() or not win.isVisible()
+        assert win._buttons_by_name["clients"].isVisible() is False
+    finally:
+        win.close()
+
+
+def test_no_page_spreads_itself_over_the_window(qapp, sample):
+    """A layout with no trailing stretch hands its spare height to the widgets in it. The
+    Hub page shipped that way for one build: its ADDRESS heading was 55 pixels tall where it
+    wants 15, so every section floated in the middle of a gap and the page read as a
+    different product from General beside it.
+
+    Measured on the headings, not on the gaps between them — the gaps are fixed spacings and
+    stayed at 9 the whole time, which is how a first version of this test passed against the
+    very bug it was written for. What stretches is the widgets.
+    """
+    from PySide6.QtWidgets import QLabel
+
+    win = panel_mod.MainPanel(sample)
+    win.resize(1010, 700)
+    win.show()
+    try:
+        for name, button in win._buttons_by_name.items():
+            page = win._by_name[name]
+            win._select(page, button)
+            win.grab()          # a layout is only applied when something asks it to paint
+            for head in page.findChildren(QLabel):
+                if head.property("role") != "section" or not head.isVisible():
+                    continue
+                # Only headings in the page's own vertical flow. One sitting in a row beside
+                # a button is as tall as that button by design — Schedule's RECENT EXECUTIONS
+                # is 31px next to its Refresh, and that is alignment, not spare height.
+                owner = head.parentWidget().layout()
+                if owner is None or owner.indexOf(head) < 0:
+                    continue
+                # Ten pixels of slack: a heading inside a table header carries a couple of
+                # pixels of cell padding and that is fine. Nothing legitimately adds forty,
+                # which is what the spare height of a window looks like.
+                assert head.height() <= head.sizeHint().height() + 10, (
+                    f"{name}: the {head.text()!r} heading is {head.height()}px tall and "
+                    f"wants {head.sizeHint().height()}px — a missing addStretch(1) at the "
+                    f"end of that page's layout")
+    finally:
+        win.close()
+
+
+
+def test_kill_is_offered_where_something_can_carry_it(qapp):
+    """`Abilities.kill` was added, the connector routes a kill over WinRM, and the switch on
+    the Machines page promises in as many words that this machine's process "can be
+    terminated". The row never asked: it computed `local = not service.machine` and
+    hard-coded the button off for every remote service, so the whole WinRM kill path shipped
+    with no way to reach it. Found on 2026-07-29 by looking at the button.
+    """
+    from core import config as cfg_mod, state as st
+    from ui import rows as rows_mod
+    from ui.servicelist import _can_kill
+
+    cfg = cfg_mod.Config(machines=[
+        cfg_mod.Machine(),                                              # this computer
+        cfg_mod.Machine(name="sc-sql", address="10.77.3.112", winrm=True),
+        cfg_mod.Machine(name="sc-sap", address="10.77.3.110", winrm=False),
+        cfg_mod.Machine(name="hanadev", address="10.0.0.9", kind="linux"),
+    ])
+
+    assert _can_kill(cfg, "") is True, "on this computer it has always worked"
+    assert _can_kill(cfg, "sc-sql") is True, "WinRM is on, and WinRM carries a kill"
+    assert _can_kill(cfg, "sc-sap") is False, "switched off is off — no process is started"
+    assert _can_kill(cfg, "hanadev") is True, "SSH runs commands, so it can end one"
+    assert _can_kill(cfg, "gone") is False, "a machine that is not configured offers nothing"
+
+    # And the row obeys it, for running and for wedged mid-transition — which is the case
+    # kill exists for.
+    for able in (True, False):
+        row = rows_mod.ServiceRow(cfg_mod.Service(name="B1ServerTools64", machine="sc-sql"))
+        row.can_kill = able
+        for status in (st.RUNNING, "Stopping"):
+            row.set_status(status)
+            assert row.buttons["kill"].isEnabled() is able,                 f"can_kill={able} but the button says {row.buttons['kill'].isEnabled()} "                 f"at {status}"
+
+    # Stopped stays off whatever the machine can do: there is no process to end.
+    row = rows_mod.ServiceRow(cfg_mod.Service(name="B1ServerTools64", machine="sc-sql"))
+    row.can_kill = True
+    row.set_status(st.STOPPED)
+    assert row.buttons["kill"].isEnabled() is False
+
+
+def test_a_row_nobody_told_offers_no_remote_kill(qapp):
+    """The safe way round: a row built without being told falls back to this computer only."""
+    from core import config as cfg_mod, state as st
+    from ui import rows as rows_mod
+
+    row = rows_mod.ServiceRow(cfg_mod.Service(name="X", machine="sc-sql"))
+    row.set_status(st.RUNNING)
+    assert row.buttons["kill"].isEnabled() is False
+
+    here = rows_mod.ServiceRow(cfg_mod.Service(name="X"))
+    here.set_status(st.RUNNING)
+    assert here.buttons["kill"].isEnabled() is True
+
+
+def test_this_pc_and_hub_are_two_separate_chips(qapp, monkeypatch):
+    """Where somebody is sitting and where the engine runs are two facts. On a single-machine
+    install they are one computer and it gets both chips. On a workstation reading a hub they
+    are different computers — and the hub's row used to claim to be this one: it showed
+    `control.host_name()`, the workstation's name, under a chip reading "This PC"."""
+    from PySide6.QtWidgets import QLabel
+    from core import config as cfg_mod, control
+    from ui.pages import machines as machines_mod
+
+    monkeypatch.setattr(control, "host_name", lambda: "WORKSTATION7")
+    cfg = cfg_mod.Config(machines=[cfg_mod.Machine()])
+
+    class Hub:
+        host = "CTL052"
+
+    alone = machines_mod.MachinesPage(lambda: cfg)
+    client = machines_mod.MachinesPage(lambda: cfg, None, Hub())
+    here_too = machines_mod.MachinesPage(lambda: cfg, None,
+                                         type("H", (), {"host": "WORKSTATION7"})())
+    local = cfg.machines[0]
+
+    assert alone._chips(local, "", "") == [("This PC", "running")],         "watching by itself, this is this computer and there is no hub in the picture"
+    assert client._chips(local, "", "") == [("Hub", "running")],         "a workstation reading a hub is not the hub's machine"
+    assert here_too._chips(local, "", "") == [("This PC", "running"), ("Hub", "running")],         "the single-machine install is both, and says both"
+
+    # And the row is titled with the computer it actually is. `in`, not `==`: the title also
+    # carries the address when one has been resolved, and control caches those per process.
+    assert "CTL052" in client._title(local), client._title(local)
+    assert "WORKSTATION7" not in client._title(local), client._title(local)
+    assert "WORKSTATION7" in alone._title(local), alone._title(local)
+
+    # A remote machine still shows its reachability chip and nothing else.
+    other = cfg_mod.Machine(name="sc-sql", address="10.0.0.9")
+    assert client._chips(other, "connected", "running") == [("connected", "running")]
+
+    for page in (alone, client, here_too):
+        page.deleteLater()
+
+
+def test_a_row_can_carry_two_chips(qapp):
+    """The widget took one. Two facts needed two."""
+    from PySide6.QtWidgets import QLabel
+    from ui.pages.base import _ListRow
+
+    row = _ListRow("CTL052", "4 services", tags=[("This PC", "running"),
+                                                 ("Hub", "running")])
+    shown = [lb.text() for lb in row.findChildren(QLabel)
+             if lb.text() in ("This PC", "Hub")]
+
+    assert shown == ["This PC", "Hub"], shown
+
+    # And the old single-chip call still works — every other list uses it.
+    one = _ListRow("sc-sql", "1 service", tag="connected", tag_category="running")
+    assert [lb.text() for lb in one.findChildren(QLabel)
+            if lb.text() == "connected"] == ["connected"]

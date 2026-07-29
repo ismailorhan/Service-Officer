@@ -118,6 +118,7 @@ class RemoteStore:
 
     def __init__(self):
         self._lock = threading.RLock()
+        self.host = ""                 # the computer the hub runs on
         self._services: dict = {}      # (machine, name) -> row
         self._machines: dict = {}      # machine -> row
         self._subs: list = []
@@ -125,6 +126,9 @@ class RemoteStore:
     # -- filling it in (the client's business, not a caller's) -------------
     def apply_snapshot(self, shot: dict) -> None:
         with self._lock:
+            #: The computer the hub runs on, so a panel can say which machine that row is
+            #: rather than showing its own name for it.
+            self.host = shot.get("host", "") or self.host
             self._services = {(r.get("machine", ""), r["name"]): r
                               for r in shot.get("services", [])}
             self._machines = {r["name"]: r for r in shot.get("machines", [])}
@@ -381,6 +385,17 @@ class HubClient:
         self.token = following[0]
         log.info("that token was refused; trying the other one this computer holds")
         return True
+
+    @property
+    def host(self) -> str:
+        """The computer the hub runs on, from its snapshot.
+
+        Exposed here as well as on the store because a panel holds the client, not the
+        store — and asking the wrong object for it got "" and therefore a machine row that
+        showed this workstation's own name for the hub's computer. Found by the end-to-end
+        run, which is the only place the two names differ.
+        """
+        return getattr(self.store, "host", "") or ""
 
     def ping(self) -> dict:
         return self._ask("GET", "/api/v1/ping")[1]

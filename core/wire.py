@@ -251,6 +251,11 @@ def snapshot(engine) -> dict:
         "version": version.short(),
         "at": time.time(),
         "config_etag": etag(cfg),
+        # Which computer the engine is on. A client cannot work it out: the machine that
+        # owns the engine has an empty name and no address, and the panel's own hostname is
+        # a different computer's. Without this a client showed *its* name for the hub's
+        # machine, under a chip reading "This PC".
+        "host": _host_name(),
         "services": [service_row(s, store) for s in cfg.services],
         "machines": [machine_row(m, store) for m in cfg.machines],
         "stacks": [{"name": s.name, "steps": len(s.steps)} for s in cfg.stacks],
@@ -260,6 +265,16 @@ def snapshot(engine) -> dict:
 # ---------------------------------------------------------------------------
 # events
 # ---------------------------------------------------------------------------
+def _host_name() -> str:
+    """This computer's name, or "" if it cannot be had. Imported late: `wire` is read by a
+    client too, and the control module reaches for a service manager there."""
+    try:
+        from . import control
+        return control.host_name() or ""
+    except Exception:
+        return ""
+
+
 def event(kind: str, **facts) -> dict:
     """One thing that happened. `kind` is what a client switches on."""
     return {"protocol": PROTOCOL, "kind": kind, "at": time.time(), **facts}

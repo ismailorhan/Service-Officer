@@ -41,7 +41,7 @@ class HistoryPage(_Page):
     changed = Signal()
     #: Another machine's event log came back. Carries nothing: the records are in the cache,
     #: and a signal is how a worker thread asks the GUI thread to draw them.
-    remote_logs_arrived = Signal()
+    rows_arrived = Signal()
 
     # "Asked by" is last and hidden unless something in view fills it: on a
     # single-machine install nothing ever does, and an always-empty column would
@@ -59,7 +59,7 @@ class HistoryPage(_Page):
                ("Outside this app", "observed"),
                ("Windows event log", "Windows event log"))
 
-    def __init__(self, cfg_ref):
+    def __init__(self, cfg_ref, hub=None):
         super().__init__("History",
                          "Every state change, with its cause — evidence for a "
                          "ticket, and the only way to see a service that keeps "
@@ -72,10 +72,17 @@ class HistoryPage(_Page):
         self._stale = True
         #: {machine: [records]} for machines whose logs have been read, and the key those
         #: were read for. Kept so sorting a column does not cost a WinRM call.
-        self._remote_logs: dict = {}
-        self._remote_key = None
-        self._remote_busy = False
-        self.remote_logs_arrived.connect(self._draw)
+        #: Whether this panel reads a hub rather than watching by itself. The hub owns the
+        #: rows: only an engine writes them, so a client's own database is empty. A getter or
+        #: the client itself; both accepted, see MachinesPage.
+        self._hub = hub if callable(hub) else (lambda: hub)
+        #: The rows last fetched, the filters they were fetched for, and whether a fetch is
+        #: in flight. Cached so sorting a column costs nothing — and, with a hub, so it costs
+        #: no request and no logon record on the machines it reads.
+        self._rows: list = []
+        self._rows_key = None
+        self._fetching = False
+        self.rows_arrived.connect(self._draw)
 
         row = QHBoxLayout()
         row.setSpacing(9)
@@ -225,6 +232,17 @@ class HistoryPage(_Page):
             self.path_label.style().polish(self.path_label)
 
     def _show_path(self):
+        hub = self._hub()
+        if hub is not None:
+            # These rows are the hub's. Naming this computer's own file under them was a
+            # small lie with a real cost: somebody opens that folder to find the history
+            # they can see on screen, and it is empty — only an engine writes rows, and a
+            # client has none. Seen in the end-to-end run, on the page it describes.
+            self._set_path_state("")
+            self.path_label.setText(f"Kept by the hub at  {getattr(hub, 'url', '')}"
+                                    + (f"  ·  {hub.host}" if getattr(hub, "host", "")
+                                       else ""))
+            return
         path = history.path()
         try:
             size = os.path.getsize(path)
@@ -284,89 +302,87 @@ class HistoryPage(_Page):
         if self._stale:
             self.reload()
 
+    def _filters(self) -> dict:
+        """What is on screen, as the arguments both paths take."""
+        return {"service": self.service_filter.currentData() or "",
+                "hours": self.range_filter.currentData() or None,
+                "windows": self.include_windows.isChecked(),
+                "full": self.full_detail.isChecked()}
+
     def _current_rows(self) -> list:
-        cfg = self.cfg()
-        names = [s.name for s in cfg.services]
-        labels = [s.display() for s in cfg.services]
-        try:
-            rows = history.query(
-                service_names=names, labels=labels,
-                service=self.service_filter.currentData(),
-                hours=self.range_filter.currentData() or None,
-                include_windows=self.include_windows.isChecked(),
-                # Which of them are on this computer, because the Windows event log
-                # is only this computer's — see history.query.
-                local_services=[s.name for s in cfg.services if not s.machine],
-                # Read already, on a worker thread — see _fetch_remote_logs.
-                remote_events=self._remote_logs if self.include_windows.isChecked() else None,
-                full=self.full_detail.isChecked())
-        except Exception:
-            return []
+        """What to draw: whatever was last fetched, filtered by source.
+
+        The source filter is applied here rather than in the fetch so changing it is
+        instant — it is a view of rows already held, not a different question.
+        """
         wanted = self.source_filter.currentData()
-        if wanted:
-            rows = [r for r in rows if r.get("source", "").startswith(wanted)]
-        return rows
+        if not wanted:
+            return list(self._rows)
+        return [r for r in self._rows if r.get("source", "").startswith(wanted)]
 
     def reload(self):
-        """Draw what is here, then go and ask the machines that are not."""
+        """Draw what is held, then go and ask for what the filters now say."""
         self._stale = False
         self._draw()
-        self._fetch_remote_logs()
+        self._fetch()
 
-    def _remote_machines(self) -> list:
-        """The machines a timeline would have to ask, and what to ask them for.
+    def _fetch(self) -> None:
+        """Ask for rows, unless the answer already on hand is the right one."""
+        asked = self._filters()
+        key = tuple(sorted(asked.items()))
+        if self._fetching or key == self._rows_key:
+            return
+        self._fetching = True
+        threading.Thread(target=self._read, args=(asked, key), daemon=True,
+                         name="history").start()
 
-        Only where the switch is on: reading a log is not worth starting a PowerShell process
-        against a machine whose owner has said no. And only for services actually in view, so
-        filtering to one service asks one machine rather than all of them.
+    def _read(self, asked: dict, key) -> None:
+        """On a worker thread. Off the GUI one because the hub reads event logs inside this
+        request, which takes seconds against a real machine — and because a hub that has gone
+        away must not freeze a window while a socket times out.
+
+        A failure leaves the rows alone rather than blanking the table: what was on screen was
+        true when it arrived, and "" in place of a timeline reads as "nothing happened".
         """
-        cfg = self.cfg()
-        chosen = self.service_filter.currentData()
-        wanted = []
-        for svc in cfg.services:
-            if not svc.machine or (chosen and svc.name != chosen):
-                continue
-            machine = cfg.machine(svc.machine)
-            if machine is None or machine.is_linux or not getattr(machine, "winrm", False):
-                continue
-            wanted.append((svc.machine, svc.name, svc.display()))
-        return wanted
-
-    def _fetch_remote_logs(self) -> None:
-        """One worker for the whole set, if the answer is not already the right one."""
-        if not self.include_windows.isChecked():
-            return
-        hours = self.range_filter.currentData() or None
-        wanted = self._remote_machines()
-        key = (tuple(sorted(wanted)), hours)
-        if not wanted or key == self._remote_key or self._remote_busy:
-            return
-        self._remote_busy = True
-        threading.Thread(target=self._read_remote_logs, args=(wanted, hours, key),
-                         daemon=True).start()
-
-    def _read_remote_logs(self, wanted, hours, key) -> None:
-        """On a worker thread. Never raises into it — a failed read is no rows, and the
-        machine's own page is where a broken WinRM is explained."""
-        from core import control
-
-        found: dict = {}
+        found = None
         try:
-            cfg = self.cfg()
-            for machine_name, service_name, label in wanted:
-                record = cfg.machine(machine_name)
-                try:
-                    got = control.log_records(service_name, machine_name, label,
-                                              hours or 168, record=record)
-                except Exception:
-                    got = []
-                if got:
-                    found.setdefault(machine_name, []).extend(got)
+            hub = self._hub()
+            found = (self._rows_from_hub(hub, asked) if hub is not None
+                     else self._rows_from_here(asked))
+        except Exception as exc:
+            from core import applog
+            applog.get("ui").info("could not read the history: %s", exc)
         finally:
-            self._remote_logs = found
-            self._remote_key = key
-            self._remote_busy = False
-            self.remote_logs_arrived.emit()
+            if found is not None:
+                self._rows = found
+                self._rows_key = key
+            self._fetching = False
+            self.rows_arrived.emit()
+
+    def _rows_from_hub(self, hub, asked: dict) -> list:
+        """The hub's timeline. It owns the rows and it reads the machines' event logs — it
+        has the credentials and the WinRM trust, and a workstation has neither."""
+        return hub.history(service=asked["service"],
+                                 hours=asked["hours"] or "",
+                                 windows="1" if asked["windows"] else "",
+                                 full="1" if asked["full"] else "",
+                                 limit=800)
+
+    def _rows_from_here(self, asked: dict) -> list:
+        """This process owns the engine, so it owns the reading too."""
+        cfg = self.cfg()
+        remote = (history.remote_events_for(cfg, asked["service"], asked["hours"])
+                  if asked["windows"] else {})
+        return history.query(
+            service_names=[s.name for s in cfg.services],
+            labels=[s.display() for s in cfg.services],
+            service=asked["service"] or None,
+            hours=asked["hours"],
+            include_windows=asked["windows"],
+            # Which of them are on this computer, because eventlog.read opens *this* one.
+            local_services=[s.name for s in cfg.services if not s.machine],
+            remote_events=remote,
+            full=asked["full"])
 
     def _draw(self):
         rows = self._current_rows()

@@ -108,14 +108,14 @@ class MainPanel(QDialog):
         self.dashboard.refresh_requested.connect(self.refresh_requested)
         self.dashboard.open_services_mmc.connect(self.open_services_mmc)
 
-        self.services_page = ServicesPage(get, self._store)
+        self.services_page = ServicesPage(get, self._store, self._hub)
         self.categories_page = CategoriesPage(get)
         self.stacks_page = StacksPage(get)
         self.schedule_page = SchedulePage(get)
         # The store, because a machine's row says whether it is answering — which is
         # live, not a setting.
         self.machines_page = MachinesPage(get, self._store, self._hub)
-        self.history_page = HistoryPage(get)
+        self.history_page = HistoryPage(get, self._hub)
         self.clients_page = ClientsPage(self._hub)
         self.hub_page = HubPage()
         self.general_page = GeneralPage(get)
