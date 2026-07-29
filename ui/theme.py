@@ -296,8 +296,17 @@ def sheet() -> str:
         color: {PRIMARY_DISABLED_FG}; border-color: {PRIMARY_DISABLED_LINE};
         background: {PRIMARY_DISABLED_BG};
     }}
-    QPushButton[kind="quiet"] {{ border-color: transparent; color: {FG3}; }}
-    QPushButton[kind="quiet"]:hover {{ color: {FG}; background: {BG_HOVER}; }}
+    /* A quiet button is still a button. The border was `transparent`, so Forget, Test and
+       Refresh read as plain text and nobody could tell they could be pressed until they
+       hovered — which nobody does over a word that looks like a label. A dim border and a
+       faint fill are enough to say "pressable" while leaving the primary button the only
+       green thing on the page. */
+    QPushButton[kind="quiet"] {{
+        border-color: {LINE}; color: {FG2}; background: {BG_RAISE};
+    }}
+    QPushButton[kind="quiet"]:hover {{
+        color: {FG}; background: {BG_HOVER}; border-color: {LINE2};
+    }}
     QPushButton[kind="danger"]:hover {{ color: {STOP_FG}; border-color: {STOP}; }}
     QPushButton[kind="action"] {{
         border: 1px solid {LINE2}; border-radius: 5px; padding: 2px;

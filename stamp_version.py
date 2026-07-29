@@ -21,6 +21,11 @@ BACKUP = TARGET.with_suffix(".py.orig")
 #: what "which build is this" means while iterating. The commit in About is what
 #: identifies the code absolutely.
 COUNTER = pathlib.Path(__file__).with_name(".build-number")
+#: The version the *installer* stamps on itself, written here because the .iss cannot work it
+#: out: the build number is counted at build time and `version.py` is restored before ISCC
+#: runs. Without it the installer said "2.2.7 will be upgraded to 2.2.7" — true about the
+#: release and useless about the two things that actually differ.
+FOR_INSTALLER = pathlib.Path(__file__).with_name("installer-version.txt")
 
 
 def git(*args) -> str:
@@ -124,6 +129,9 @@ def main() -> int:
     shown = version.group(1) if version else "?"
     if build:
         shown += f".{build}"
+    # Left in place by --restore on purpose: ISCC runs after the build, by which time
+    # version.py is back to what it was in git.
+    FOR_INSTALLER.write_text(shown + "\n", encoding="utf-8")
     print(f"stamped {shown} commit={commit} built={built}")
     return 0
 

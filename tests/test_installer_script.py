@@ -175,15 +175,44 @@ def test_every_cm_reference_has_a_message(script):
     assert missing == [], f"used but never defined: {missing}"
 
 
-def test_the_version_matches_the_application(script):
+def test_the_release_matches_the_application(script):
     """stamp_version.py fails a release build when these disagree, which is late. The
     same check here fails in a second."""
     from core import version
 
-    declared = re.search(r'#define MyAppVersion\s+"([^"]+)"', script)
-    assert declared, "MyAppVersion is not defined"
+    declared = re.search(r'#define MyRelease\s+"([^"]+)"', script)
+    assert declared, "MyRelease is not defined"
     assert declared.group(1) == version.VERSION, (
         f"installer.iss says {declared.group(1)}, core/version.py says {version.VERSION}")
+
+
+def test_the_shown_version_carries_the_build_number(script):
+    """It was `#define MyAppVersion "2.2.7"` — the release, hardcoded — so the wizard told
+    somebody "2.2.7 will be upgraded to 2.2.7". True about the release and useless about the
+    build number, which is the only thing that differed between the two installs.
+
+    Derived from the file stamp_version.py leaves, not written by hand: the .iss cannot work
+    the build number out, and a hand-written one would go stale on the next build.
+    """
+    assert 'FileRead' in script and 'installer-version.txt' in script, (
+        "MyAppVersion is not read from what the build stamps")
+    assert not re.search(r'#define MyAppVersion\s+"\d', script), (
+        "MyAppVersion is hardcoded again; it will be stale one build from now")
+
+
+def test_the_compatibility_check_is_about_the_release(script):
+    """A client and its hub have to agree on the release. The build number counts builds on
+    one machine, so comparing it would refuse a hub that matches — including, after
+    MyAppVersion gained the build number, every single one."""
+    assert "CompareText(ReleasePart(HubVersion), '{#MyRelease}')" in script, (
+        "the version clash check compares against something other than the release")
+
+
+def test_a_reinstall_is_not_called_an_upgrade(script):
+    """The same build going on again is not an upgrade, and saying so is the wizard
+    reporting something that did not happen."""
+    assert "cm:ReadyHubSame" in script, "nothing says 'reinstalled'"
+    assert "english.ReadyHubSame=" in script
 
 
 def test_the_data_folder_is_locked_down(script):

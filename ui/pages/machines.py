@@ -472,9 +472,10 @@ class MachineDetail(_Page):
         self.password.editingFinished.connect(self._save_password)
         pw = QHBoxLayout()
         pw.setSpacing(theme.SP_8)
+        # The field takes the room up to Forget. It had a "saved on this computer" label
+        # beside it, which squeezed the field to about six characters for a sentence the field
+        # already tells you: dots mean stored, empty means not.
         pw.addWidget(self.password, 1)
-        self.password_state = _label("", "hint")
-        pw.addWidget(self.password_state)
         pw.addWidget(_button("Forget", "quiet", self._forget_password))
         field("password", "Password", pw,
               "Kept encrypted on this computer, not in\n"
@@ -572,7 +573,6 @@ class MachineDetail(_Page):
         self._load_winrm(machine)
         held = secrets.has(machine.secret_ref)
         self.password.show_stored(held)
-        self.password_state.setText("saved on this computer" if held else "not set")
         self.result.setText("")
         self.machine = machine
         self._apply_visibility()
@@ -672,8 +672,6 @@ class MachineDetail(_Page):
         if by_password:
             held = secrets.has(machine.secret_ref)
             self.password.show_stored(held)
-            self.password_state.setText(
-                "saved on this computer" if held else "not set")
         if local:
             self.result.setText("This computer is reached by being it — the "
                                 "service manager is right here.")
@@ -753,10 +751,8 @@ class MachineDetail(_Page):
         # Dots, not the value: it is set and it looks set.
         self.password.show_stored(stored)
         if stored:
-            self.password_state.setText("saved on this computer")
             self.result.setText("")
         else:
-            self.password_state.setText("not saved")
             self.result.setText(secrets.last_error()
                                 or "The password could not be stored. Is Service "
                                    "Officer running as administrator?")
@@ -769,7 +765,6 @@ class MachineDetail(_Page):
         secrets.forget(machine.secret_ref or secrets.ref_for_machine(machine.name))
         connectors.forget(machine.name)
         self.password.show_stored(False)
-        self.password_state.setText("not set")
         self.result.setText("Forgotten. That machine cannot be reached with a "
                             "password until a new one is set.")
         self.changed.emit()

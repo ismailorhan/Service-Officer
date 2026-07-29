@@ -1647,7 +1647,10 @@ def test_a_typed_password_goes_to_the_store_and_not_into_a_widget(qapp, tmp_path
     shown = page.detail.password.text()
     assert shown and shown != "CorrectHorse42", "the real password is in the widget"
     assert page.detail.password.typed() == "", "it would be saved again as-is"
-    assert "saved" in page.detail.password_state.text()
+    # The field itself is what says a password is held: stand-in characters mean stored,
+    # empty means not. There was a "saved on this computer" label beside it too, which
+    # squeezed the field to about six characters to repeat what it already showed.
+    assert page.detail.password.show_stored and shown == page.detail.password.STAND_IN
     edited = win.config().machine("hanadev")
     assert edited.secret_ref == "machine/hanadev"
     assert secrets.get(edited.secret_ref) == "CorrectHorse42"
@@ -1673,7 +1676,10 @@ def test_reopening_a_machine_never_shows_the_stored_password(qapp, tmp_path,
     assert shown, "a stored password must look stored"
     assert shown != "hunter2", "the stored password was rendered into the field"
     assert page.detail.password.typed() == ""
-    assert "saved" in page.detail.password_state.text()
+    # The field itself is what says a password is held: stand-in characters mean stored,
+    # empty means not. There was a "saved on this computer" label beside it too, which
+    # squeezed the field to about six characters to repeat what it already showed.
+    assert page.detail.password.show_stored and shown == page.detail.password.STAND_IN
 
 
 def test_signing_in_as_root_says_no_setup_is_needed(qapp):
@@ -2998,3 +3004,44 @@ def test_a_flyout_that_cannot_reach_its_hub_says_so(qapp):
     finally:
         for fly in (down, up, alone):
             fly.close()
+
+
+def test_a_quiet_button_looks_like_a_button(qapp):
+    """Its border was `transparent`, so Forget, Get it, Test and Refresh read as plain text.
+    Nobody hovers over a word that looks like a label, so nobody discovered they were
+    pressable. Measured on the pixels, because this is only wrong in the picture.
+    """
+    from PySide6.QtWidgets import QWidget, QHBoxLayout
+    from ui.widgets import button as _button
+
+    theme.set_mode("dark")
+    qapp.setStyleSheet(theme.sheet())
+    holder = QWidget()
+    holder.setStyleSheet(f"background: {theme.BG};")
+    lay = QHBoxLayout(holder)
+    lay.setContentsMargins(10, 10, 10, 10)
+    quiet = _button("Forget", "quiet", lambda: None)
+    primary = _button("Test connection", "primary", lambda: None)
+    lay.addWidget(quiet)
+    lay.addWidget(primary)
+    holder.resize(400, 60)
+    holder.show()
+    try:
+        image = holder.grab().toImage()
+
+        def edge_colours(widget):
+            at = widget.mapTo(holder, widget.rect().topLeft())
+            middle = at.y() + widget.height() // 2
+            return {image.pixelColor(at.x(), middle).name().lower(),
+                    image.pixelColor(at.x() + widget.width() - 1, middle).name().lower()}
+
+        page = theme.BG.lower()
+        assert edge_colours(quiet) != {page}, (
+            "a quiet button has no visible edge, so it reads as a label")
+
+        # And it is still quiet: nothing about it is the primary button's green.
+        at = quiet.mapTo(holder, quiet.rect().center())
+        assert image.pixelColor(at).name().lower() != theme.RUN_DIM.lower(),             "a quiet button is filled like the primary one"
+        assert edge_colours(quiet) != edge_colours(primary),             "the two kinds of button are indistinguishable"
+    finally:
+        holder.close()

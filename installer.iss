@@ -23,7 +23,21 @@
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
-#define MyAppVersion     "2.2.7"
+; The release, and then the full version if a build has stamped one. The .iss cannot work
+; the build number out for itself: it is counted during the build and version.py is restored
+; before ISCC runs, so stamp_version.py leaves it in a file. Without this the installer said
+; "2.2.7 will be upgraded to 2.2.7" — true about the release and useless about the build,
+; which is the only thing that differed.
+#define MyRelease        "2.2.7"
+#if FileExists("installer-version.txt")
+  #define VersionFile    FileOpen("installer-version.txt")
+  #define MyAppVersion   Trim(FileRead(VersionFile))
+  #expr FileClose(VersionFile)
+#else
+  ; A clean checkout, compiled without building first. Honest rather than fatal: the release
+  ; is right and only the build number is missing.
+  #define MyAppVersion   MyRelease
+#endif
 #define MyAppPublisher   "ismailorhan"
 #define MyAppExeName     "ServiceOfficer.exe"
 #define MyHubExeName     "ServiceOfficerHub.exe"
@@ -95,11 +109,12 @@ english.HubLocalNote=A hub on this computer: no token is needed, one is issued d
 english.PortBad=A port has to be a number between 1 and 65535.
 english.HubNeedAddress=Enter the hub's host name or IP address.
 english.HubNeedToken=Enter the token the hub printed for this computer. Without it the Client can reach the hub but not read anything.
-english.HubIsThisPC=That address is this computer, and the Hub here will be upgraded to version %1.%n%nThe services it watches keep running; the Hub is stopped and started again during the installation.%n%nContinue?
+english.HubIsThisPC=That address is this computer. The Hub here is version %1 and this installer carries %2.%n%nThe services it watches keep running; the Hub is stopped and started again during the installation.%n%nContinue?
 english.HubNotHere=That address is this computer, but no Hub is installed here.%n%nThe Client will be installed and will have nothing to read until a Hub exists at that address. You can change the address later in Settings %+ General.%n%nInstall anyway?
 english.HubVersionClash=That hub is version %1 and this installer is version %2.%n%nA client and its hub have to be the same version — the connection would succeed and then refuse everything. Upgrade that hub first, or install the matching version here.
 english.HubSilent=%1 did not answer.%n%nNothing about it can be checked — its version, or whether it is this computer. The address and the token will be stored and used on the first launch, and can be changed in Settings %+ General.%n%nInstall anyway?
 english.ReadyHubUpgrade=Hub (service): %1 will be upgraded to %2, keeping port %3
+english.ReadyHubSame=Hub (service): %1 reinstalled, keeping port %2
 english.ReadyHubKept=Hub (service): upgraded to %1, keeping port %2
 english.ReadyHubNew=Hub (service): a new hub on port %1
 english.ReadyClientLocal=Client (tray): reads the hub on this computer
@@ -811,7 +826,7 @@ end;
 // something itself.
 function AddressIsUsable(var Complaint: String): Boolean;
 var
-  Url, Host, HubName, HubVersion: String;
+  Url, Host, HubName, HubVersion, Question: String;
   Local: Boolean;
 begin
   Result := False;
@@ -869,7 +884,10 @@ begin
   // comparison, because an address can resolve in ways this installer cannot see.
   if (CompareText(HubName, GetComputerNameString) = 0) or LooksLikeThisComputer(Host) then
   begin
-    ExistingHubVersion := ReleasePart(HubVersion);
+    // The whole thing, not the release part: the release is what has to *match*, and the
+    // build number is the only thing that differs between two installs of one release. Cutting
+    // it off is what made the wizard say "2.2.7 will be upgraded to 2.2.7".
+    ExistingHubVersion := HubVersion;
     if not InstallingHub() then
     begin
       // A hub is here and this is a client-only install: normal, and no token is needed
@@ -879,7 +897,10 @@ begin
       Result := True;
       Exit;
     end;
-    if MsgBox(FmtMessage(ExpandConstant('{cm:HubIsThisPC}'), ['{#MyAppVersion}']), mbConfirmation, MB_YESNO) <> IDYES then
+    // One line on purpose: a continuation starting with '[' is read by Inno as a section
+    // tag inside [Code], and it reports only "Invalid section tag". A test guards this.
+    Question := FmtMessage(ExpandConstant('{cm:HubIsThisPC}'), [HubVersion, '{#MyAppVersion}']);
+    if MsgBox(Question, mbConfirmation, MB_YESNO) <> IDYES then
       Exit;
     HubIsLocal := True;
     CheckedHubUrl := Url;
@@ -887,9 +908,12 @@ begin
     Exit;
   end;
 
-  if CompareText(ReleasePart(HubVersion), '{#MyAppVersion}') <> 0 then
+  // Against the *release*, not against MyAppVersion — that now carries the build number, and
+  // comparing with it would refuse every hub including the matching one. A client and its hub
+  // have to agree on the release; the build number counts builds on one machine.
+  if CompareText(ReleasePart(HubVersion), '{#MyRelease}') <> 0 then
   begin
-    Complaint := FmtMessage(ExpandConstant('{cm:HubVersionClash}'), [ReleasePart(HubVersion), '{#MyAppVersion}']);
+    Complaint := FmtMessage(ExpandConstant('{cm:HubVersionClash}'), [HubVersion, '{#MyAppVersion}']);
     Exit;
   end;
 
@@ -917,7 +941,12 @@ begin
     // that answered a ping, an upgrade of one in the registry that did not, and a hub that
     // does not exist here yet.
     if ExistingHubVersion <> '' then
-      Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubUpgrade}'), [ExistingHubVersion, '{#MyAppVersion}', GetHubPort('')]) + NewLine
+      if CompareText(ExistingHubVersion, '{#MyAppVersion}') = 0 then
+        // The same build going on again. Saying "upgraded" about that is the wizard telling
+        // somebody something happened that did not.
+        Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubSame}'), ['{#MyAppVersion}', GetHubPort('')]) + NewLine
+      else
+        Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubUpgrade}'), [ExistingHubVersion, '{#MyAppVersion}', GetHubPort('')]) + NewLine
     else if HubInstalledHere() then
       Lines := Lines + Space + FmtMessage(ExpandConstant('{cm:ReadyHubKept}'), ['{#MyAppVersion}', GetHubPort('')]) + NewLine
     else
