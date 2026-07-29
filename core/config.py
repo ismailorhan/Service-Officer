@@ -473,7 +473,7 @@ LANDSCAPE = ("services", "stacks", "triggers", "machines", "categories", "histor
 #: registry key on this machine; a theme is one person's eyesight; notifications are which
 #: toasts appear on *this* screen. Adopting a hub's would push one user's dark mode to
 #: everybody's tray.
-LOCAL_TASTE = ("notifications", "auto_start", "theme")
+LOCAL_TASTE = ("notifications", "auto_start", "theme", "language")
 
 
 @dataclass
@@ -488,6 +488,11 @@ class Config:
     hub: Hub = field(default_factory=Hub)
     auto_start: bool = True
     theme: str = "system"          # "system" follows Windows; else "dark"/"light"
+    #: Which language the app reads in — "en" or "tr". English until somebody changes it
+    #: under Settings ▸ General. Deliberately *not* asked for during installation: Setup
+    #: speaks one language, and asking twice about one thing is how a machine ends up
+    #: installed by an administrator in one language and used by somebody in another.
+    language: str = "en"
     version: int = CURRENT_VERSION
 
     # -- lookup helpers ---------------------------------------------------

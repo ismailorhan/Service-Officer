@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout
 
 from core import config as cfg_mod
 from core import control
+from core import i18n
 from core import version
 
 from ..widgets import button as _button, label as _label
@@ -31,6 +32,19 @@ class GeneralPage(_Page):
         self.root.addWidget(_sentence("Theme", self.theme))
         self.root.addWidget(_label(
             "System follows the Windows setting and switches with it.",
+            "hint", wrap=True))
+        self.root.addSpacing(10)
+
+        self.language = QComboBox()
+        for _code, name in i18n.LANGUAGES:
+            self.language.addItem(name)
+        self.language.setFixedWidth(150)
+        self.language.currentIndexChanged.connect(self._set_language)
+        self.root.addWidget(_sentence("Language", self.language))
+        self.root.addWidget(_label(
+            "Windows opened after this read the new language. This one keeps the words it "
+            "was built with — its labels are set when it opens, and rewriting them under "
+            "somebody mid-sentence is worse than reopening a window.",
             "hint", wrap=True))
         self.root.addSpacing(24)
 
@@ -93,6 +107,19 @@ class GeneralPage(_Page):
         self.changed.emit()
         self.theme_changed.emit(value)
 
+    def _set_language(self, index):
+        """Store it and read in it from now on.
+
+        Applied to this process immediately, so the tray menu and the flyout — rebuilt on
+        save — come back in the new language. An open panel keeps its own: every label on it
+        was set when it was built, and Qt has no way to reword a window in place that does
+        not amount to building it again.
+        """
+        code = i18n.LANGUAGES[index][0] if 0 <= index < len(i18n.LANGUAGES) else i18n.DEFAULT
+        self.cfg().language = code
+        i18n.use(code)
+        self.changed.emit()
+
     def _set_auto(self, on):
         self.cfg().auto_start = on
         self.changed.emit()
@@ -109,6 +136,11 @@ class GeneralPage(_Page):
             box.blockSignals(True)
             box.setChecked(value)
             box.blockSignals(False)
+        self.language.blockSignals(True)
+        codes = [code for code, _name in i18n.LANGUAGES]
+        wanted = getattr(cfg, "language", i18n.DEFAULT)
+        self.language.setCurrentIndex(codes.index(wanted) if wanted in codes else 0)
+        self.language.blockSignals(False)
         self.theme.blockSignals(True)
         self.theme.setCurrentIndex(self._THEMES.index(
             cfg.theme if cfg.theme in self._THEMES else "system"))

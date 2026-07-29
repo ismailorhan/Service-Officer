@@ -111,15 +111,41 @@ def test_no_line_in_the_code_starts_with_a_bracket(script):
         f"and reports only as \"Invalid section tag\": {offenders}")
 
 
-def test_every_custom_message_exists_in_both_languages(script):
-    """A missing one is not an error — Inno falls back to the name — so a Turkish install
-    would quietly show "MethodCaption" where a sentence belongs."""
-    english = {line.split("=", 1)[0][len("english."):]
-               for line in script.splitlines() if line.startswith("english.")}
-    turkish = {line.split("=", 1)[0][len("turkish."):]
-               for line in script.splitlines() if line.startswith("turkish.")}
-    assert english - turkish == set(), f"no Turkish for {sorted(english - turkish)}"
-    assert turkish - english == set(), f"no English for {sorted(turkish - english)}"
+def test_setup_asks_nothing_about_language(script):
+    """One language in [Languages], so Inno shows no language dialog before Setup starts.
+
+    The *application's* language is its own setting, changed under Settings ▸ General. Asking
+    twice about one thing is how the two end up disagreeing: a machine installed by an
+    administrator in one language and used by somebody in another.
+    """
+    declared = [line for line in script.splitlines()
+                if line.startswith("Name: ") and "MessagesFile" in line]
+
+    assert len(declared) == 1, (
+        "more than one language brings back Setup's language prompt: " + str(declared))
+    assert "english" in declared[0]
+
+
+def test_no_message_is_left_for_a_language_that_is_gone(script):
+    """A `turkish.` line with no `turkish` language is dead weight, and reads as if Setup
+    still speaks it."""
+    orphans = sorted({line.split("=", 1)[0] for line in script.splitlines()
+                      if line.startswith("turkish.")})
+
+    assert orphans == [], f"messages for a language Setup no longer has: {orphans}"
+
+
+def test_every_custom_message_is_used(script):
+    """A message nobody shows is a sentence somebody wrote and a reader will never see.
+
+    Kept because the [CustomMessages] block is where a wizard's words live, and it outlived
+    two page rewrites today: a name left behind is invisible until somebody greps for it.
+    """
+    names = {line.split("=", 1)[0][len("english."):]
+             for line in script.splitlines() if line.startswith("english.")}
+    unused = sorted(n for n in names if f"cm:{n}" not in script)
+
+    assert unused == [], f"nothing shows these: {unused}"
 
 
 def test_no_custom_message_is_defined_twice(script):

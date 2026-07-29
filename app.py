@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 import autostart
 from core import (applog, config as cfg_mod, control, db, engine as engine_mod,
                   health, history, hub_client, local as local_mod)
+from core import i18n
 from core import state as st
 from ui import flyout as flyout_mod, hover as hover_mod, icons, panel as panel_mod
 from ui import theme
@@ -216,6 +217,9 @@ class Application(QObject):
         self.qt.setWindowIcon(icons.base_icon("green"))
 
         self.cfg = cfg_mod.load()
+        # Before any widget is built: every label is worded when it is constructed, so the
+        # language has to be chosen before the first one exists.
+        i18n.use(self.cfg.language)
         #: Where the engine is. "" means here — which is what everybody has today and
         #: what a single-machine install keeps. There is no *mode* to pick: if the hub
         #: runs on this computer you point at this computer, and if it is elsewhere you
@@ -485,6 +489,9 @@ class Application(QObject):
         # and when they are it will be from the config this just replaced.
         if getattr(self, "flyout", None) is None:
             return
+        # The language may have changed with it, and the tray and the flyout are about to
+        # be rebuilt — so they come back in it.
+        i18n.use(self.cfg.language)
         self.tray.rebuild_menu()
         self.flyout.rebuild()
         # An open panel is *not* replaced. It edits a deep copy and Save commits it, so

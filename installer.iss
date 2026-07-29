@@ -60,8 +60,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 
 [Languages]
+; One language, so Setup asks nothing before it starts. The *application's* language is its
+; own setting — English until somebody changes it under Settings ▸ General — and asking twice
+; about the same thing, once in a wizard and once in the app, is how they end up disagreeing:
+; a machine installed by an administrator in one language and used by somebody in another.
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
 
 [CustomMessages]
 english.AutoStartTask=Start the &panel when I sign in to this computer
@@ -74,7 +77,6 @@ english.RegisteringHub=Registering the hub service...
 english.PairingLocal=Pairing this computer with its hub...
 english.SecuringData=Setting permissions on the data folder...
 english.PanelTasks=The panel (Client) — the Hub is a Windows service and starts with the computer on its own
-turkish.PanelTasks=Panel (Client) — Hub bir Windows hizmeti ve bilgisayarla birlikte kendisi başlar
 english.TypeCaption=Setup type
 english.TypeBody=What is this computer's part?
 english.TypeBothWhy=The services are watched from here: this computer asks them how they are, restarts them when they fail, runs the schedule and keeps the history — whether or not anybody is logged in, because that part is a Windows service. Other computers connect to it and read what it knows. The panel is installed here as well.
@@ -102,42 +104,6 @@ english.ReadyHubKept=Hub (service): upgraded to %1, keeping port %2
 english.ReadyHubNew=Hub (service): a new hub on port %1
 english.ReadyClientLocal=Client (tray): reads the hub on this computer
 english.ReadyClientRemote=Client (tray): reads %1
-turkish.AutoStartTask=Bu bilgisayarda &oturum açtığımda paneli başlat
-turkish.DesktopIconTask=Panelin kısayolunu &masaüstüne koy
-turkish.TypeClient=Yalnızca Client (tepsi)
-turkish.TypeFull=Hub ve Client
-turkish.CompClient=Service Officer (tepsi uygulaması)
-turkish.CompHub=Service Officer Hub (Windows hizmeti)
-turkish.RegisteringHub=Hub hizmeti kaydediliyor...
-turkish.PairingLocal=Bu makine hub'ına eşleştiriliyor...
-turkish.SecuringData=Veri klasörü izinleri ayarlanıyor...
-turkish.TypeCaption=Kurulum türü
-turkish.TypeBody=Bu bilgisayarın rolü ne?
-turkish.TypeBothWhy=Servisler buradan izlenir: bu bilgisayar onlara durumlarını sorar, düştüklerinde yeniden başlatır, zamanlamayı çalıştırır ve geçmişi tutar — kimse oturum açmasa da, çünkü o kısım bir Windows hizmeti. Diğer bilgisayarlar buraya bağlanıp bildiklerini okur. Panel de buraya kurulur.
-turkish.TypeClientWhy=Bu işi başka bir bilgisayar yapıyor. Bu bilgisayar o hub'ın bildiklerini gösterir ve ondan işlem yapmasını ister — kendisi hiçbir şey izlemez, yani kapatmak hiçbir şeyi durdurmaz. O bilgisayarın adresi ve orada üretilmiş bir token gerekecek.
-turkish.TypeBoth=Bu bilgisayar hub bilgisayarı  (Hub + Client)
-turkish.TypeClientOnly=Bu bilgisayar başka bir yerdeki hub'ı okur  (Client)
-turkish.HubCaption=Hub
-turkish.HubBody=Client hangi hub'ı okusun? Bu bilgisayardaki bir hub da sayılır — adres her durumda denetlenir.
-turkish.HubHostField=Makine adı veya IP
-turkish.HubPortField=Port
-turkish.HubToken=Token
-turkish.HubTokenWhy=Hub üzerinde "ServiceOfficerHub.exe client add <bu bilgisayar için bir isim>" ile üretilir ve bir kez yazdırılır.
-turkish.HubPortNew=Hub'ın dinleyeceği ve istemcilerinin bağlanacağı port. Başka bir şey kullanmıyorsa olduğu gibi bırakın.
-turkish.HubPortLocked=Bu, buradaki Hub'ın dinlediği port ve ona bağlı her istemcide kayıtlı — yani taşımak bu kurulumu değil Hub'ı değiştirmek olur. Bunu sonradan bu bilgisayarda yapın: "ServiceOfficerHub.exe port <n>", ardından servisi yeniden başlatın.
-turkish.HubLocalNote=Bu bilgisayardaki bir hub: token gerekmiyor, kurulum sırasında bir tane üretilir.
-turkish.PortBad=Port 1 ile 65535 arasında bir sayı olmalı.
-turkish.HubNeedAddress=Hub'ın makine adını veya IP adresini girin.
-turkish.HubNeedToken=Hub'ın bu bilgisayar için yazdırdığı token'ı girin. O olmadan Client hub'a ulaşır ama hiçbir şey okuyamaz.
-turkish.HubIsThisPC=Bu adres bu bilgisayarı gösteriyor ve buradaki Hub %1 sürümüne yükseltilecek.%n%nİzlediği servisler çalışmaya devam eder; kurulum sırasında Hub durdurulup yeniden başlatılır.%n%nDevam edilsin mi?
-turkish.HubNotHere=Bu adres bu bilgisayarı gösteriyor ama burada kurulu bir Hub yok.%n%nClient kurulacak ve o adreste bir Hub olana kadar okuyacak bir şeyi olmayacak. Adresi sonradan Ayarlar %+ Genel bölümünden değiştirebilirsiniz.%n%nYine de kurulsun mu?
-turkish.HubVersionClash=O hub %1 sürümünde, bu kurulum ise %2 sürümünde.%n%nİstemci ile hub aynı sürümde olmak zorunda — bağlantı kurulur ama her isteği reddeder. Önce o hub'ı yükseltin ya da buraya eşleşen sürümü kurun.
-turkish.HubSilent=%1 yanıt vermedi.%n%nHakkında hiçbir şey denetlenemiyor — sürümü de, bu bilgisayar olup olmadığı da. Adres ve token kaydedilip ilk açılışta kullanılacak, Ayarlar %+ Genel bölümünden değiştirilebilir.%n%nYine de kurulsun mu?
-turkish.ReadyHubUpgrade=Hub (servis): %1 sürümü %2 sürümüne yükseltilecek, port %3 korunuyor
-turkish.ReadyHubKept=Hub (servis): %1 sürümüne yükseltilecek, port %2 korunuyor
-turkish.ReadyHubNew=Hub (servis): %1 portunda yeni bir hub
-turkish.ReadyClientLocal=Client (tepsi): bu bilgisayardaki hub'ı okur
-turkish.ReadyClientRemote=Client (tepsi): %1 okur
 
 [Types]
 ; Two, matching the two answers on the first page. There is no "hub only": every
