@@ -20,6 +20,8 @@ from core import control
 from core import state as st
 
 from .. import theme
+from core.i18n import t
+
 from ..widgets import (Duration, FlatFactor, FlatSpin, InfoDot,
                        button as _button, label as _label)
 from .base import _Page, _sentence, _spin
@@ -287,7 +289,9 @@ class ServiceDetail(_Page):
         window, and content that is simply clipped is content nobody knows is
         there.
         """
-        button = _button(name, "tab")
+        # The label is translated and `name` is not: it is the key _select_tab and
+        # _tab_buttons use, and a translated key would find nothing.
+        button = _button(t(name), "tab")
         button.setCheckable(True)
         button.clicked.connect(lambda _=False, n=name: self._select_tab(n))
         self.tabs.addWidget(button)

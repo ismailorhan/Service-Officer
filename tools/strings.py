@@ -119,6 +119,43 @@ def bare() -> dict:
     return found
 
 
+def everything() -> set:
+    """Every string literal in the looked-at files, with no judgement about whether it is a
+    sentence.
+
+    Only for the orphan check. `bare()` deliberately skips anything without a space, because a
+    key or a path is not prose — but a one-word nav label like "Clients" is prose, is
+    translated where it is drawn, and would otherwise be reported as an entry matching nothing.
+    An entry that matches no literal *at all* is the only real orphan.
+    """
+    found = set()
+    for path in _files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            said = _text_of(node)
+            if said:
+                found.add(said)
+    return found
+
+
+def untranslated(code: str = "tr") -> dict:
+    """{sentence: [where]} for prose that will stay English whatever the setting says.
+
+    Bare *and* with no catalogue entry. A string can be translated without being wrapped where
+    it is written — a page heading and a nav label are translated where they are drawn, which
+    is one edit for every heading in the product — so "bare" alone overcounts. One definition,
+    used by this tool and by the test that holds the number down, so the two cannot drift.
+    """
+    sys.path.insert(0, str(ROOT))
+    from core import i18n
+
+    loose = bare()
+    return {s: where for s, where in loose.items() if i18n.missing(code, [s])}
+
+
 def main(argv) -> int:
     sys.path.insert(0, str(ROOT))
     from core import i18n
@@ -136,14 +173,26 @@ def main(argv) -> int:
             print(sentence)
         return 0
 
+    # A literal can be translated without being wrapped where it is written: `_Page(title)`
+    # and the navigation's labels are translated where they are *drawn*, which is one edit for
+    # every heading in the product. The tool cannot see that from the call site, so a bare
+    # string the catalogue has an entry for counts as done — because something translates it.
+    still = untranslated("tr")
+    covered = len(loose) - len(still)
+
     total = len(said) + len(loose)
-    print(f"{len(said)} sentences wrapped in t(), {len(loose)} still bare "
-          f"({len(said) * 100 // max(1, total)}% of {total} converted)")
+    done = len(said) + covered
+    print(f"{len(said)} wrapped in t(), {covered} translated where they are drawn, "
+          f"{len(still)} still bare")
+    print(f"   {done * 100 // max(1, total)}% of {total}")
+    loose = still
     for code, name in i18n.LANGUAGES:
         if code == i18n.DEFAULT:
             continue
         gaps = i18n.missing(code, said)
-        orphans = i18n.stale(code, said)
+        # Against both halves: an entry for a string translated where it is *drawn* is not an
+        # orphan, and comparing only against the wrapped ones called eighteen of them stale.
+        orphans = i18n.stale(code, everything())
         print(f"  {name}: {len(said) - len(gaps)}/{len(said)} translated"
               + (f", {len(gaps)} missing" if gaps else "")
               + (f", {len(orphans)} orphaned" if orphans else ""))

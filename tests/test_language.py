@@ -82,7 +82,14 @@ def test_every_wrapped_sentence_is_translated():
 def test_no_orphaned_translations():
     """An entry for a sentence no longer in the source is a translated line somebody will look
     for on screen and never find — and it hides that the English it belonged to changed."""
-    orphans = i18n.stale("tr", strings_tool.wrapped())
+    # Both halves: a string translated where it is drawn — a page heading, a nav label — has
+    # an entry and no `t("…")` call site, and comparing against the wrapped ones alone called
+    # eighteen legitimate entries stale.
+    # Against every literal in the source, not only the ones that look like sentences: a
+    # one-word nav label such as "Clients" is translated where it is drawn and `bare()`
+    # deliberately skips anything without a space. An entry matching no literal at all is the
+    # only real orphan.
+    orphans = i18n.stale("tr", strings_tool.everything())
 
     assert orphans == [], (
         f"{len(orphans)} Turkish entr(ies) match nothing in the source: {orphans[:5]}")
@@ -108,9 +115,14 @@ def test_the_conversion_does_not_go_backwards():
     # 745 → 749 on 2026-07-29: the guards for a click while the hub is down.
     # 749 -> 747 on 2026-07-30: two paragraphs on the service detail tabs became notes on an
     # InfoDot, which is one string where there were two labels.
-    STILL_BARE = 747
+    # 747 -> 739 on 2026-07-30: the navigation, every page heading and the service detail's
+    # tabs, translated where they are drawn.
+    STILL_BARE = 739
 
-    loose = strings_tool.bare()
+    # What will stay English whatever the setting says: bare *and* with no catalogue entry.
+    # `bare()` alone overcounts, because a heading translated where it is drawn is bare at its
+    # call site and translated all the same.
+    loose = strings_tool.untranslated("tr")
     assert len(loose) <= STILL_BARE, (
         f"{len(loose)} bare sentences, up from {STILL_BARE} — something on screen was added "
         "without t()")
@@ -211,3 +223,23 @@ def test_a_catalogue_module_exists_for_every_language():
         if code == i18n.DEFAULT:
             continue
         assert (here / f"{code}.py").exists(), f"no catalogue module for {name} ({code})"
+
+
+def test_no_catalogue_entry_is_written_twice():
+    """A duplicate key is silent: Python keeps the last one, so the first translation is dead
+    code that somebody will edit and wonder why nothing changed. Happened within an hour of the
+    catalogue existing — "Dashboard" was in it twice, as "Panosu" and then as "Pano"."""
+    import ast
+    import pathlib
+
+    here = pathlib.Path(__file__).resolve().parent.parent / "core" / "translations"
+    for code, name in i18n.LANGUAGES:
+        if code == i18n.DEFAULT:
+            continue
+        tree = ast.parse((here / f"{code}.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            keys = [ast.literal_eval(k) for k in node.keys if k is not None]
+            twice = sorted({k for k in keys if keys.count(k) > 1})
+            assert twice == [], f"{name}: written twice — {twice}"

@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (QDialog, QDoubleSpinBox, QFrame, QHBoxLayout,
 from core import control
 
 from .. import icons, theme
+from core.i18n import t
+
 from ..widgets import Chip, Spin, button as _button, label as _label, InfoDot
 
 
@@ -259,9 +261,12 @@ class _Page(QWidget):
         outer.setSpacing(0)
         self.head = QVBoxLayout()
         self.head.setSpacing(4)
-        self.head.addWidget(_label(title, "h2"))
+        # Translated here, where they are drawn, rather than at each page's constructor: one
+        # edit covers every heading in the product, and the pages go on reading as English
+        # source. See core/i18n.py for why the English sentence is the key.
+        self.head.addWidget(_label(t(title), "h2"))
         if desc:
-            self.head.addWidget(_label(desc, "hint", wrap=True))
+            self.head.addWidget(_label(t(desc), "hint", wrap=True))
         outer.addLayout(self.head)
         outer.addSpacing(18)
 

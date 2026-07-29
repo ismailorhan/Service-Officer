@@ -21,6 +21,8 @@ from core import config as cfg_mod
 from core import connectors, control, secrets
 
 from .. import theme
+from core.i18n import t
+
 from ..widgets import button as _button, label as _label, InfoDot
 from .base import _ListRow, _Page, _spin
 
@@ -59,9 +61,9 @@ class MachinesPage(QWidget):
 
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        bar.addWidget(_button("Add machine…", "primary", self._add))
-        bar.addWidget(_button("Open", None, self._open))
-        bar.addWidget(_button("Remove", "danger", self._remove))
+        bar.addWidget(_button(t("Add machine…"), "primary", self._add))
+        bar.addWidget(_button(t("Open"), None, self._open))
+        bar.addWidget(_button(t("Remove"), "danger", self._remove))
         bar.addStretch(1)
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
@@ -176,9 +178,9 @@ class MachinesPage(QWidget):
         here = control.host_name() or ""
         engine_on = self._engine_host()
         if not connected or (here and engine_on and here.lower() == engine_on.lower()):
-            chips.append(("This PC", "running"))
+            chips.append((t("This PC"), "running"))
         if connected:
-            chips.append(("Hub", "running"))
+            chips.append((t("Hub"), "running"))
         return chips
 
     def _reachability(self, machine) -> tuple:
@@ -197,10 +199,10 @@ class MachinesPage(QWidget):
         "never asked" on its machine has one.
         """
         if machine.is_local:
-            return "", "This PC", "running", ""
+            return "", t("This PC"), "running", ""
         known = self.store.machine_state(machine.name) if self.store else {}
         if not known:
-            return ("not asked yet", "waiting", "none",
+            return (t("not asked yet"), t("waiting"), "none",
                     "Nothing has asked this machine anything yet. It is asked "
                     f"every {machine.poll_seconds}s once the app is watching a "
                     "service on it.")
@@ -211,7 +213,7 @@ class MachinesPage(QWidget):
                 f"{ago / 3600:.1f} h ago")
         why = (known.get("detail") or "").strip()
         if known.get("reachable"):
-            return f"answered {when}", "connected", "running", ""
+            return (t("answered {when}", when=when), t("connected"), "running", "")
         return (f"no answer, last tried {when}", "no answer", "stopped",
                 why or "It did not answer, and said nothing about why.")
 

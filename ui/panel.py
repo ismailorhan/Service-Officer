@@ -23,6 +23,7 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QMessageBox, QPushButton,
                                QStackedWidget, QVBoxLayout, QWidget)
 
+from core.i18n import t
 from core import config as cfg_mod
 from core import state as st
 
@@ -161,12 +162,13 @@ class MainPanel(QDialog):
                     ("General", "general", self.general_page)]
         for text, kind, page in sections:
             if page is None:
-                cap = _label(text.upper(), "section")
+                cap = _label(t(text).upper(), "section")
                 cap.setContentsMargins(16, 14, 16, 6)
                 nl.addWidget(cap)
                 continue
             self.pages.addWidget(page)
-            b = QPushButton("  " + text)
+            # `text` is translated; `kind` is the key everything else uses, and stays.
+            b = QPushButton("  " + t(text))
             b.setProperty("kind", "nav")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
