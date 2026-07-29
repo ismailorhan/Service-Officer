@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QMessageBox
 
 from core import config as cfg_mod
 from core import control
 from core import i18n
+from core import local as local_mod
 from core import version
 
 from ..widgets import button as _button, label as _label
@@ -15,8 +16,15 @@ from .base import _Page, _sentence
 
 
 class GeneralPage(_Page):
+    #: Something in the *config* changed — the notification switches, which are still there
+    #: because the watchdog reads them too.
     changed = Signal()
     theme_changed = Signal(str)      # applied live, so you can see the choice
+    #: A display choice changed and has been written to this computer's own file. Separate
+    #: from `changed` because it is not part of the landscape and must never travel to a hub:
+    #: a client that saved its theme there had it reverted on the next launch, and wrote one
+    #: person's eyesight into a file every other client reads.
+    mine_changed = Signal()
     def __init__(self, cfg_ref):
         # Scrolls: appearance, startup, notifications and the about block leave
         # only fifty pixels spare, and every setting added eats into that.
@@ -103,8 +111,7 @@ class GeneralPage(_Page):
 
     def _set_theme(self, index):
         value = self._THEMES[index]
-        self.cfg().theme = value
-        self.changed.emit()
+        self._remember(theme=value)
         self.theme_changed.emit(value)
 
     def _set_language(self, index):
@@ -116,20 +123,35 @@ class GeneralPage(_Page):
         not amount to building it again.
         """
         code = i18n.LANGUAGES[index][0] if 0 <= index < len(i18n.LANGUAGES) else i18n.DEFAULT
-        self.cfg().language = code
         i18n.use(code)
-        self.changed.emit()
+        self._remember(language=code)
 
     def _set_auto(self, on):
-        self.cfg().auto_start = on
-        self.changed.emit()
+        self._remember(auto_start=bool(on))
+
+    def _remember(self, **choices) -> None:
+        """Write a display choice to this computer's own file, at once.
+
+        At once, not on Save: these are not part of the landscape, so there is nothing for
+        Save to commit them with, and a person who picks a theme and closes the window has
+        made a choice either way.
+        """
+        settings = local_mod.load()
+        for field, value in choices.items():
+            setattr(settings, field, value)
+        if not local_mod.save(settings):
+            QMessageBox.warning(self, "Service Officer",
+                                "Could not store that on this computer.")
+            return
+        self.mine_changed.emit()
 
     def _set_note(self, attr, on):
         setattr(self.cfg().notifications, attr, on)
         self.changed.emit()
 
     def load_from(self, cfg):
-        for box, value in ((self.auto, cfg.auto_start),
+        mine = local_mod.taste(cfg)
+        for box, value in ((self.auto, mine.auto_start),
                            (self.on_crash, cfg.notifications.on_crash),
                            (self.on_recovery, cfg.notifications.on_recovery),
                            (self.on_give_up, cfg.notifications.on_give_up)):
@@ -138,10 +160,10 @@ class GeneralPage(_Page):
             box.blockSignals(False)
         self.language.blockSignals(True)
         codes = [code for code, _name in i18n.LANGUAGES]
-        wanted = getattr(cfg, "language", i18n.DEFAULT)
+        wanted = mine.language
         self.language.setCurrentIndex(codes.index(wanted) if wanted in codes else 0)
         self.language.blockSignals(False)
         self.theme.blockSignals(True)
         self.theme.setCurrentIndex(self._THEMES.index(
-            cfg.theme if cfg.theme in self._THEMES else "system"))
+            mine.theme if mine.theme in self._THEMES else "system"))
         self.theme.blockSignals(False)

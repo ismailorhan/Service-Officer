@@ -53,7 +53,15 @@ class Settings:
     #: The hub's certificate, pinned on the first connection. A change after that is
     #: refused: the same rule as an SSH host key, for the same reason.
     hub_fingerprint: str = ""
+    #: This person's own display choices. They live *here*, not in services.json, because
+    #: services.json is the landscape — one hub's, read by every client of it — and a client
+    #: that saved its theme there was writing one user's eyesight into a shared file. Proved
+    #: on 2026-07-29: a client picked Turkish and a dark theme, both went to the hub, and the
+    #: next launch read this computer's own untouched file and reverted to English and System.
     theme: str = "system"
+    #: "en" or "tr". Per user rather than per machine on purpose: two people on one RDP server
+    #: can reasonably want different languages, and this file is under the user's profile.
+    language: str = "en"
     auto_start: bool = True
     #: Whether *this* screen shows notifications. Five clients all announcing the same
     #: crash is five toasts for one event, and it should be each person's choice.
@@ -64,6 +72,33 @@ def _token_ref(url: str) -> str:
     """One entry per hub. Somebody with a test hub and a real one must not have the
     two overwrite each other."""
     return f"hub-token/{(url or '').rstrip('/')}"
+
+
+def taste(cfg=None) -> Settings:
+    """This person's own choices, taking them over from a config that still holds them.
+
+    The migration is one-way and once: a services.json written by an older build carries a
+    theme and an auto-start, and dropping them would silently reset a setting somebody chose.
+    A value already in this file wins, because it is the newer of the two by definition — it
+    can only have got there by being set after the move.
+    """
+    mine = load()
+    if cfg is None:
+        return mine
+    changed = False
+    for field, default in (("theme", "system"), ("language", "en"),
+                           ("auto_start", True)):
+        here = getattr(mine, field)
+        if here != default:
+            continue                      # already this person's; nothing to take over
+        theirs = getattr(cfg, field, default)
+        if theirs != default:
+            setattr(mine, field, theirs)
+            changed = True
+    if changed:
+        log.info("took the display settings over from services.json")
+        save(mine)
+    return mine
 
 
 def load() -> Settings:

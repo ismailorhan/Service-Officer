@@ -217,9 +217,13 @@ class Application(QObject):
         self.qt.setWindowIcon(icons.base_icon("green"))
 
         self.cfg = cfg_mod.load()
+        #: This person's own choices — theme, language, auto-start. On their own computer,
+        #: not in the landscape: a client that saved them to its hub found them reverted on
+        #: the next launch, because its own disk never recorded them.
+        self.mine = local_mod.taste(self.cfg)
         # Before any widget is built: every label is worded when it is constructed, so the
         # language has to be chosen before the first one exists.
-        i18n.use(self.cfg.language)
+        i18n.use(self.mine.language)
         #: Where the engine is. "" means here — which is what everybody has today and
         #: what a single-machine install keeps. There is no *mode* to pick: if the hub
         #: runs on this computer you point at this computer, and if it is elsewhere you
@@ -234,12 +238,12 @@ class Application(QObject):
         #: whether to put a dialog up for a failure, per service, remembered from
         #: the request because the engine's answer arrives with no opinion about it
         self._announce: dict = {}
-        theme.set_mode(self.cfg.theme)
+        theme.set_mode(self.mine.theme)
         self.qt.setStyleSheet(theme.sheet())
         # With "system" chosen, follow Windows when it flips light/dark.
         try:
             self.qt.styleHints().colorSchemeChanged.connect(
-                lambda _s: self.apply_theme(self.cfg.theme))
+                lambda _s: self.apply_theme(self.mine.theme))
         except Exception:
             pass
 
@@ -491,7 +495,7 @@ class Application(QObject):
             return
         # The language may have changed with it, and the tray and the flyout are about to
         # be rebuilt — so they come back in it.
-        i18n.use(self.cfg.language)
+        i18n.use(self.mine.language)
         self.tray.rebuild_menu()
         self.flyout.rebuild()
         # An open panel is *not* replaced. It edits a deep copy and Save commits it, so
@@ -978,6 +982,7 @@ class Application(QObject):
         win.test_run.connect(self.run_stack)
         win.run_trigger.connect(self.run_trigger)
         win.theme_changed.connect(self.apply_theme)
+        win.mine_changed.connect(self._mine_changed)
         win.hub_changed.connect(self._hub_changed)
         # The dashboard's controls act on real services, through the same paths
         # as the tray flyout's.
@@ -993,15 +998,38 @@ class Application(QObject):
         win.raise_()
         win.activateWindow()
 
+    def _mine_changed(self) -> None:
+        """A display choice was stored on this computer: read it and rebuild what shows it.
+
+        Not part of the config, so it does not go through Save and never travels to a hub —
+        a client that sent its theme to one had it reverted on the next launch, and wrote one
+        person's choice into a file every other client reads.
+        """
+        self.mine = local_mod.load()
+        was = i18n.current()
+        i18n.use(self.mine.language)
+        if i18n.current() != was:
+            # Every label is worded when it is built, so the two windows that live for the
+            # whole session have to be built again. An open panel keeps its own words, which
+            # the hint under the picker says.
+            self.tray.rebuild_menu()
+            self.flyout.rebuild()
+        try:
+            autostart.apply(self.mine.auto_start)
+        except Exception as exc:
+            log.warning("could not apply the auto-start setting: %s", exc)
+
     def _settings_saved(self, new_cfg):
         """Persist what the panel edited, then rebuild what shows it.
 
         The saving, the connection dropping and the store pruning are the engine's;
-        the dialogs and the rebuilds are ours, and auto-start is neither — it is a
-        Windows registry key that belongs to this installation rather than to the
-        landscape, so it stays here.
+        the dialogs and the rebuilds are ours. Auto-start, the theme and the language are
+        neither: they belong to this installation rather than to the landscape, so they are
+        stored the moment they are picked and arrive here through `_mine_changed`. They were
+        in this method, and on a client that meant sending them to the hub — where every
+        other client correctly ignored them and this one found them reverted on its next
+        launch, because its own disk had never recorded them.
         """
-        old_auto = self.cfg.auto_start
         try:
             self._save_config(new_cfg)
         except Exception as exc:
@@ -1009,12 +1037,6 @@ class Application(QObject):
                                 f"Could not save settings:\n{exc}")
             return
         self.cfg = new_cfg
-        if self.cfg.auto_start != old_auto:
-            try:
-                autostart.apply(self.cfg.auto_start)
-            except Exception as exc:
-                QMessageBox.warning(None, "Service Officer",
-                                    f"Could not apply the auto-start setting:\n{exc}")
         self.tray.rebuild_menu()
         self._prime_states()
         self.flyout.rebuild()

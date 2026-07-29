@@ -101,3 +101,65 @@ def test_the_conversion_does_not_go_backwards():
     assert len(loose) <= STILL_BARE, (
         f"{len(loose)} bare sentences, up from {STILL_BARE} — something on screen was added "
         "without t()")
+
+
+# ---------------------------------------------------------------------------
+# where a person's own choices are kept
+# ---------------------------------------------------------------------------
+def test_a_display_choice_survives_a_restart_on_a_client(tmp_path, monkeypatch):
+    """It did not. Theme, language and auto-start were read from services.json and, on a
+    client, saved to the *hub* — so the client's own disk never recorded the choice and the
+    next launch reverted it. Proved on 2026-07-29: picked Turkish and dark, both went to the
+    hub, next launch read English and System.
+
+    And services.json is the landscape — one hub's, read by every client of it — so a client
+    saving its theme there wrote one person's eyesight into a shared file.
+    """
+    from core import local as local_mod
+    from core import secrets
+
+    monkeypatch.setattr(local_mod, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local_mod, "MACHINE_PATH", str(tmp_path / "machine.json"))
+    monkeypatch.setattr(secrets, "USER_SECRETS_PATH", str(tmp_path / "user.dat"))
+
+    fresh = local_mod.load()
+    assert (fresh.language, fresh.theme) == ("en", "system")
+
+    chosen = local_mod.load()
+    chosen.language, chosen.theme, chosen.auto_start = "tr", "dark", False
+    assert local_mod.save(chosen)
+
+    again = local_mod.load()
+    assert (again.language, again.theme, again.auto_start) == ("tr", "dark", False),         "the choice was not stored on this computer"
+
+
+def test_an_older_config_hands_its_display_settings_over(tmp_path, monkeypatch):
+    """A services.json written before the move carries a theme and an auto-start. Dropping
+    them would silently reset a setting somebody had chosen."""
+    from core import local as local_mod
+
+    monkeypatch.setattr(local_mod, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local_mod, "MACHINE_PATH", str(tmp_path / "machine.json"))
+
+    older = cfg_mod.Config(theme="dark", auto_start=False, language="tr")
+    mine = local_mod.taste(older)
+
+    assert (mine.theme, mine.auto_start, mine.language) == ("dark", False, "tr")
+    # And it stuck, so the next launch does not have to ask the config again.
+    assert local_mod.load().theme == "dark"
+
+
+def test_a_choice_already_made_here_is_not_overwritten_by_the_config(tmp_path, monkeypatch):
+    """The migration is once and one-way. A value in this file can only have got there by
+    being set after the move, so it is the newer of the two."""
+    from core import local as local_mod
+
+    monkeypatch.setattr(local_mod, "PATH", str(tmp_path / "client.json"))
+    monkeypatch.setattr(local_mod, "MACHINE_PATH", str(tmp_path / "machine.json"))
+
+    mine = local_mod.load()
+    mine.theme = "light"
+    local_mod.save(mine)
+
+    after = local_mod.taste(cfg_mod.Config(theme="dark"))
+    assert after.theme == "light", "the config overwrote a choice made here"

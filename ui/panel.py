@@ -41,7 +41,10 @@ class MainPanel(QDialog):
     saved = Signal(object)               # the new Config
     test_run = Signal(object, str)       # the stack being edited, action
     run_trigger = Signal(object)         # a trigger, run on demand from its page
-    theme_changed = Signal(str)          # applied immediately, saved with the rest
+    theme_changed = Signal(str)          # applied immediately, stored immediately
+    #: A display choice was stored on this computer. The application re-reads it: the tray
+    #: menu and the flyout are worded at build time, so they have to be built again.
+    mine_changed = Signal()
     #: The hub this client reads was changed on the General page. Passed up because the
     #: answer to it is a restart — whether this process runs an engine is settled when it
     #: starts — and only the application can do that.
@@ -125,6 +128,7 @@ class MainPanel(QDialog):
         self.stacks_page.test_run.connect(self.test_run)
         self.schedule_page.run_now.connect(self.run_trigger)
         self.general_page.theme_changed.connect(self.theme_changed)
+        self.general_page.mine_changed.connect(self.mine_changed)
         self.hub_page.hub_changed.connect(self.hub_changed)
         self.general_page.theme_changed.connect(lambda _m: self.restyle())
         self.machines_page.changed.connect(self.services_page.refresh)

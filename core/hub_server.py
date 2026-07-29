@@ -319,6 +319,15 @@ class HubServer:
         """The landscape changed: tell every open stream so they come and read it."""
         self.publish(wire.config_event(actor, wire.etag(config)
                                        if config is not None else ""))
+        # And say so if somebody has changed the port this thing listens on. It is read once,
+        # when the socket is bound, so a new value in the config is a silent no-op until the
+        # service is restarted — the config and the reality then disagree, and the only clue
+        # is that clients pointed at the new number cannot connect.
+        wanted = getattr(getattr(config, "hub", None), "port", 0)
+        if wanted and wanted != self.port:
+            log.warning("the configured port is now %s but this hub is listening on %s — "
+                        "restart %s for the change to take effect", wanted, self.port,
+                        "the Service Officer Hub service")
 
     def _on_action_done(self, service="", machine="", action="", error="", status="",
                         actor="", **_rest) -> None:

@@ -214,3 +214,35 @@ def test_pair_local_keeps_a_token_that_still_works(tmp_path, monkeypatch, capsys
 
     assert len(issued) == 1, "an upgrade issued a new token and revoked the working one"
     assert "keeping it" in capsys.readouterr().out
+
+
+def test_the_hub_says_when_its_port_no_longer_matches_its_config(caplog):
+    """`hub.port` is read once, when the socket is bound. A new value is a silent no-op until
+    the service restarts, and the config and the reality then disagree with no clue but
+    clients failing to connect on the number somebody just set."""
+    import logging
+
+    from core import config as cfg_mod, engine as engine_mod, hub_server
+    from core import state as st
+
+    cfg = cfg_mod.Config()
+    engine = engine_mod.Engine(lambda: cfg, store=st.Store())
+    server = hub_server.HubServer(engine, host="127.0.0.1", port=8797)
+    server.port = 8797                     # as if bound
+
+    changed = cfg_mod.Config()
+    changed.hub.port = 9100
+    with caplog.at_level(logging.WARNING):
+        server._on_config_saved(config=changed, actor="somebody")
+
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "9100" in said and "8797" in said, said
+    assert "restart" in said.lower()
+
+    # And nothing is said when they agree, or a warning on every save would be noise.
+    caplog.clear()
+    same = cfg_mod.Config()
+    same.hub.port = 8797
+    with caplog.at_level(logging.WARNING):
+        server._on_config_saved(config=same, actor="somebody")
+    assert not [r for r in caplog.records if "listening on" in str(r.msg)]
