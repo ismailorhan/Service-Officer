@@ -261,28 +261,28 @@ class HubPage(_Page):
     def _check_update(self) -> None:
         """Ask the feed now rather than waiting for the daily check.
 
-        On the hub's own thread, not this one: the panel must not sit on a network call, and
-        the hub is where the answer is kept anyway.
+        The hub does the asking — it is the machine with the way out — and this only waits for
+        the answer. Off the drawing thread, because that wait is a request to GitHub.
+
+        The first version of this could only force a check when the hub ran in the *same
+        process*, which is never in a real install: the hub is a Windows service and the panel
+        talks to it over the API. So the button silently re-read what was already known and
+        looked broken. Seen on a real install, not in a test.
         """
         hub = self._hub()
         if hub is None:
             return
         self.update_result.setText(t("Asking…"))
         self.update_result.repaint()
-        engine = getattr(hub, "engine", None)
-        watcher = getattr(hub, "updates", None) or (
-            getattr(engine, "updates", None) if engine is not None else None)
-        if watcher is not None:                    # the hub is in this process
-            threading.Thread(target=self._checked, args=(watcher,), daemon=True,
-                             name="update-check-now").start()
-            return
-        # A client of a hub in another process: it checks daily and this panel reads what it
-        # found. Asking again from here would be asking the wrong computer.
-        self.update_result.setText("")
-        self._describe_update()
+        threading.Thread(target=self._checked, args=(hub,), daemon=True,
+                         name="update-check-now").start()
 
-    def _checked(self, watcher) -> None:
-        watcher.check_now()
+    def _checked(self, hub) -> None:
+        try:
+            hub.check_for_update()
+        except Exception as exc:
+            self.update_result.setText(t("Could not ask the hub: {why}", why=exc))
+            return
         self.update_result.setText("")
         self._describe_update()
 
@@ -502,11 +502,17 @@ class HubPage(_Page):
         self._describe_hub()
         shown = self._serves_here()
         self.serving.setVisible(shown)
+        # Said here, not left to whichever branch runs below. "Exclusive by construction" was
+        # the intent and the construction did not deliver it: `catching_up` is visible when it
+        # is built, and only the *else* branch ever hid it — so on the hub's own machine the
+        # page carried two sections both headed UPDATE, one of them about a computer that is
+        # not behind anything. Set both, every time, from the one fact that decides it.
+        self.catching_up.setVisible(not shown)
         if shown:
             self._describe_update()
         else:
-            # The two are exclusive by construction: on the hub's own machine the question is
-            # "is there a newer release", and on a workstation it is "am I behind my hub".
+            # On the hub's own machine the question is "is there a newer release"; on a
+            # workstation it is "am I behind my hub".
             self._describe_catch_up()
         if shown and _cfg is not None:
             self.listen_port.setText(str(getattr(getattr(_cfg, "hub", None), "port", "")))

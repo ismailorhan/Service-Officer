@@ -237,6 +237,12 @@ AS_SERVICE, ASK_THE_PERSON = "service", "ask"
 ERROR_ELEVATION_REQUIRED = 740
 
 
+def log_path(installer: str) -> str:
+    """Where the installer writes what it did. Beside the installer, and named after it."""
+    stem = os.path.splitext(os.path.basename(installer))[0]
+    return os.path.join(os.path.dirname(installer) or ".", f"{stem}.log")
+
+
 def install(path: str, extra=(), how: str = AS_SERVICE) -> int:
     """Run the installer and let go of it. Returns a process id, or 0 when Windows started it.
 
@@ -245,7 +251,18 @@ def install(path: str, extra=(), how: str = AS_SERVICE) -> int:
     """
     if not os.path.isfile(path):
         raise Refused(f"{path} is not there")
-    arguments = ["/SILENT", "/NORESTART", *extra]
+    # `/LOG`, always. A silent installer started by a Windows service on the session nobody can
+    # see is unreadable without it: the first real update hung, and all anybody had was a
+    # process that never exited. Inno writes every step it takes here, including the one it
+    # stopped on.
+    #
+    # Beside the installer, not in temp: this is the file somebody will be asked for.
+    # `/SUPPRESSMSGBOXES` as well as `/SILENT`. Belt and braces: the installer's own [Code] no
+    # longer asks anything when it is silent — that is the fix — but Inno raises dialogs of its
+    # own too, and any one of them drawn on session 0 by a service is an installer that waits
+    # for a click nobody can give. There is no desktop here to show anything on.
+    arguments = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                 f"/LOG={log_path(path)}", *extra]
     if how == ASK_THE_PERSON:
         import ctypes
         answer = ctypes.windll.shell32.ShellExecuteW(

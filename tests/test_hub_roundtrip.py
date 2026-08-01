@@ -832,3 +832,25 @@ def test_a_mismatched_client_can_still_ask_for_the_installer(system, monkeypatch
         client.check_version()
     # And yet:
     assert client.update_state()["running"], "an ordinary request stopped working too"
+
+
+def test_check_now_really_checks(system, monkeypatch):
+    """The button could only force a check when the hub ran in the same process — which is never
+    in a real install: the hub is a Windows service and the panel talks to it over this API. So
+    it re-read what was already known and looked broken. Seen on a real install."""
+    client, _engine, server, _states, _holder = system
+    asked = []
+
+    def found():
+        asked.append(1)
+        server.updates.available = updates.Release(
+            {"version": "9.9.9", "url": "https://example.invalid/s.exe",
+             "sha256": "a" * 64})
+        return server.updates.available
+
+    monkeypatch.setattr(server.updates, "check_now", found)
+    said = client.check_for_update()
+    assert asked == [1], "the hub was never asked to look"
+    assert said["available"] == "9.9.9"
+    # And the state endpoint agrees, so the panel redrawing after this shows the same thing.
+    assert client.update_state()["available"] == "9.9.9"

@@ -28,7 +28,7 @@
 ; before ISCC runs, so stamp_version.py leaves it in a file. Without this the installer said
 ; "2.2.7 will be upgraded to 2.2.7" — true about the release and useless about the build,
 ; which is the only thing that differed.
-#define MyRelease        "2.2.8"
+#define MyRelease        "2.2.9"
 #if FileExists("installer-version.txt")
   #define VersionFile    FileOpen("installer-version.txt")
   #define MyAppVersion   Trim(FileRead(VersionFile))
@@ -821,6 +821,28 @@ begin
   end;
 end;
 
+// Ask, unless there is nobody to ask.
+//
+// `/SILENT` hides Inno's *wizard*. It does not hide a MsgBox raised from [Code], and that cost
+// us the first automatic update: the hub launched this installer as LocalSystem, so the
+// question "the Hub here is 2.2.7.18 and this installer carries 2.2.8 — continue?" was drawn on
+// session 0, a desktop nobody can see or click, and the installer waited there for ever. Its
+// own log is what proved it: "Message box (Yes/No): … User chose Yes" at 01:10:28, from a run
+// that was silent.
+//
+// Silent takes Yes, and that is not a shortcut: something asked for this install, and there is
+// no third answer. A silent installer that stops to ask is an installer that never finishes.
+function Confirmed(Question: String): Boolean;
+begin
+  if WizardSilent() then
+  begin
+    Log('Silent: assuming Yes for: ' + Question);
+    Result := True;
+    Exit;
+  end;
+  Result := MsgBox(Question, mbConfirmation, MB_YESNO) = IDYES;
+end;
+
 // Everything that has to be true before an address is accepted. False keeps the person on
 // the page; `Complaint` is shown when it is set, and left empty when this has already said
 // something itself.
@@ -861,14 +883,14 @@ begin
     end;
     if Local then
     begin
-      if MsgBox(ExpandConstant('{cm:HubNotHere}'), mbConfirmation, MB_YESNO) <> IDYES then
+      if not Confirmed(ExpandConstant('{cm:HubNotHere}')) then
         Exit;
       HubIsLocal := True;
       CheckedHubUrl := Url;
       Result := True;
       Exit;
     end;
-    if MsgBox(FmtMessage(ExpandConstant('{cm:HubSilent}'), [Host]), mbConfirmation, MB_YESNO) <> IDYES then
+    if not Confirmed(FmtMessage(ExpandConstant('{cm:HubSilent}'), [Host])) then
       Exit;
     if Trim(TokenEdit.Text) = '' then
     begin
@@ -900,7 +922,7 @@ begin
     // One line on purpose: a continuation starting with '[' is read by Inno as a section
     // tag inside [Code], and it reports only "Invalid section tag". A test guards this.
     Question := FmtMessage(ExpandConstant('{cm:HubIsThisPC}'), [HubVersion, '{#MyAppVersion}']);
-    if MsgBox(Question, mbConfirmation, MB_YESNO) <> IDYES then
+    if not Confirmed(Question) then
       Exit;
     HubIsLocal := True;
     CheckedHubUrl := Url;
@@ -1006,7 +1028,7 @@ begin
   if (HubPage <> nil) and (CurPageID = HubPage.ID) then
   begin
     Result := AddressIsUsable(Complaint);
-    if (not Result) and (Complaint <> '') then
+    if (not Result) and (Complaint <> '') and (not WizardSilent()) then
       MsgBox(Complaint, mbError, MB_OK);
     Exit;
   end;

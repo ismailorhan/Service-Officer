@@ -323,3 +323,44 @@ def test_a_locked_port_looks_locked(script):
     assert "clWindow" in changed, (
         "nothing puts the background back when the field is editable again — stepping "
         "back and forward would leave it grey and typable")
+
+
+def test_no_question_is_asked_when_nobody_is_there_to_answer(script):
+    """`/SILENT` hides Inno's wizard. It does not hide a MsgBox raised from [Code], and that
+    cost the first real automatic update: the hub launched the installer as LocalSystem, so
+    "the Hub here is 2.2.7.18 and this installer carries 2.2.8 — continue?" was drawn on
+    session 0, a desktop nobody can see or click, and it waited there for ever.
+
+    Proved by the installer's own log, from a run that was silent:
+
+        01:10:28.716  Message box (Yes/No): … Continue?
+        01:10:28.819  User chose Yes.
+
+    So every confirmation goes through `Confirmed`, which answers itself when silent.
+    """
+    import re
+    assert "function Confirmed(" in script, "the guard is gone"
+    assert "WizardSilent()" in script
+
+    # No MB_YESNO anywhere except inside the guard. Any other one is a dialog a service-driven
+    # install can hang on, which is the whole failure.
+    body = script[script.index("function Confirmed("):]
+    guard_end = body.index("end;", body.index("MB_YESNO")) + 4
+    outside = script.replace(body[:guard_end], "")
+    left = [line.strip() for line in outside.splitlines() if "MB_YESNO" in line]
+    assert left == [], f"a confirmation that can hang a silent install: {left}"
+
+
+def test_an_error_box_is_not_shown_to_an_empty_desktop(script):
+    """The refusal already travels in the return value; the box is for a person who is there.
+
+    The guard is on the `if` above the call, not on the call itself — which the first version of
+    this test got wrong, looking for it on the same line.
+    """
+    lines = script.splitlines()
+    for number, line in enumerate(lines):
+        if "mbError" not in line:
+            continue
+        near = " ".join(lines[max(0, number - 3):number + 1])
+        assert "WizardSilent()" in near, \
+            f"line {number + 1} shows an error box with nothing guarding it: {line.strip()}"

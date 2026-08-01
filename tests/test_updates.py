@@ -256,7 +256,12 @@ def test_the_installer_is_started_detached(monkeypatch, tmp_path):
 
     monkeypatch.setattr(updates.subprocess, "Popen", fake_popen)
     assert updates.install(str(setup)) == 4242
-    assert seen["argv"][1:] == ["/SILENT", "/NORESTART"]
+    assert seen["argv"][1:4] == ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+    # And a log, always. The first real update hung and all anybody had was a process that
+    # never exited: a silent installer started by a service on the session nobody can see is
+    # unreadable without one.
+    assert seen["argv"][4].startswith("/LOG=")
+    assert seen["argv"][4].endswith(".log")
     flags = seen["kw"]["creationflags"]
     assert flags & updates.subprocess.DETACHED_PROCESS
     assert flags & updates.subprocess.CREATE_NEW_PROCESS_GROUP

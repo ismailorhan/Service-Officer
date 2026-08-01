@@ -604,6 +604,8 @@ def _make_handler(hub: HubServer):
                 self._hub_port(body, who)
             elif path == "/api/v1/update":
                 self._update_now(who)
+            elif path == "/api/v1/update/check":
+                self._update_check(who)
             elif path == "/api/v1/actions":
                 self._action(body, who)
             elif path == "/api/v1/stacks/run":
@@ -811,6 +813,23 @@ def _make_handler(hub: HubServer):
             except (BrokenPipeError, ConnectionResetError):
                 # A client that gave up mid-download. Its business, not an error here.
                 log.info("a client stopped downloading the installer")
+
+        def _update_check(self, who: str) -> None:
+            """Ask the feed now instead of waiting for the daily check.
+
+            The panel had a Check now button that could only force a check when the hub ran in
+            the *same process* — which is never, in a real install: the hub is a Windows service
+            and the panel talks to it over this API. So the button re-read what was already
+            known and looked broken. This is the missing half.
+
+            On this thread, not a new one: it is one small request and the caller is waiting to
+            be told what was found.
+            """
+            log.info("%s asked this hub to check for updates", who)
+            hub.updates.check_now()
+            found = hub.updates.available
+            self._send(200, {"available": found.version if found else "",
+                             "trouble": hub.updates.trouble})
 
         def _update_now(self, who: str) -> None:
             """Download, verify, and hand over to the installer.

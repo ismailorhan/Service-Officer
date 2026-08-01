@@ -3628,7 +3628,10 @@ def test_the_sidebar_says_when_an_update_is_waiting(qapp, sample):
         def update_state(self):
             return self.said
 
-    quiet = {"running": "2.2.8", "available": "", "trouble": "", "busy": "",
+    # This panel's own version, not a number typed in. Hard-coded, this test failed on the
+    # next release bump — which is a test that rots rather than a product that broke.
+    from core import version as version_mod
+    quiet = {"running": version_mod.short(), "available": "", "trouble": "", "busy": "",
              "installer": None}
     win = panel_mod.MainPanel(sample, hub=lambda: _Hub(quiet))
     win.show()
@@ -3670,3 +3673,57 @@ def test_an_unreachable_hub_does_not_add_a_third_voice(qapp, sample):
     qapp.processEvents()
     assert not win.update_hint.isVisible()
     win.deleteLater()
+
+
+def test_the_hub_page_shows_one_update_section_not_two(qapp, sample):
+    """On the hub's own machine the page carried two sections both headed UPDATE — one of them
+    about a computer that is not behind anything.
+
+    "Exclusive by construction" was the intent and the construction did not deliver it:
+    `catching_up` is visible when it is built, and only the branch for a *workstation* ever hid
+    it. Seen in a screenshot of a real install, which is the only place it could be seen.
+    """
+    from PySide6.QtWidgets import QLabel
+    from core import control
+
+    class _Here:
+        connected, url = True, "https://CTL052:8797"
+        host = control.host_name()
+
+        def update_state(self):
+            # This panel's own version: a number typed in here dates at the next bump.
+            from core import version as version_mod
+            return {"running": version_mod.short(), "available": "", "trouble": "",
+                    "busy": "", "installer": None}
+
+    class _Behind(_Here):
+        """Somebody else's hub, on a release this panel is not."""
+        host = "SOMEBODY-ELSE"
+
+        def update_state(self):
+            return dict(_Here.update_state(self), running="9.9.9")
+
+    class _LevelWith(_Here):
+        """Somebody else's hub, on the same release. Nothing to say at all."""
+        host = "SOMEBODY-ELSE"
+
+    # (the hub, is SERVING shown, is the catch-up shown)
+    for hub, serving, catching in ((_Here(), True, False),
+                                   (_Behind(), False, True),
+                                   (_LevelWith(), False, False)):
+        win = panel_mod.MainPanel(sample, hub=lambda h=hub: h)
+        win.show()
+        win._select(win.hub_page, win._buttons_by_name["hub"])
+        win.hub_page.load_from(sample)
+        qapp.processEvents()
+        page = win.hub_page
+        who = type(hub).__name__
+        assert page.serving.isVisible() is serving, f"SERVING on {who}"
+        assert page.catching_up.isVisible() is catching, f"the catch-up section on {who}"
+        headings = [w.text() for w in page.findChildren(QLabel)
+                    if w.isVisible() and w.text() == "UPDATE"]
+        # One when there is something to say about a version, none when there is not — never
+        # two, which is the bug this is named for.
+        assert len(headings) == (1 if serving or catching else 0), \
+            f"{len(headings)} sections headed UPDATE on {who}"
+        win.deleteLater()

@@ -34,6 +34,13 @@ from . import applog, version, wire
 from .i18n import t
 from . import state as st
 
+def updates_timeout() -> float:
+    """Long enough for the hub to reach GitHub and back, and no longer. The feed's own timeout
+    plus a little: a client waiting longer than the hub is a client waiting for nothing."""
+    from . import updates
+    return updates.TIMEOUT + 10
+
+
 log = applog.get("hubclient")
 
 #: Reconnect delays, in seconds. Capped: a client that backs off for ten minutes is a
@@ -562,6 +569,16 @@ class HubClient:
             os.remove(path)
         except OSError:
             pass
+
+    def check_for_update(self) -> dict:
+        """Make the hub read the feed now. Answers with what it found.
+
+        Slower than every other call here — it is a request to GitHub with the hub waiting on
+        it — so callers put it on a thread.
+        """
+        _status, said = self._ask("POST", "/api/v1/update/check", {},
+                                  timeout=updates_timeout())
+        return said or {}
 
     def install_update(self) -> dict:
         """Ask the hub to install the release it found. It answers before it stops.
