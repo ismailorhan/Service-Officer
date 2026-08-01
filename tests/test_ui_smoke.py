@@ -3727,3 +3727,52 @@ def test_the_hub_page_shows_one_update_section_not_two(qapp, sample):
         assert len(headings) == (1 if serving or catching else 0), \
             f"{len(headings)} sections headed UPDATE on {who}"
         win.deleteLater()
+
+
+def test_the_sidebar_keeps_asking_while_the_window_is_open(qapp, sample):
+    """It was filled in once, when the panel opened. So a panel that was already open when the
+    hub learned about a release never said so — found on a real install, with the Hub page
+    reading "2.2.9 is available" and the corner underneath it empty.
+
+    An indicator that only updates when you close and reopen the window is not much of an
+    indicator.
+    """
+    from core import version as version_mod
+
+    class _Hub:
+        connected, host, url = True, "CTL052", "https://CTL052:8797"
+
+        def __init__(self):
+            self.asked = 0
+            self.offers = ""
+
+        def update_state(self):
+            self.asked += 1
+            return {"running": version_mod.short(), "available": self.offers,
+                    "trouble": "", "busy": "", "installer": None}
+
+    hub = _Hub()
+    win = panel_mod.MainPanel(sample, hub=lambda: hub)
+    win.show()
+    win.check_for_update()
+    qapp.processEvents()
+    assert win._hint_timer is not None, "nothing will ask again"
+    assert win._hint_timer.isActive()
+    assert win._hint_timer.interval() == win.UPDATE_HINT_SECONDS * 1000
+
+    # What the timer does when it fires, without waiting a minute for it: the same call, and
+    # this time the hub has something to say.
+    hub.offers = "9.9.9"
+    win.check_for_update()
+    qapp.processEvents()
+    win._asked_about_update(hub)          # the worker's half, on this thread
+    qapp.processEvents()
+    assert win.update_hint.isVisible(), "the corner never caught up"
+    assert "9.9.9" in win.update_hint.text()
+
+    # One timer, however many times it is asked: a window open for an hour must not end up
+    # with sixty of them.
+    first = win._hint_timer
+    win.check_for_update()
+    assert win._hint_timer is first
+    win.deleteLater()

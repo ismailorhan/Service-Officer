@@ -364,3 +364,21 @@ def test_an_error_box_is_not_shown_to_an_empty_desktop(script):
         near = " ".join(lines[max(0, number - 3):number + 1])
         assert "WizardSilent()" in near, \
             f"line {number + 1} shows an error box with nothing guarding it: {line.strip()}"
+
+
+def test_the_panel_is_put_back_after_a_silent_install(script):
+    """Inno's "launch the application" entry is `postinstall skipifsilent`, so a silent install
+    never runs it — and an unattended update *is* a silent install. Measured on 2.2.9, the first
+    real one: the update worked, the service came back, and the tray icon was gone until
+    somebody signed in again.
+
+    Through the hub exe, because when the hub drives an update the installer is LocalSystem and
+    a window started from session 0 is one nobody can see.
+    """
+    assert 'Parameters: "panel"' in script, "nothing puts the tray application back"
+    # Only when we closed one: putting back exactly what was taken means a silent install on a
+    # machine where nobody had it open does not make a tray icon appear on somebody's desktop.
+    assert "Check: WeClosedThePanel" in script
+    assert "function WeClosedThePanel" in script
+    assert "ClosedThePanel := (ResultCode = 0)" in script, \
+        "the answer is taskkill's exit code, not a guess"

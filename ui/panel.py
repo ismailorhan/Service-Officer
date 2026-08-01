@@ -20,7 +20,7 @@ from __future__ import annotations
 import copy
 import threading
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QMessageBox, QPushButton,
                                QStackedWidget, QVBoxLayout, QWidget)
 
@@ -204,6 +204,8 @@ class MainPanel(QDialog):
         # in a tooltip nobody hovers.
         self.update_hint.clicked.connect(lambda: self.go_to("hub"))
         self.update_hint.setVisible(False)
+        #: Started on the first check, so a window nobody asked about updates on has no timer.
+        self._hint_timer = None
         nl.addWidget(self.update_hint)
         self.update_found.connect(self._show_update_hint)
         # No hub, nobody to pair: the page and its button are not there rather than
@@ -247,6 +249,17 @@ class MainPanel(QDialog):
         if page is self.clients_page or page is self.hub_page:
             page.refresh()
 
+    #: How often the sidebar's foot is refreshed while this window is open.
+    #:
+    #: It was filled in once, when the panel opened. So a panel that was already open when the
+    #: hub learned about a release never said so — which is how it was found: the Hub page read
+    #: "2.2.9 is available" and the corner underneath it was empty. An indicator that only
+    #: updates when you close and reopen the window is not much of an indicator.
+    #:
+    #: A minute, and it costs a read of the hub's memory — no network, no disk. The hub itself
+    #: only asks GitHub once a day; this is just how quickly the answer reaches the corner.
+    UPDATE_HINT_SECONDS = 60
+
     def check_for_update(self) -> None:
         """Ask the hub what it knows and put it at the foot of the sidebar, or take it away.
 
@@ -259,6 +272,10 @@ class MainPanel(QDialog):
             return
         threading.Thread(target=self._asked_about_update, args=(hub,), daemon=True,
                          name="panel-update-hint").start()
+        if self._hint_timer is None:
+            self._hint_timer = QTimer(self)
+            self._hint_timer.timeout.connect(self.check_for_update)
+            self._hint_timer.start(self.UPDATE_HINT_SECONDS * 1000)
 
     def _asked_about_update(self, hub) -> None:
         try:

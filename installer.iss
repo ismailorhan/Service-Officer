@@ -28,7 +28,7 @@
 ; before ISCC runs, so stamp_version.py leaves it in a file. Without this the installer said
 ; "2.2.7 will be upgraded to 2.2.7" — true about the release and useless about the build,
 ; which is the only thing that differed.
-#define MyRelease        "2.2.9"
+#define MyRelease        "2.2.10"
 #if FileExists("installer-version.txt")
   #define VersionFile    FileOpen("installer-version.txt")
   #define MyAppVersion   Trim(FileRead(VersionFile))
@@ -246,6 +246,22 @@ Filename: "{app}\{#MyAppExeName}"; \
 
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; \
   Components: client; Flags: shellexec nowait postinstall skipifsilent
+
+; And the same thing when nobody is watching. The entry above is `postinstall skipifsilent`, so
+; a silent install never runs it — and an unattended update *is* a silent install. Measured on
+; 2.2.9, the first real one: the update worked, the service came back, and the tray icon was
+; gone until somebody signed in again.
+;
+; Through the hub exe rather than by starting the app here: when the hub drives an update this
+; installer is LocalSystem, and a window started from session 0 is one nobody can see. See
+; core/session.py.
+;
+; Only when we closed one. `InitializeSetup` stops the tray application so its files can be
+; replaced; putting back exactly what was taken is the rule, and it means a silent install on a
+; machine where nobody had it open does not make a tray icon appear on somebody's desktop.
+Filename: "{app}\{#MyHubService}\{#MyHubExeName}"; Parameters: "panel"; \
+  Components: client and hub; Check: WeClosedThePanel; \
+  Flags: runhidden waituntilterminated
 
 [UninstallRun]
 Filename: "{app}\{#MyHubService}\{#MyHubExeName}"; Parameters: "stop"; Flags: runhidden waituntilterminated; RunOnceId: "stophub"
@@ -985,6 +1001,17 @@ begin
     Result := Result + NewLine + MemoTasksInfo;
 end;
 
+// Whether this installation stopped a running tray application. taskkill answers 0 when it
+// terminated something and 128 when there was nothing to terminate, so this is a fact rather
+// than a guess — and it is what decides whether the panel is put back at the end.
+var
+  ClosedThePanel: Boolean;
+
+function WeClosedThePanel(): Boolean;
+begin
+  Result := ClosedThePanel;
+end;
+
 function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
@@ -992,6 +1019,8 @@ begin
   // Kill a running instance so we can overwrite the exe.
   Exec('taskkill.exe', '/F /IM ServiceOfficer.exe', '', SW_HIDE,
        ewWaitUntilTerminated, ResultCode);
+  ClosedThePanel := (ResultCode = 0);
+  Log('Closed a running panel? taskkill said ' + IntToStr(ResultCode));
   Result := True;
 end;
 

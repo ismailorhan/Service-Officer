@@ -310,6 +310,34 @@ def _dispatch() -> int:
     return 0
 
 
+def _open_the_panel() -> int:
+    """Put the tray application back on whoever's desktop it was taken from.
+
+    Called by the installer after a silent update. It cannot do this itself: Inno's
+    "launch the application" entry is `postinstall skipifsilent`, so a silent install never
+    runs it — and an unattended update *is* a silent install. Measured on 2.2.9, the first
+    real one: the update worked, the service came back, and the tray icon was simply gone
+    until somebody signed in again.
+
+    Here rather than in the .iss because the installer runs as LocalSystem when the hub drives
+    it, and starting a window from session 0 produces one nobody can see. See core/session.py.
+    """
+    from core import session, version
+    if not version.is_frozen():
+        log.info("running from source: there is no packaged tray application to start")
+        return 0
+    # This exe lives in <install>\ServiceOfficerHub\; the tray application is its sibling one
+    # level up. Derived from where this process is rather than from the registry: the installer
+    # has just written both, and it is the same directory either way.
+    here = os.path.dirname(os.path.abspath(sys.executable))
+    exe = os.path.join(os.path.dirname(here), "ServiceOfficer.exe")
+    session.start_for_the_person(exe)
+    # Always 0. Nobody signed in, or a hub-only install with no client beside it, are answers
+    # rather than failures — and a window that did not open must not fail an installation that
+    # otherwise succeeded.
+    return 0
+
+
 def main() -> int:
     if "--fingerprint" in sys.argv:
         _p, fingerprint = hub_auth.ensure_certificate(cfg_mod.in_app_dir("hub.pem"))
@@ -323,6 +351,9 @@ def main() -> int:
     handled = _port_command(sys.argv)
     if handled is not None:
         return handled
+
+    if "panel" in sys.argv:
+        return _open_the_panel()
 
     if "--console" in sys.argv:
         return _console()
