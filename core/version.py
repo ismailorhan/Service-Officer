@@ -15,7 +15,7 @@ import os
 import sys
 
 #: bumped by hand for a release, and matched by installer.iss
-VERSION = "2.2.7"
+VERSION = "2.2.8"
 
 #: Which build this is, counted by build.bat and restarted when VERSION changes.
 #: Zero means this *is* the release; anything else is an internal build and shows
@@ -27,6 +27,32 @@ BUILD = 0
 COMMIT = "dev"
 #: filled in by build.bat, ISO date of the build
 BUILT = ""
+
+
+#: How many parts of a version have to agree for a client and a hub to work together.
+#:
+#: Three, because the fourth is a build counter: 2.2.7.16 and 2.2.7.17 are the same release
+#: built twice, and refusing to connect between them would make every local build a migration.
+#: The first three are what changes when the wire changes.
+RELEASE_PARTS = 3
+
+
+def compatible(theirs: str, mine: str = None) -> bool:
+    """Whether a client on `mine` may talk to a hub on `theirs`.
+
+    Here rather than in either of them, because the panel's Test button and the client's own
+    handshake were free to disagree about it — and one of them saying "these match" while the
+    other refuses is worse than either answer alone.
+
+    An unreadable version is treated as compatible. This runs on the path that decides whether
+    a client connects at all, and refusing everything because a field arrived in a shape nobody
+    anticipated would take the whole product down over a string.
+    """
+    ours = (mine or short()).split(".")
+    theirs = str(theirs or "").split(".")
+    if len(theirs) < RELEASE_PARTS or len(ours) < RELEASE_PARTS:
+        return True
+    return theirs[:RELEASE_PARTS] == ours[:RELEASE_PARTS]
 
 
 def is_frozen() -> bool:

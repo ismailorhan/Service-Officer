@@ -10,8 +10,8 @@ from __future__ import annotations
 import threading
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QDialog, QDoubleSpinBox, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget,
+from PySide6.QtWidgets import (QDialog, QDoubleSpinBox, QFrame, QGridLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMessageBox, QScrollArea,
                                QVBoxLayout, QWidget)
 
@@ -60,6 +60,116 @@ def _sentence(*parts, note: str = "") -> QWidget:
         lay.addWidget(InfoDot(note))
     lay.addStretch(1)
     return w
+
+
+#: How far a qualifying row sits in from the setting it qualifies. Enough to read as
+#: subordinate, not so far that its label leaves the label column.
+SUB_INDENT = 20
+#: The label column's width, so every page using this puts its fields at the same place. The
+#: number is the Machines detail's, which is the page this was asked to look like — matching it
+#: by sharing the constant rather than by copying 108 into a second file.
+LABEL_WIDTH = 108
+
+
+def _fields(*rows, indent: int = 0, fill: bool = False) -> QWidget:
+    """Settings in three columns: what it is, what it is set to, and why.
+
+    `_sentence` puts the field *inside* the sentence, which reads beautifully one row at a
+    time and falls apart at five. Measured on the Health tab, in the tab's own coordinates:
+
+        fields at x = 37, 61, 92, 128, 186      info dots at x = 111, 225, 255, 265
+
+    Every value and every dot at its own indent, because each one sits wherever the words in
+    front of it happen to end. So "what is this service set to" could not be answered by
+    looking — it had to be read, five sentences of it, and the dots looked scattered rather
+    than offered. A grid gives one column of values to scan down and one column of dots.
+
+    Each row is `(label, value, note)`, and a fourth element marks it as a qualifier on the
+    row above — indented, and still in the same three columns, because a sub-row in a grid of
+    its own puts its dot somewhere new and that is the problem again in miniature.
+
+    `value` is a widget, or a tuple of widgets and trailing words: "3" needs "failures in a
+    row" after it to mean anything, and putting that inside the value cell keeps the dots in
+    line however long it is.
+
+    `w.rows` is each row's widgets, for a row that comes and goes with what is chosen above.
+
+    `fill` decides whether the value column takes the spare width, and it is about the fields
+    rather than about taste. A host name or a token is a wide text box that should reach across
+    the page, and its dot belongs at the far end of it — that is the Machines detail, and this
+    matches it. A duration or a count is a small box, and stretching *its* column would leave
+    every dot at the window's edge explaining a value 200px away, which is the raggedness this
+    grid exists to fix. So: wide text fills, small numbers do not.
+    """
+    w = QWidget()
+    grid = QGridLayout(w)
+    grid.setContentsMargins(indent, 0, 0, 0)
+    grid.setHorizontalSpacing(theme.SP_12)
+    grid.setVerticalSpacing(theme.SP_10)
+    grid.setColumnMinimumWidth(0, max(0, LABEL_WIDTH - indent))
+    w.rows = []
+    for line, row in enumerate(rows):
+        label, value, note, sub = (tuple(row) + ("", False))[:4]
+        # "hint", like the Machines detail's: a label naming a field is not competing with the
+        # value beside it for attention.
+        name = _label(label, "hint")
+        name.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        if sub:
+            name.setContentsMargins(SUB_INDENT, 0, 0, 0)
+        grid.addWidget(name, line, 0)
+        if fill and not isinstance(value, tuple):
+            # Straight into the cell, which is what the Machines detail does and why its
+            # Description box spans the page. Wrapped in a layout instead, the field sits at
+            # its size hint — measured: 220px in a column reaching to 884.
+            #
+            # Left-aligned only when it cannot grow. A layout hands a non-expanding widget the
+            # middle of the space it was given, so setFixedWidth(64) on a port box put it at
+            # x=420 in a column starting at 148 — floating in the gap, which looks like a
+            # mistake because it is one. `setFixedWidth` sets both bounds, so this asks the
+            # widget rather than guessing from its class.
+            fixed = (isinstance(value, QWidget)
+                     and value.minimumWidth() == value.maximumWidth())
+            if fixed:
+                grid.addWidget(value, line, 1, Qt.AlignLeft | Qt.AlignVCenter)
+            else:
+                grid.addWidget(value, line, 1)
+            cell = value
+        else:
+            cell = QWidget()
+            inner = QHBoxLayout(cell)
+            inner.setContentsMargins(0, 0, 0, 0)
+            inner.setSpacing(6)
+            for part in (value if isinstance(value, tuple) else (value,)):
+                inner.addWidget(_label(part) if isinstance(part, str) else part)
+            inner.addStretch(1)
+            grid.addWidget(cell, line, 1)
+        here = [name, cell]
+        if note:
+            dot = InfoDot(note)
+            grid.addWidget(dot, line, 2)
+            here.append(dot)
+        w.rows.append(here)
+    if fill:
+        # Column 2 holds a 16px dot, not a paragraph: stretch nothing there, so what the value
+        # column takes is width the fields keep.
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 0)
+    else:
+        # The value column is only as wide as it needs to be, so the dots sit beside the fields
+        # rather than out at the window's edge where they belong to nothing.
+        grid.setColumnStretch(3, 1)
+    return w
+
+
+def _show_row(row, shown: bool) -> None:
+    """Show or hide one row of a `_fields` grid.
+
+    A grid row has no widget of its own, so each cell is told separately — and it has to be
+    every cell: hiding the field and leaving its label behind is how a setting becomes a
+    sentence with a hole in it.
+    """
+    for cell in row:
+        cell.setVisible(shown)
 
 
 def _hline():

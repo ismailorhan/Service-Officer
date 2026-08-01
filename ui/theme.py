@@ -307,6 +307,22 @@ def sheet() -> str:
     QPushButton[kind="quiet"]:hover {{
         color: {FG}; background: {BG_HOVER}; border-color: {LINE2};
     }}
+    /* A one-glyph square, for reordering. It cannot use the ordinary padding: `padding:
+       6px 12px` is 24px of horizontal room, and these are 22px wide — so the label had
+       negative space and Qt dropped the glyph altogether. Measured: sizeHint 37x31 inside a
+       22x20 button, rendering as an empty box. Invisible until quiet buttons gained a border,
+       which is the only reason anybody saw it. */
+    QPushButton[kind="step"] {{
+        padding: 0px; border: 1px solid {LINE}; border-radius: 4px;
+        background: {BG_RAISE}; color: {FG2};
+        min-width: 22px; max-width: 22px; min-height: 20px; max-height: 20px;
+    }}
+    QPushButton[kind="step"]:hover {{
+        color: {FG}; border-color: {LINE2}; background: {BG_HOVER};
+    }}
+    QPushButton[kind="step"]:disabled {{
+        color: {FG4}; border-color: {LINE}; background: transparent;
+    }}
     QPushButton[kind="danger"]:hover {{ color: {STOP_FG}; border-color: {STOP}; }}
     QPushButton[kind="action"] {{
         border: 1px solid {LINE2}; border-radius: 5px; padding: 2px;
@@ -351,6 +367,16 @@ def sheet() -> str:
     QPushButton[kind="nav"]:hover   {{ background: {BG_HOVER}; color: {FG}; }}
     QPushButton[kind="nav"]:checked {{
         background: {BG_RAISE}; color: {FG}; border-left-color: {RUN};
+    }}
+    /* The update nudge at the foot of the sidebar. Coloured rather than merely present: it
+       is the one row down there and it has to be findable without being a nag — no bold, no
+       badge, no animation. The green edge is the same one a selected page wears, because
+       this is a thing to go and do, not a warning. */
+    QPushButton[kind="nav"][nudge="true"] {{
+        color: {RUN_FG}; border-left-color: {RUN};
+    }}
+    QPushButton[kind="nav"][nudge="true"]:hover {{
+        background: {RUN_DIM}; color: {RUN_FG};
     }}
 
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{

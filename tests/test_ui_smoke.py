@@ -1141,6 +1141,296 @@ def test_categories_can_be_reordered_from_the_services_page(qapp, sample):
     win.deleteLater()
 
 
+def test_the_reorder_buttons_actually_draw_their_arrows(qapp, sample):
+    """Two empty boxes, for as long as the buttons existed.
+
+    `QPushButton { padding: 6px 12px }` is 24px of horizontal room and these are 22px wide,
+    so the label had negative space and Qt dropped the glyph rather than clipping it. Nothing
+    caught it: the widget was there, enabled, connected, and `text()` returned the arrow — the
+    only witness is the pixels. So this measures ink, and it measures both states, because a
+    button that cannot be told from its own disabled twin is the same complaint again.
+    """
+    sample.categories = [cfg_mod.Category(name="SAP"), cfg_mod.Category(name="SQL")]
+    sample.service("AppEngine").category = "SAP"
+    sample.service("WMSServer").category = "SQL"
+    from PySide6.QtWidgets import QPushButton
+    win = panel_mod.MainPanel(sample)
+    win.resize(1010, 700)
+    win.show()
+    win.services_page.refresh()
+    qapp.processEvents()
+
+    steps = [b for b in win.services_page.findChildren(QPushButton)
+             if b.property("kind") == "step"]
+    assert len(steps) >= 4, "an up and a down on each category heading"
+
+    def ink(button):
+        """The brightest pixel in it — the glyph, if there is one."""
+        img = button.grab().toImage()
+        return max(img.pixelColor(x, y).lightness()
+                   for y in range(img.height()) for x in range(img.width()))
+
+    for b in steps:
+        # The label has to fit: a hint wider than the button is exactly how it vanished.
+        assert b.sizeHint().width() <= b.width(), f"{b.sizeHint()} in {b.size()}"
+        assert b.sizeHint().height() <= b.height(), f"{b.sizeHint()} in {b.size()}"
+
+    lit = [ink(b) for b in steps if b.isEnabled()]
+    dim = [ink(b) for b in steps if not b.isEnabled()]
+    assert lit and dim, "the first category cannot move up, the last cannot move down"
+    assert min(lit) > 140, f"the arrow is not drawn: brightest ink {min(lit)}"
+    assert min(lit) - max(dim) > 15, \
+        f"enabled and disabled look alike: {min(lit)} against {max(dim)}"
+    win.deleteLater()
+
+
+def test_the_services_button_names_the_thing_it_opens(qapp, sample):
+    """It opened services.msc and said "Services", on a page headed Services, in an app about
+    services. The word was doing no work; the file name says where you land."""
+    from PySide6.QtWidgets import QPushButton
+    win = panel_mod.MainPanel(sample)
+    win.show()
+    # By the glyph, not by the word: the nav entry beside it is *also* "Services" and is
+    # entitled to be — it opens this app's own page. Only the one that launches the MMC is
+    # in question, and the glyph is what identifies it.
+    opens_mmc = [b.text() for b in win.findChildren(QPushButton)
+                 if theme.GLYPH_SERVICES in b.text()]
+    assert opens_mmc, "the dashboard's button is gone"
+    assert all("services.msc" in text for text in opens_mmc), opens_mmc
+    win.deleteLater()
+
+
+def test_every_settings_grid_puts_its_fields_in_the_same_place(qapp, sample):
+    """Not one page at a time.
+
+    Hub was aligned because it was pointed at, and the reply was "her yeri ayrı ayrı mı
+    söyleyeceğim?" — fair. So this sweeps: any page built out of `_fields` has to place its
+    values at the same offset, and no page may go back to putting a field inside a sentence.
+
+    The offset is measured in each grid's own coordinates, so a page's outer padding is not
+    part of the claim. What has to match is where the label column ends.
+    """
+    from PySide6.QtWidgets import QWidget
+    from ui.pages.base import LABEL_WIDTH
+    from ui.widgets import InfoDot
+
+    wanted = LABEL_WIDTH + theme.SP_12
+    sample.service("AppEngine").recovery.enabled = True
+    win = panel_mod.MainPanel(sample)
+    win.resize(1010, 720)
+    win.show()
+
+    def grids(root):
+        """Every `_fields` widget under here — they are the ones carrying `rows`."""
+        return [w for w in root.findChildren(QWidget) if hasattr(w, "rows") and w.rows]
+
+    def open_service(tab):
+        def go():
+            _select(win.services_page, "AppEngine")
+            win.services_page._open_selected()
+            win.services_page.detail._select_tab(tab)
+        return go
+
+    # Each page has to be the open one before it is measured: an unselected page's widgets have
+    # no geometry yet, so every offset reads as 0 and the test fails on nothing. The first run
+    # of this did exactly that.
+    # The Machines detail is not in here, and measured rather than assumed: it builds its own
+    # grid with its own row bookkeeping — per-target notes that get rewritten when Windows
+    # becomes Linux — so it carries no `rows` and this sweep finds nothing on it. Its offset is
+    # checked directly by test_the_hub_page_is_laid_out_like_the_machines_detail. Folding it
+    # onto the shared helper would leave one implementation instead of two; until then, this
+    # comment is the reason it is absent rather than forgotten.
+    plans = [("general", lambda: win.general_page, "general", None),
+             ("hub", lambda: win.hub_page, "hub", None)]
+    for tab in ("General", "Recovery", "Health"):
+        plans.append((f"service detail ▸ {tab}", lambda: win.services_page,
+                      "services", open_service(tab)))
+
+    checked = 0
+    for name, get_page, nav, after in plans:
+        page = get_page()
+        win._select(page, win._buttons_by_name[nav])
+        if after is not None:
+            after()
+        qapp.processEvents()
+        for grid in grids(page):
+            # Hidden things have no geometry, so measuring them measures zero: Hub's SERVING
+            # block is hidden on a workstation, and the Health tab's restart limit is hidden
+            # unless restarting is the action. Both would read as a failure at x=0.
+            #
+            # isVisible, not isHidden — the opposite of the rule everywhere else in this file,
+            # and for a reason. isHidden asks whether *this* widget was hidden, so a grid
+            # inside Hub's hidden SERVING block answers "no" and gets measured anyway. Here the
+            # page has just been selected, so isVisible is meaningful and means what is wanted:
+            # is this actually on screen. Both wordings were wrong once in writing this test,
+            # in opposite directions.
+            if not grid.isVisible():
+                continue
+            offsets = {row[1].mapTo(grid, row[1].rect().topLeft()).x()
+                       for row in grid.rows if row[1].isVisible()}
+            assert offsets == {wanted}, \
+                f"{name}: values at {sorted(offsets)}, expected {wanted}"
+            # And the dots in one column, per grid — a dot at its own indent is the same
+            # complaint in miniature.
+            dots = {d.mapTo(grid, d.rect().topLeft()).x()
+                    for d in grid.findChildren(InfoDot)}
+            assert len(dots) <= 1, f"{name}: dots at {sorted(dots)}"
+            checked += 1
+    assert checked >= 5, f"only found {checked} grids — did a page stop using _fields?"
+    win.deleteLater()
+
+
+def test_the_hub_page_is_laid_out_like_the_machines_detail(qapp, sample):
+    """Asked for by name: "bu alanları hizala. Machines detayındaki gibi".
+
+    Host and Port shared one line as a sentence, which put Port's label in the middle of it, so
+    nothing on the page lined up with anything else on it. The two pages now share one helper
+    and one label width — the test compares them rather than trusting a copied constant.
+    """
+    from PySide6.QtWidgets import QLineEdit
+    from ui.pages.base import LABEL_WIDTH
+    from ui.widgets import InfoDot
+    sample.hub.port = 8797
+
+    class Here:
+        connected, host, url = True, "CTL052", "https://CTL052:8797"
+
+    win = panel_mod.MainPanel(sample, hub=lambda: Here())
+    win.resize(1010, 720)
+    win.show()
+    win._select(win.hub_page, win._buttons_by_name["hub"])
+    page = win.hub_page
+    page.serving.setVisible(True)
+    qapp.processEvents()
+
+    fields = (page.hub_url, page.hub_port, page.hub_token, page.listen_port)
+    xs = {w.mapTo(page, w.rect().topLeft()).x() for w in fields}
+    assert len(xs) == 1, f"the fields are at {sorted(xs)}, not in a column"
+    dots = {d.mapTo(page, d.rect().topLeft()).x() for d in page.findChildren(InfoDot)}
+    assert len(dots) == 1, f"the dots are at {sorted(dots)}, not in a column"
+    assert len(page.findChildren(InfoDot)) == len(fields), "every field explains itself"
+
+    # A text field reaches the dot column, as the Machines detail's Description does; a port
+    # box keeps its own width and stays left rather than floating in the middle of the gap.
+    assert page.hub_url.width() > 300, page.hub_url.width()
+    assert page.hub_port.width() < 100, page.hub_port.width()
+    assert page.hub_port.mapTo(page, page.hub_port.rect().topLeft()).x() == xs.pop()
+
+    # And against the page it was asked to look like, measured rather than assumed equal.
+    # In each page's *own* container, so neither page's outer padding is part of the claim —
+    # what has to match is where the label column ends.
+    wanted = LABEL_WIDTH + theme.SP_12
+    assert {w.x() for w in fields} == {wanted}, \
+        f"hub fields at {sorted({w.x() for w in fields})}, expected {wanted}"
+
+    win._select(win.machines_page, win._buttons_by_name["machines"])
+    machines = win.machines_page
+    machines.list.setCurrentRow(0)
+    machines._open()
+    qapp.processEvents()
+    # isHidden, not isVisible: a page that is not the open one reads as invisible whole, which
+    # is how the first version of this measured an empty set and reported the two pages
+    # disagreed. Same trap as the restart-limit test, one page along.
+    theirs = {w.x() for w in machines.detail.findChildren(QLineEdit)
+              if not w.isHidden()}
+    assert wanted in theirs, \
+        f"the machines detail no longer puts its fields at {wanted}: {sorted(theirs)}"
+    win.deleteLater()
+
+
+def test_the_health_settings_line_up_in_columns(qapp, sample):
+    """The complaint was that this tab reads as clutter, and the cause was measurable.
+
+    As five sentences with the field inside each one, every value and every dot sat wherever
+    the words in front of it happened to end — fields at x = 37, 61, 92, 128, 186 and dots at
+    111, 225, 255, 265. So "what is this service set to" could not be answered by looking.
+
+    Measured, not eyeballed, because "looks tidier" is exactly the claim that rots.
+    """
+    from ui.widgets import InfoDot
+    win = panel_mod.MainPanel(sample)
+    win.resize(1010, 700)
+    win.show()
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    d = page.detail
+    d.svc.health.action = "restart"          # so every row is present, including the last
+    d.load(d.svc)
+    d._select_tab("Health")
+    qapp.processEvents()
+
+    grid = d.health_grid
+    fields = (d.h_interval, d.h_grace, d.h_failures, d.h_action, d.h_cooldown)
+    xs = {w.mapTo(grid, w.rect().topLeft()).x() for w in fields}
+    assert len(xs) == 1, f"the values are at {sorted(xs)}, not in a column"
+
+    dots = {dot.mapTo(grid, dot.rect().topLeft()).x()
+            for dot in grid.findChildren(InfoDot)}
+    assert len(dots) == 1, f"the dots are at {sorted(dots)}, not in a column"
+    assert len(grid.findChildren(InfoDot)) == len(fields), \
+        "every setting has its own explanation — the restart limit had none"
+
+    # And the dot belongs to the value beside it, so it cannot drift off to the window's edge.
+    gap = dots.pop() - xs.pop()
+    assert gap < 220, f"{gap}px between a value and its explanation"
+    win.deleteLater()
+
+
+def test_the_restart_limit_is_hidden_until_restarting_is_the_action(qapp, sample):
+    """It was applied in `_save_health` alone, which fires on a *change* — so a service opened
+    with "Just tell me" already chosen showed a five-minute limit on a restart that never
+    happens, and the only way to be rid of it was to pick Restart and change back.
+
+    On screen it read as a limit on how often you would be *told*, which nothing does.
+    """
+    win = panel_mod.MainPanel(sample)
+    win.show()
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    d = page.detail
+    limit = d.health_grid.rows[-1]
+    # isHidden, not isVisible: the Health tab is not the open one, so everything on it reads
+    # as invisible and the interesting case would pass for the wrong reason — which it did on
+    # the first run of this test. isHidden asks whether *this* widget was hidden.
+
+    d.svc.health.action = "notify"
+    d.load(d.svc)                            # the way in, not an edit
+    assert all(w.isHidden() for w in limit), "shown with nothing to limit"
+
+    d.svc.health.action = "restart"
+    d.load(d.svc)
+    assert not any(w.isHidden() for w in limit), "hidden when it is the rule in force"
+
+    # And it follows the combo live, label and value and dot together — a hidden field under a
+    # visible label is a sentence with a hole in it.
+    d.h_action.setCurrentIndex(d.h_action.findData("notify"))
+    qapp.processEvents()
+    assert all(w.isHidden() for w in limit)
+    win.deleteLater()
+
+
+def test_one_check_is_not_all_of_which(qapp, sample):
+    """"1 CHECK, ALL OF WHICH MUST PASS" — about one thing. Every install starts with one."""
+    win = panel_mod.MainPanel(sample)
+    win.show()
+    page = win.services_page
+    _select(page, "AppEngine")
+    page._open_selected()
+    d = page.detail
+
+    d.svc.health.checks = [cfg_mod.HealthCheck(kind="tcp", port=54001)]
+    d._rebuild_checks()
+    assert d.health_note.text() == "1 CHECK", d.health_note.text()
+
+    d.svc.health.checks.append(cfg_mod.HealthCheck(kind="tcp", port=54002))
+    d._rebuild_checks()
+    assert "ALL MUST PASS" in d.health_note.text(), d.health_note.text()
+    assert "ALL OF WHICH" not in d.health_note.text()
+    win.deleteLater()
+
+
 def test_health_checks_can_be_built_and_removed_in_the_editor(qapp, sample):
     win = panel_mod.MainPanel(sample)
     page = win.services_page
@@ -2998,12 +3288,162 @@ def test_a_flyout_that_cannot_reach_its_hub_says_so(qapp):
         assert "ctl052" in down.summary.text(), down.summary.text()
         assert "0 of 2" not in down.summary.text(),             "counted services nothing has answered about"
 
+        # Red, not grey. Grey is this chip's "nothing to say" — what it wears with no services
+        # configured at all — and next to a list of green rows it read as calm.
+        assert down.badge.property("cat") == "stopped", down.badge.property("cat")
+        # The gear in its corner as well — it was green beside the red chip, which is the same
+        # contradiction the tray icon was making in the same moment.
+        assert _ink(down.logo.pixmap())[0] > 40, "the flyout's gear stayed green"
+        assert _ink(up.logo.pixmap())[0] < 25, "and comes back when the hub does"
+
         # Connected, and watching alone, both say what they know.
         assert "running" in up.badge.text().lower(), up.badge.text()
         assert "running" in alone.badge.text().lower(), alone.badge.text()
     finally:
         for fly in (down, up, alone):
             fly.close()
+
+
+class _Down:
+    """A hub that is not answering. The two attributes the UI asks about, and nothing else:
+    every reader here uses getattr with a default, so a stand-in this small is honest."""
+    connected = False
+    url = "https://ctl052:8797"
+
+
+class _Up(_Down):
+    connected = True
+
+
+def _ink(pixmap):
+    """How much of an icon is red and how much is pale, as percentages of its opaque pixels.
+
+    A tray icon is judged by eye, so it has to be judged by pixels here — `isNull()` was the
+    whole of the old assertion, and an icon painted the wrong colour is not null. Shares
+    rather than a most-common colour: the rim's white is one exact value while the body's red
+    is spread over dozens by antialiasing, so counting single colours crowns the white and
+    reports a red gear as white.
+
+    The measured spread, which is why this separates cleanly (0/7/17/50):
+
+        alarm 50% red   ·   red 17%   ·   yellow 7%   ·   green 0%   ·   spinner 0%
+
+    The shipped red icon is 17% because its red is a corner *badge*. The alarm is red all
+    through, which is the whole distinction being made.
+    """
+    img = pixmap.toImage()
+    opaque = red = pale = 0
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.alpha() <= 200:
+                continue
+            opaque += 1
+            r, g, b = c.red(), c.green(), c.blue()
+            if r - max(g, b) > 60:
+                red += 1
+            elif min(r, g, b) > 230:
+                pale += 1
+    assert opaque, "an icon with nothing in it"
+    return red * 100 // opaque, pale * 100 // opaque
+
+
+def test_the_emergency_icon_is_a_red_gear_with_a_white_rim_and_no_badge(qapp):
+    """Whole-icon, not a corner badge.
+
+    The three shipped icons are one gear with a small coloured badge, and a badge is a
+    statement about services — this many running, that many not. An unreachable hub is not
+    that statement: nothing has answered, so every count is unknown rather than bad.
+    """
+    pm = icons.emergency_pixmap(64)
+    red, pale = _ink(pm)
+    assert red > 40, f"the body is not red: {red}% of it is"
+    assert pale > 15, f"no white rim: {pale}% pale"
+    # A corner badge would not manage this. The shipped all-stopped icon, which *is* a red
+    # badge on a pale gear, comes to 17%.
+    assert red > _ink(icons.base_pixmap("red", 64))[0] * 2
+
+    # And solid where the eye lands: between the hub hole and the tooth roots, not a wash.
+    body = pm.toImage().pixelColor(32, 44)
+    assert body.name() == "#d62f27", body.name()
+
+    # It has to be told apart from all three of the normal icons, at the size the taskbar
+    # actually asks for — a difference only visible at 64px is not a warning.
+    small = pm.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    for colour in ("green", "yellow", "red"):
+        other = icons.base_pixmap(colour, 64).scaled(
+            16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        assert small.toImage() != other.toImage(), f"indistinguishable from {colour}"
+
+
+def test_the_tray_goes_red_when_the_hub_cannot_be_reached(qapp, sample):
+    """It stayed green. Every count in the store was the last thing the hub said before it
+    went away, so the arithmetic still came out all-running — an icon actively reassuring
+    somebody that nine services are fine while nothing has been watching them for minutes.
+    """
+    from ui.tray import Tray
+    store = st.Store()
+    for svc in sample.services:
+        store.update(svc.name, st.RUNNING, machine=svc.machine)
+    state = {"hub": _Down()}
+    tray = Tray(lambda: sample, store, hub=lambda: state["hub"])
+
+    # The trap, stated: the counts say green, and that is exactly why they must not decide.
+    assert icons.colour_for(*store.counts()) == "green"
+
+    tray.apply_state()
+    assert _ink(tray.icon.icon().pixmap(64, 64))[0] > 40, "still not red"
+
+    state["hub"] = _Up()
+    tray.apply_state()
+    assert _ink(tray.icon.icon().pixmap(64, 64))[0] < 25,         "stuck on the alarm after the hub came back"
+
+    # And an app watching its own machine has no hub to lose.
+    alone = Tray(lambda: sample, store)
+    alone.apply_state()
+    assert alone._in_the_dark() is False
+    assert _ink(alone.icon.icon().pixmap(64, 64))[0] < 25,         "a local install went to the alarm icon"
+
+
+def test_the_alarm_outranks_the_spinner(qapp, sample):
+    """A pending status normally spins the gear, and the spinner would have painted straight
+    over the alarm on its next tick — 110ms later, so the red would have flashed once and
+    gone. Whatever is in flight, an app that cannot reach its hub does not know how it ends.
+    """
+    from ui.tray import Tray
+    store = st.Store()
+    store.update(sample.services[0].name, "Stopping",
+                 machine=sample.services[0].machine)
+    tray = Tray(lambda: sample, store, hub=lambda: _Down())
+    assert tray._should_spin() is True, "the precondition: this would otherwise spin"
+
+    tray.apply_state()
+    assert not tray._spin.isActive(), "the spinner is still running over the alarm"
+    assert _ink(tray.icon.icon().pixmap(64, 64))[0] > 40
+
+
+def test_the_dashboard_says_not_connected_as_well_as_the_flyout(qapp, sample):
+    """The same app told two stories about the same moment: "not connected" in the tray
+    flyout, "9 of 9 running" on the dashboard. The dashboard is the one left open on a second
+    monitor, and it was the one lying."""
+    store = st.Store()
+    for svc in sample.services:
+        store.update(svc.name, st.RUNNING, machine=svc.machine)
+
+    win = panel_mod.MainPanel(sample, hub=lambda: _Down())
+    win.dashboard.apply_states()
+    assert "not connected" in win.dashboard.badge.text().lower(), \
+        win.dashboard.badge.text()
+    assert win.dashboard.badge.property("cat") == "stopped"
+    assert "ctl052" in win.dashboard.summary.text(), win.dashboard.summary.text()
+    assert "running" not in win.dashboard.summary.text(), \
+        "counted services nothing has answered about"
+    win.deleteLater()
+
+    up = panel_mod.MainPanel(sample, hub=lambda: _Up())
+    up.dashboard.apply_states()
+    assert "running" in up.dashboard.badge.text().lower(), up.dashboard.badge.text()
+    up.deleteLater()
 
 
 def test_a_quiet_button_looks_like_a_button(qapp):
@@ -3170,3 +3610,63 @@ def _page_subtitles(widget) -> set:
             if isinstance(item, QLabel):
                 found.add(item.text())
     return found
+
+
+def test_the_sidebar_says_when_an_update_is_waiting(qapp, sample):
+    """It was only on the Hub page, three clicks away and a page nobody opens twice. On an ERP
+    server that is weeks of not knowing there was an update at all.
+
+    And it goes away entirely when there is nothing to say: a permanent row reading "up to
+    date" is a row people stop seeing, and then they stop seeing it when it changes.
+    """
+    class _Hub:
+        connected, host, url = True, "CTL052", "https://CTL052:8797"
+
+        def __init__(self, said):
+            self.said = said
+
+        def update_state(self):
+            return self.said
+
+    quiet = {"running": "2.2.8", "available": "", "trouble": "", "busy": "",
+             "installer": None}
+    win = panel_mod.MainPanel(sample, hub=lambda: _Hub(quiet))
+    win.show()
+    qapp.processEvents()
+    assert not win.update_hint.isVisible(), "shown with nothing to say"
+
+    # The hub has a newer release for itself.
+    win._asked_about_update(_Hub(dict(quiet, available="2.3.0")))
+    qapp.processEvents()
+    assert win.update_hint.isVisible()
+    assert "2.3.0" in win.update_hint.text(), win.update_hint.text()
+
+    # And the other way round: this panel is the one that is behind its hub. A different
+    # sentence, the same row — what somebody needs is that a version is in the way.
+    win._asked_about_update(_Hub(dict(quiet, running="9.9.9")))
+    qapp.processEvents()
+    assert win.update_hint.isVisible()
+    assert "9.9.9" in win.update_hint.text(), win.update_hint.text()
+
+    # Back to nothing.
+    win._asked_about_update(_Hub(quiet))
+    qapp.processEvents()
+    assert not win.update_hint.isVisible()
+    win.deleteLater()
+
+
+def test_an_unreachable_hub_does_not_add_a_third_voice(qapp, sample):
+    """The tray icon, the chip and the summary all say it already. A fourth place saying the
+    same thing is noise, so this one stays quiet rather than reporting the network."""
+    class _Down:
+        connected, host, url = False, "CTL052", "https://CTL052:8797"
+
+        def update_state(self):
+            raise OSError("no route to host")
+
+    win = panel_mod.MainPanel(sample, hub=lambda: _Down())
+    win.show()
+    win._asked_about_update(_Down())
+    qapp.processEvents()
+    assert not win.update_hint.isVisible()
+    win.deleteLater()

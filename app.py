@@ -18,7 +18,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 import autostart
 from core import (applog, config as cfg_mod, control, db, engine as engine_mod,
-                  health, history, hub_client, local as local_mod)
+                  health, history, hub_client, local as local_mod,
+                  one_instance)
 from core import i18n
 from core.i18n import t
 from core import state as st
@@ -32,7 +33,8 @@ log = applog.get("app")
 #: Everything a call into a hub raises when the hub is the problem rather than the request.
 #: Named once, because there are four call sites and a fifth will be added by somebody who did
 #: not write these: a missing one is not a message on a row, it is "Failed to execute script".
-HUB_IS_DOWN = (hub_client.Unreachable, hub_client.Refused, hub_client.WrongHub, OSError)
+HUB_IS_DOWN = (hub_client.Unreachable, hub_client.Refused, hub_client.WrongHub,
+               hub_client.WrongVersion, OSError)
 
 
 class StackSignals(QObject):
@@ -216,8 +218,15 @@ def pair_only(argv) -> int:
 
 
 class Application(QObject):
+    #: Another launch asked this copy to show itself. A signal because it arrives on the
+    #: waiting thread, and a worker thread has no Qt thread — the same reason every other
+    #: cross-thread hop in this file is one.
+    show_yourself = Signal()
+
     def __init__(self, argv):
         super().__init__()
+        #: The single-instance claim, parked here so it lives as long as the app does.
+        self.claim = None
         self.qt = QApplication(argv)
         self.qt.setApplicationName("Service Officer")
         self.qt.setQuitOnLastWindowClosed(False)
@@ -333,7 +342,7 @@ class Application(QObject):
             self._trim_timer.start()
 
         # --- ui -----------------------------------------------------------
-        self.tray = Tray(lambda: self.cfg, self.store)
+        self.tray = Tray(lambda: self.cfg, self.store, hub=lambda: self.hub)
         self.flyout = flyout_mod.Flyout(lambda: self.cfg, self.store, hub=lambda: self.hub)
         self.hover = hover_mod.HoverCard(lambda: self.cfg, self.store)
         self.panel = None
@@ -350,6 +359,9 @@ class Application(QObject):
         self.tray.quit_requested.connect(self.quit)
         self.tray.stack_requested.connect(self.run_stack)
         self.tray.menu_opened.connect(self.hover.dismiss)
+        # A second launch lands here. Same slot the tray's own menu uses, so "show me the app"
+        # means one thing whichever way it was asked for.
+        self.show_yourself.connect(lambda: self.open_panel(""))
 
         self._wire_flyout()
 
@@ -1052,6 +1064,9 @@ class Application(QObject):
         win.show()
         win.raise_()
         win.activateWindow()
+        # After it is on screen, so the sidebar's foot filling in a moment later is the only
+        # thing that moves rather than the window arriving late.
+        win.check_for_update()
 
     def _mine_changed(self) -> None:
         """A display choice was stored on this computer: read it and rebuild what shows it.
@@ -1175,11 +1190,26 @@ def main() -> int:
         log.info("restarting with administrator rights")
         return 0
 
+    # Before the QApplication and before anything opens a handle to anything: a second copy
+    # must not get as far as starting an engine. Six were running at once on the machine this
+    # was found on, which is six SCM watchers and six recovery timers on the same services.
+    mine = one_instance.claim()
+    if mine is None:
+        # Somebody who double-clicks the icon is asking to see the app, so show them the app.
+        # Exiting quietly would look like a double-click that did nothing.
+        one_instance.poke()
+        log.info("already running in this session — asked that copy to show itself")
+        return 0
+
     prepare_history()
     # No manual DPI call here: Qt already opts into per-monitor v2 awareness
     # before we could, and calling SetProcessDpiAwareness afterwards just fails
     # with "access denied" and prints a warning.
     app = Application(sys.argv)
+    # Held in the Application, not in this frame: `mine` going out of scope would release the
+    # mutex and the next launch would start a second copy.
+    app.claim = mine
+    one_instance.listen(app.show_yourself.emit)
     return app.start()
 
 

@@ -30,7 +30,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import applog, wire
+from . import applog, version, wire
+from .i18n import t
 from . import state as st
 
 log = applog.get("hubclient")
@@ -111,6 +112,20 @@ class NotFound(RuntimeError):
 class WrongHub(RuntimeError):
     """The certificate is not the one we pinned. Either the hub was rebuilt, or this is
     not the hub."""
+
+
+class WrongVersion(RuntimeError):
+    """This client and that hub are not the same release.
+
+    Refusing to connect, rather than connecting and hoping. The hub reported its version from
+    the first day and nothing ever compared it except a Test button somebody had to press, so a
+    client left on an old release joined a newer hub, read a wire it did not fully understand,
+    and showed whatever that produced. There is no version in which that is better than saying
+    so — a panel that will not connect is a question; a panel showing the wrong state is not.
+
+    Its own class so the reader loop can word it: "cannot reach the hub" is exactly what this
+    is *not*. The hub answered, promptly and correctly.
+    """
 
 
 class RemoteStore:
@@ -294,6 +309,11 @@ class HubClient:
         self.fingerprint = fingerprint or ""
         self.store = RemoteStore()
         self.connected = False
+        #: Why the connection is down, worded for a person, or "" when it is up. The tray
+        #: and the panel said "cannot reach the hub" for every failure, which is wrong for
+        #: the one where the hub answered promptly and correctly and is simply a different
+        #: release. A reader that has to guess between the two guesses wrong.
+        self.why = ""
         self._on_event = on_event
         self._on_connected = on_connected
         self._stop = threading.Event()
@@ -341,6 +361,30 @@ class HubClient:
                 f"now {found}. Either that machine was rebuilt, or this is not the "
                 f"same hub — check before accepting it.")
         return found
+
+    def check_version(self) -> str:
+        """Refuse a hub this client is not the same release as. Returns its version.
+
+        Over `/ping`, which needs no token: this has to be answerable before the connection is
+        trusted, and a client on the wrong release should be told that rather than told its
+        token is the problem.
+
+        Called from `_listen` and **not** from `_ask`, deliberately. A client that refuses the
+        stream must still be able to make ordinary requests, because the way out of a mismatch
+        is to ask this same hub for the installer — see `fetch_installer`. Putting this guard
+        in `_ask` would close the only door out of the state it creates.
+        """
+        theirs = str(self.ping().get("version") or "")
+        if not version.compatible(theirs):
+            # Translated, unlike the hub's own refusals: this sentence is composed *here*, on
+            # the client, and shown in that person's panel. A hub's 409 is worded by the hub
+            # and read by somebody who may be reading in another language, which is why those
+            # stay English — see core/i18n.py.
+            raise WrongVersion(t(
+                "This computer is running {mine} and the hub is running {theirs}. A client "
+                "and its hub have to be the same release.",
+                mine=version.short(), theirs=theirs))
+        return theirs
 
     # -- requests ----------------------------------------------------------
     def _ask(self, method: str, path: str, body=None, timeout: float = TIMEOUT):
@@ -440,6 +484,95 @@ class HubClient:
     def set_hub_port(self, port: int) -> dict:
         """Ask the hub to listen somewhere else. It answers before it moves."""
         _status, said = self._ask("POST", "/api/v1/hub/port", {"port": int(port)})
+        return said or {}
+
+    def update_state(self) -> dict:
+        """What the hub's daily check found. Costs the hub nothing — it answers from memory."""
+        _status, said = self._ask("GET", "/api/v1/update")
+        return said or {}
+
+    def fetch_installer(self, expect_sha256: str = "", into: str = None) -> str:
+        """Download the hub's own installer and prove it. Returns the path.
+
+        From the hub, not from the internet: a workstation on a customer's network usually has
+        no way out, and the hub is the one machine that already fetched this file.
+
+        Verified here as well as by the hub. The hub hashed it when it downloaded it, but that
+        was a different machine and a different day — and this computer is about to run it with
+        administrator rights. A hash checked only by whoever sent the file is not a check.
+        """
+        import os
+        import tempfile
+        from . import updates
+
+        wanted = (expect_sha256 or "").lower().strip()
+        where = into or tempfile.gettempdir()
+        os.makedirs(where, exist_ok=True)
+        path = os.path.join(where, "ServiceOfficerSetup-from-hub.exe")
+        request = urllib.request.Request(
+            self.url + "/api/v1/update/installer",
+            headers={"Authorization": f"Bearer {self.token}"})
+        digest = hashlib.sha256()
+        try:
+            # The same pinned context every other request uses, and a long timeout: this is
+            # 37 MB over whatever the customer's network is, not a JSON reply.
+            with urllib.request.urlopen(request, timeout=300,
+                                        context=self._context()) as answer, \
+                    open(path, "wb") as out:
+                if not wanted:
+                    # The hub sends it in a header too, so a caller that did not pass one is
+                    # still not running an unverified installer.
+                    wanted = (answer.headers.get("X-Installer-Sha256") or "").lower().strip()
+                while True:
+                    chunk = answer.read(256 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    out.write(chunk)
+            found = digest.hexdigest()
+            if not wanted:
+                raise updates.Refused("the hub sent an installer with no hash to check it "
+                                      "against. Not running it.")
+            if found != wanted:
+                raise updates.Refused(
+                    f"the installer does not match what the hub said it would be. Expected "
+                    f"{wanted[:16]}…, got {found[:16]}…. Not running it.")
+        except urllib.error.HTTPError as exc:
+            # The hub explains itself in the body — "this hub has no installer for the release
+            # it is running" — and a person shown "HTTP Error 404: Not Found" instead learns
+            # nothing they can act on.
+            try:
+                said = json.loads(exc.read() or b"{}")
+            except Exception:
+                said = {}
+            self._forget(path)
+            raise NotFound(said.get("error")
+                           or f"the hub answered {exc.code}") from exc
+        except Exception:
+            self._forget(path)
+            raise
+        return path
+
+    @staticmethod
+    def _forget(path: str) -> None:
+        """Delete a half-written or rejected installer. One left on disk is one somebody
+        finds and runs."""
+        import os
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def install_update(self) -> dict:
+        """Ask the hub to install the release it found. It answers before it stops.
+
+        A bad moment — a stack halfway up, an action in flight, a recovery counting down —
+        comes back as a 409, which `_ask` turns into `Conflict` because there is no actor on
+        it. Not `Busy`: nobody else is acting on anything. Neither class was written for this
+        and inventing a third for one call site would be worse; what a caller shows is the
+        message, and the message names the moment.
+        """
+        _status, said = self._ask("POST", "/api/v1/update", {})
         return said or {}
 
     def follow_to_port(self, port: int) -> str:
@@ -561,6 +694,9 @@ class HubClient:
         while not self._stop.is_set():
             try:
                 self.check_identity()
+                # Before the stream, so a mismatched client never reads a wire it may not
+                # understand — that is the whole point of asking.
+                self.check_version()
                 # The stream first, then the snapshot, then the events.
                 #
                 # The hub queues events per listener from the moment the stream is
@@ -576,10 +712,12 @@ class HubClient:
                 # ever more than theoretical.
                 with self._open_stream() as stream:
                     self.refresh_now()
+                    self.why = ""
                     self._mark(True)
                     attempt = 0
                     self._pump(stream)
-            except (Unreachable, WrongHub, Refused) as exc:
+            except (Unreachable, WrongHub, Refused, WrongVersion) as exc:
+                self.why = str(exc)
                 self._mark(False)
                 if attempt == 0:
                     log.info("hub unavailable: %s", exc)

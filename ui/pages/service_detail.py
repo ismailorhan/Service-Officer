@@ -24,7 +24,7 @@ from core.i18n import t
 
 from ..widgets import (Duration, FlatFactor, FlatSpin, InfoDot,
                        button as _button, label as _label)
-from .base import _Page, _sentence, _spin
+from .base import _Page, _fields, _sentence, _show_row, _spin
 
 
 class ServiceDetail(_Page):
@@ -75,23 +75,23 @@ class ServiceDetail(_Page):
         self.tabs.addStretch(1)          # tabs sit left, like a tab strip should
 
         body = general
-        body.addWidget(_label("DISPLAY", "section"))
-        body.addSpacing(8)
         self.label_edit = QLineEdit()
         self.label_edit.setMaximumWidth(340)
         self.label_edit.textChanged.connect(self._label_changed)
-        body.addWidget(self.label_edit)
-        body.addSpacing(18)
-
-        body.addWidget(_label("CATEGORY", "section"))
-        body.addSpacing(8)
         self.category = QComboBox()
         self.category.setFixedWidth(240)
         self.category.currentIndexChanged.connect(self._category_changed)
-        body.addWidget(_sentence(
-            self.category,
-            note="Groups this service under a heading in the dashboard and the tray panel. "
-                 "Define the headings on the Categories page."))
+        # Two labelled rows, where this was two section headings — DISPLAY over one text box
+        # and CATEGORY over one combo. A heading per field is six lines saying what two would,
+        # and the fields under them started at different places because a heading does not put
+        # anything in a column.
+        body.addWidget(_fields(
+            (t("Shown as"), self.label_edit,
+             t("The name this service goes by in this app — the dashboard, the tray panel and "
+               "the history. Windows keeps its own.")),
+            (t("Category"), self.category,
+             t("Groups this service under a heading in the dashboard and the tray panel. "
+               "Define the headings on the Categories page."))))
         body.addStretch(1)
 
         body = recovery
@@ -118,12 +118,34 @@ class ServiceDetail(_Page):
         rl = QVBoxLayout(self.rules)
         rl.setContentsMargins(24, 0, 0, 0)
         rl.setSpacing(10)
-        rl.addWidget(_sentence("Try up to", self.attempts, "times, waiting",
-                               self.delay, "first"))
-        rl.addWidget(_sentence("and multiplying that wait by", self.backoff,
-                               "each time."))
-        rl.addWidget(_sentence("Give up if it stops", self.flap_count,
-                               "times within", self.flap_window, "."))
+        # Three rows of a grid, where this was three sentences that ran into each other —
+        # "…waiting 10s first / and multiplying that wait by 2 each time." was one sentence
+        # broken across two lines, so the second line started with "and" and read as an
+        # orphan. Five values at five indents; now three labels in a column and the values in
+        # another. The wait and its multiplier share a row because they are one rule.
+        # One value per row, and every label a noun rather than the start of a sentence.
+        #
+        # The first attempt at this kept the prose — "Wait [10s] first, then multiply by [2.0]
+        # each time" — with each fragment wrapped in t(). That cannot be translated: Turkish
+        # puts those pieces in a different order, and a list of fragments has no way to
+        # reorder them. It showed up as a translation that needed an *empty* string to hide a
+        # word English wanted and Turkish did not. Nouns and single values have no order to
+        # get wrong, in any language.
+        rl.addWidget(_fields(
+            (t("Attempts"), self.attempts,
+             t("How many times to start it again before giving up. Zero means keep trying.")),
+            (t("First wait"), self.delay,
+             t("How long to wait before the first attempt.")),
+            (t("Multiply by"), self.backoff,
+             t("Each attempt waits this much longer than the one before. A service that failed "
+               "to start once will usually fail again immediately, so trying harder and "
+               "harder is worse than trying later and later.")),
+            (t("Give up after"), (self.flap_count, t("stops")),
+             t("A service that keeps dying is not something restarting will fix, and an app "
+               "restarting it every minute for ever hides that. Recovery stops until "
+               "somebody looks.")),
+            (t("within"), self.flap_window,
+             t("The window those stops are counted in."), True)))
         body.addWidget(self.rules)
         body.addSpacing(16)
 
@@ -180,55 +202,53 @@ class ServiceDetail(_Page):
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(10)
         self.h_interval = Duration(60, minimum=5)
-        self.h_interval.setToolTip("How often to run the checks below, while the "
-                                   "service is running.")
         self.h_grace = Duration(60)
-        self.h_grace.setToolTip("Time to allow after the service reaches Running "
-                                "before its answers count. Zero judges it "
-                                "immediately.")
         self.h_failures = FlatSpin(3, 1, 20)
-        self.h_failures.setToolTip("Consecutive failures before it is called "
-                                   "unhealthy. One bad answer is usually load, "
-                                   "not death.")
         for w in (self.h_interval, self.h_grace, self.h_failures):
             w.changed.connect(self._save_health)
-        # No trailing full stop: _sentence joins with spaces, so one would sit a
-        # space away from the number and look like a typo.
-        hl.addWidget(_sentence(
-            "Ask every", self.h_interval,
-            note="How often to run the checks below, while the service is running."))
-        # "Ask every 1 min, starting 1 min after it comes up" was asked about, and
-        # fairly: two durations in one sentence, and "starting" reads as starting
-        # the service. Its own line, with the reason underneath.
-        hl.addWidget(_sentence(
-            "Ignore the first", self.h_grace, "after it starts.",
-            note="A service that has just come up hasn't opened its port yet, so asking "
-                 "straight away would report every restart as a failure."))
-        hl.addWidget(_sentence(
-            "Call it unhealthy after", self.h_failures, "failures in a row.",
-            note="Consecutive failures before it is called unhealthy. One bad answer is "
-                 "usually load, not death."))
         self.h_action = QComboBox()
         self.h_action.addItem("Just tell me", "notify")
         self.h_action.addItem("Restart the service", "restart")
-        self.h_action.setFixedWidth(220)
+        # 220 was set when this sat inside a sentence, where slack after the words did no
+        # harm. In a grid the widest value decides where the dot column starts, so 70px of
+        # empty box pushed every dot 70px away from the value it explains. Its own width plus
+        # room to breathe: measured at 150.
+        self.h_action.setFixedWidth(168)
         self.h_action.currentIndexChanged.connect(self._save_health)
-        hl.addWidget(_sentence(
-            "Then:", self.h_action,
-            note="What to do about a service that has stopped answering. Restarting is the "
-                 "obvious fix and also the one that hides a problem, so it is not the "
-                 "default."))
-
         # This was a hidden five-minute constant, and it made a delayed restart
         # look like the checks were unreliable. It belongs on screen.
         self.h_cooldown = Duration(300)
-        self.h_cooldown.setToolTip("A service a restart cannot fix must not be "
-                                   "restarted every minute for ever. Zero means "
-                                   "restart on every verdict.")
         self.h_cooldown.changed.connect(self._save_health)
-        self.h_restart_rule = _sentence("…but no more often than every",
-                                        self.h_cooldown)
-        hl.addWidget(self.h_restart_rule)
+        # One grid, so the values line up under each other and the dots line up beside them.
+        # As five separate sentences they landed at five different indents — see _fields for
+        # the measurements, which are the whole reason it exists.
+        self.health_grid = _fields(
+            ("Ask every", self.h_interval,
+             "How often to run the checks below, while the service is running."),
+            # "Ask every 1 min, starting 1 min after it comes up" was asked about, and
+            # fairly: two durations in one sentence, and "starting" reads as starting the
+            # service. Its own row, with the reason behind the dot.
+            ("Ignore the first", (self.h_grace, "after it starts"),
+             "A service that has just come up hasn't opened its port yet, so asking "
+             "straight away would report every restart as a failure."),
+            ("Call it unhealthy after", (self.h_failures, "failures in a row"),
+             "Consecutive failures before it is called unhealthy. One bad answer is "
+             "usually load, not death."),
+            ("Then", self.h_action,
+             "What to do about a service that has stopped answering. Restarting is the "
+             "obvious fix and also the one that hides a problem, so it is not the "
+             "default."),
+            # A qualifier on the row above, not a fifth setting: indented, and a row of the
+            # *same* grid rather than a grid of its own — on its own its dot landed at x=196
+            # with the four above it at 362, which is this whole change's complaint in one
+            # row. It also only exists when the answer above is Restart. As a peer reading
+            # "…but no more often than every 5 min" under "Just tell me" it looked like a
+            # limit on how often you would be told, which is not a thing this does.
+            ("At most once every", self.h_cooldown,
+             "A service a restart cannot fix must not be restarted every minute for ever. "
+             "Zero restarts it on every verdict.\n\n"
+             "Only applies while the action above is Restart the service.", True))
+        hl.addWidget(self.health_grid)
         body.addWidget(self.health_rules)
         body.addSpacing(20)
 
@@ -361,6 +381,7 @@ class ServiceDetail(_Page):
         wanted = self.h_action.findData(h.action)
         self.h_action.setCurrentIndex(wanted if wanted >= 0 else 0)
         self.h_action.blockSignals(False)
+        self._sync_restart_rule()
 
         self.svc = svc
         #: which check rows are open for editing; closed is the reading view
@@ -419,10 +440,11 @@ class ServiceDetail(_Page):
                 "No checks yet. Use Add check — until then this service is judged "
                 "only by whether Windows says it is running.")
         else:
+            # "1 CHECK, ALL OF WHICH MUST PASS" — "all of which" about one thing, which is
+            # what it said in every single-check install, and every install starts as one.
             count = len(checks)
             self.health_note.setText(
-                f"{count} CHECK{'S' if count != 1 else ''}, "
-                f"ALL OF WHICH MUST PASS")
+                f"{count} CHECKS · ALL MUST PASS" if count != 1 else "1 CHECK")
         # Reads as a heading once there is a list under it, as a hint when empty.
         self.health_note.setProperty("role", "section" if checks else "hint")
         self.health_note.style().unpolish(self.health_note)
@@ -716,10 +738,20 @@ class ServiceDetail(_Page):
         h.failures_before_acting = max(1, self.h_failures.value())
         h.action = self.h_action.currentData() or "notify"
         h.min_restart_interval_seconds = self.h_cooldown.seconds()
-        # The restart limit only means anything when restarting is the action.
-        self.h_restart_rule.setVisible(h.action == "restart")
+        self._sync_restart_rule()
         self.changed.emit()
         self._refresh_health_status()
+
+    def _sync_restart_rule(self):
+        """The restart limit only means anything when restarting is the action.
+
+        Called on the way in as well as on every edit. It used to be set only in
+        `_save_health`, which fires on a *change* — so opening a service already set to "Just
+        tell me" showed a five-minute limit on a restart that never happens, and the only way
+        to make it go away was to change the action to Restart and back.
+        """
+        wanted = (self.h_action.currentData() or "notify") == "restart"
+        _show_row(self.health_grid.rows[-1], wanted)
 
     def _check_now(self):
         """Run the checks as they are on screen, not as last saved — otherwise

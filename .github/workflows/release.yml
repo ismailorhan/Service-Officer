@@ -49,6 +49,7 @@ jobs:
           --name ServiceOfficer --icon=icon.ico
           --add-data "icon.ico;."
           --hidden-import=win32timezone
+          --hidden-import=core.translations.tr
           --exclude-module tkinter
           --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick
           --exclude-module PySide6.QtNetwork --exclude-module PySide6.Qt3DCore
@@ -69,6 +70,7 @@ jobs:
           --name ServiceOfficerHub --icon=icon.ico
           --add-data "core/hub_pages;core/hub_pages"
           --hidden-import=win32timezone
+          --hidden-import=core.translations.tr
           --hidden-import=servicemanager
           --hidden-import=win32serviceutil
           --exclude-module tkinter
@@ -81,10 +83,17 @@ jobs:
       - name: Build installer
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
 
+      # The feed clients read to learn this release exists. After the installer, because the
+      # hash is of that file — and computed rather than typed: a hash written by hand is a hash
+      # written wrong, and core/updates.py refuses a download that does not match it.
+      - name: Write latest.json
+        run: python tools/make_feed.py
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: Service Officer ${{ github.ref_name }}
           files: |
             dist/ServiceOfficerSetup.exe
+            dist/latest.json
           generate_release_notes: true

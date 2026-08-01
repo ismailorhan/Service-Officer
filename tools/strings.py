@@ -22,6 +22,14 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 #: Where a sentence can be said. `tools` and `tests` are not: nobody reads them.
 LOOKED_AT = ("ui", "core", "app.py", "hub.py")
+#: The catalogues are the answer, not the question.
+#:
+#: They live under `core/`, so every Turkish *value* in them was being counted as an English
+#: sentence nobody had translated — the keys are filtered out by having entries, the
+#: translations are not. Which made translating something *raise* the untranslated count, and
+#: had been quietly inflating it by every line ever translated. Found by adding four
+#: translations and watching the number go up by four.
+NOT_SAID_HERE = ("core/translations",)
 #: Short strings are labels like "OK" that read the same, and anything without a space is a
 #: name, a key or a path. The same test both halves use, so the two counts are comparable.
 MIN_LENGTH = 3
@@ -32,8 +40,12 @@ def _files():
         path = ROOT / where
         if path.is_file():
             yield path
-        else:
-            yield from sorted(path.rglob("*.py"))
+            continue
+        for found in sorted(path.rglob("*.py")):
+            spelt = found.relative_to(ROOT).as_posix()
+            if any(spelt.startswith(skip) for skip in NOT_SAID_HERE):
+                continue
+            yield found
 
 
 def _text_of(node) -> str:
@@ -88,8 +100,26 @@ def bare() -> dict:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
-        inside_t, inside_log = set(), set()
+        inside_t, inside_log, inside_css = set(), set(), set()
         for node in ast.walk(tree):
+            # A stylesheet written as an f-string arrives here in pieces, split at every
+            # `{colour}`. Judged one piece at a time some of them look like prose: `"; "
+            # "border-radius: 4px;\n        background:"` has a colon and no brace, so the
+            # single-literal rule below waves it through and the count goes up by one for a
+            # CSS edit. Judge the f-string whole — that one *does* have braces — and every
+            # piece of it is settled at once. Not by a sharper per-piece rule: "…as an
+            # administrator: winrm quickconfig; …" is a real sentence with both, and a rule
+            # that hides CSS by punctuation hides that too.
+            #
+            # All three of brace, colon and semicolon, because two is not enough either way:
+            # "…here:  winrm set winrm/config/client @{TrustedHosts=…}" has a brace and a
+            # colon and is prose, and it went quiet when the rule asked for only those two.
+            # A declaration block is the one shape that has all three.
+            if isinstance(node, ast.JoinedStr):
+                joined = "".join(_text_of(p) for p in node.values)
+                if "{" in joined and ":" in joined and ";" in joined:
+                    for child in ast.walk(node):
+                        inside_css.add(id(child))
             if _is_t_call(node):
                 for child in ast.walk(node):
                     inside_t.add(id(child))
@@ -106,7 +136,8 @@ def bare() -> dict:
                     and isinstance(body[0].value, ast.Constant):
                 docstrings.add(id(body[0].value))
         for node in ast.walk(tree):
-            if id(node) in inside_t or id(node) in inside_log or id(node) in docstrings:
+            if id(node) in inside_t or id(node) in inside_log or id(node) in docstrings \
+                    or id(node) in inside_css:
                 continue
             said = _text_of(node).strip()
             if len(said) < MIN_LENGTH or " " not in said:

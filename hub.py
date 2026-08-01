@@ -73,6 +73,10 @@ def build() -> tuple:
 def start(engine, server, fingerprint: str) -> None:
     engine.start()
     server.start()
+    # After the socket is up, and here rather than inside the server: a release feed on the far
+    # side of a slow network must not stand between this service starting and it answering
+    # anybody, and a HubServer stood up by a test has no business reaching GitHub.
+    server.updates.start()
     log.info("hub serving on %s  ·  certificate %s", server.url, fingerprint)
 
 

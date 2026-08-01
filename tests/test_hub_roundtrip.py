@@ -10,12 +10,14 @@ service cannot run on a build agent — but everything between the client's requ
 control call is exactly what ships.
 """
 
+import hashlib
 import threading
 import time
 
 import pytest
 
 from core import config as cfg_mod
+from core import updates
 from core import engine as engine_mod
 from core import hub_client, hub_server
 from core import state as st
@@ -174,12 +176,12 @@ def test_the_hubs_history_says_which_person_asked(system, tmp_path, monkeypatch)
     monkeypatch.setattr(history, "HISTORY_PATH", path)
     holder["cfg"].history.enabled = True
 
-    client.act("stop", "AppEngine", actor="CT\ismail.orhan")
+    client.act("stop", "AppEngine", actor=r"CT\ismail.orhan")
     assert engine.wait_for_actions(timeout=10)
 
     asked = [r for r in history.read(path=path) if r.get("action") == "stop"]
     assert asked, "the action was never recorded"
-    assert asked[0]["actor"] == "CT\ismail.orhan"
+    assert asked[0]["actor"] == r"CT\ismail.orhan"
 
 
 # ---------------------------------------------------------------------------
@@ -716,3 +718,117 @@ def test_the_engine_re_reads_start_types_on_its_own(system, monkeypatch):
         engine._stop_sweeping.set()
         thread.join(timeout=2)
     assert not thread.is_alive(), "stop() does not end the sweep"
+
+
+# ── the update endpoints ───────────────────────────────────────────────────
+def test_the_update_state_is_answered_from_memory(system):
+    """A read that never touches the network. Opening the Hub page must not cost a round trip
+    to GitHub, and the hub already knows what its daily check found."""
+    client, _engine, server, _states, _holder = system
+
+    said = client.update_state()
+    assert said["running"], said
+    assert said["available"] == "", "nothing was found, so nothing is offered"
+    assert said["busy"] == "", "a quiet engine is not in the way"
+
+    server.updates.available = updates.Release(
+        {"version": "9.9.9", "url": "https://example.invalid/s.exe",
+         "sha256": "a" * 64, "notes": "later"})
+    said = client.update_state()
+    assert said["available"] == "9.9.9"
+    assert said["notes"] == "later"
+
+
+def test_installing_with_nothing_to_install_is_refused(system):
+    client, _engine, _server, _states, _holder = system
+    with pytest.raises(Exception) as caught:
+        client.install_update()
+    assert "no newer release" in str(caught.value)
+
+
+def test_a_bad_moment_refuses_and_says_which(system):
+    """409, not 500: nothing is broken. Somebody pressed a button while a stack was halfway
+    up, and the answer names the moment rather than failing mysteriously."""
+    client, engine, server, _states, _holder = system
+    server.updates.available = updates.Release(
+        {"version": "9.9.9", "url": "https://example.invalid/s.exe",
+         "sha256": "a" * 64})
+    engine._in_flight.add("a1")
+    try:
+        assert "action" in client.update_state()["busy"]
+        with pytest.raises(Exception) as caught:
+            client.install_update()
+        assert "not now" in str(caught.value)
+    finally:
+        engine._in_flight.discard("a1")
+
+
+def test_a_download_that_fails_does_not_stop_the_hub(system, monkeypatch):
+    """The hub is still watching services. A feed that lies, or a network that drops halfway,
+    must leave it running and say so — not take the service down on the way to an update."""
+    client, _engine, server, _states, _holder = system
+    server.updates.available = updates.Release(
+        {"version": "9.9.9", "url": "https://example.invalid/s.exe",
+         "sha256": "a" * 64})
+    started = []
+    monkeypatch.setattr(hub_server.updates, "install", started.append)
+
+    with pytest.raises(Exception) as caught:
+        client.install_update()
+    assert "download failed" in str(caught.value)
+    assert started == [], "an installer was started for a download that failed"
+    assert client.wait_for(lambda: client.connected, timeout=5), "the hub went down with it"
+
+
+def test_a_client_can_fetch_the_hubs_installer(system, monkeypatch, tmp_path):
+    """So a workstation needs no internet at all, which is what a customer's network actually
+    looks like. Verified again on arrival: the hub hashed it on a different machine on a
+    different day, and this computer is about to run it with administrator rights."""
+    client, _engine, _server, _states, _holder = system
+    body = b"pretend installer" * 500
+    kept = tmp_path / f"ServiceOfficerSetup-{updates.version.short()}.exe"
+    kept.write_bytes(body)
+    monkeypatch.setattr(hub_server.updates, "kept", lambda *_a: str(kept))
+
+    said = client.update_state()
+    assert said["installer"]["sha256"] == hashlib.sha256(body).hexdigest()
+    assert said["installer"]["bytes"] == len(body)
+
+    got = client.fetch_installer(said["installer"]["sha256"], into=str(tmp_path / "in"))
+    assert open(got, "rb").read() == body
+
+
+def test_an_installer_that_arrives_wrong_is_refused_and_deleted(system, monkeypatch, tmp_path):
+    """A hash checked only by whoever sent the file is not a check."""
+    client, _engine, _server, _states, _holder = system
+    kept = tmp_path / f"ServiceOfficerSetup-{updates.version.short()}.exe"
+    kept.write_bytes(b"one thing")
+    monkeypatch.setattr(hub_server.updates, "kept", lambda *_a: str(kept))
+
+    landing = tmp_path / "in"
+    with pytest.raises(updates.Refused):
+        client.fetch_installer("d" * 64, into=str(landing))
+    assert list(landing.iterdir()) == [], "the rejected installer was left on disk"
+
+
+def test_a_hub_with_no_installer_says_so(system, monkeypatch):
+    """Rather than offering a client a button that cannot work."""
+    client, _engine, _server, _states, _holder = system
+    monkeypatch.setattr(hub_server.updates, "kept", lambda *_a: "")
+    assert client.update_state()["installer"] is None
+    with pytest.raises(Exception) as caught:
+        client.fetch_installer("a" * 64)
+    assert "no installer" in str(caught.value).lower()
+
+
+def test_a_mismatched_client_can_still_ask_for_the_installer(system, monkeypatch):
+    """The way out of a version mismatch is to ask the very hub that refused the stream. The
+    guard lives in the reader loop and not in `_ask`, deliberately — putting it there would
+    close the only door out of the state it creates."""
+    client, _engine, _server, _states, _holder = system
+    monkeypatch.setattr(hub_client.version, "compatible", lambda *_a, **_k: False)
+
+    with pytest.raises(hub_client.WrongVersion):
+        client.check_version()
+    # And yet:
+    assert client.update_state()["running"], "an ordinary request stopped working too"

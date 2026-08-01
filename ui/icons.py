@@ -112,6 +112,50 @@ def gear_frame(index: int, size: int = 64) -> QPixmap:
     return pm
 
 
+#: The emergency gear: a white rim and a red body. Not from the palette — a tray icon sits on
+#: the taskbar, which is nobody's theme, and these two have to hold against both.
+_ALARM_FILL = QColor(214, 47, 39)
+_ALARM_LINE = QColor(255, 255, 255)
+
+
+def emergency_pixmap(size: int = 64) -> QPixmap:
+    """The gear turned red, with nothing on it.
+
+    The three shipped icons are one gear with a small badge in the corner, and the badge is a
+    statement about services: this many are running, that many stopped. An unreachable hub is
+    not that statement. Nothing has answered, so every count is *unknown* rather than bad, and
+    a badge saying "0 of 9" about nine services that are almost certainly running fine is the
+    kind of wrong that gets somebody out of bed.
+
+    So the gear itself goes red and the badge goes away. Whole-icon rather than a corner, and
+    the one shape here that cannot be read as a count.
+    """
+    key = ("alarm", size)
+    if key in _cache:
+        return _cache[key]
+
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QBrush(_ALARM_FILL))
+    # Half of a centred stroke falls outside the path, so a rim this wide reads at 16px —
+    # which is the only size that matters, since that is what the taskbar asks for.
+    p.setPen(QPen(_ALARM_LINE, max(1.0, size * 0.07)))
+    p.drawPath(_gear_path(size))
+    p.end()
+
+    _cache[key] = pm
+    return pm
+
+
+def emergency_icon() -> QIcon:
+    key = ("alarm-icon",)
+    if key not in _cache:
+        _cache[key] = QIcon(emergency_pixmap())
+    return _cache[key]
+
+
 def gear_icon(index: int) -> QIcon:
     return QIcon(gear_frame(index))
 

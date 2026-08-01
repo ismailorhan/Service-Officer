@@ -108,8 +108,7 @@ class ServicesPage(QWidget):
             index = cats.index(name)
             for glyph, delta, tip in ((theme.GLYPH_UP, -1, "Move this category up"),
                                       (theme.GLYPH_DOWN, 1, "Move this category down")):
-                b = _button(glyph, "quiet")
-                b.setFixedSize(22, 20)
+                b = _button(glyph, "step")
                 b.setToolTip(tip)
                 b.setEnabled(0 <= index + delta < len(cats))
                 b.clicked.connect(lambda _=False, i=index, d=delta:

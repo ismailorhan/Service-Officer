@@ -8,11 +8,12 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QMessageBox
 from core import config as cfg_mod
 from core import control
 from core import i18n
+from core.i18n import t
 from core import local as local_mod
 from core import version
 
 from ..widgets import button as _button, label as _label
-from .base import _Page, _sentence
+from .base import _Page, _fields
 
 
 class GeneralPage(_Page):
@@ -37,21 +38,21 @@ class GeneralPage(_Page):
         self.theme.addItems(["System", "Dark", "Light"])
         self.theme.setFixedWidth(150)
         self.theme.currentIndexChanged.connect(self._set_theme)
-        self.root.addWidget(_sentence(
-            "Theme", self.theme,
-            note="System follows the Windows setting and switches with it."))
-        self.root.addSpacing(10)
-
         self.language = QComboBox()
         for _code, name in i18n.LANGUAGES:
             self.language.addItem(name)
         self.language.setFixedWidth(150)
         self.language.currentIndexChanged.connect(self._set_language)
-        self.root.addWidget(_sentence(
-            "Language", self.language,
-            note="Windows opened after this read the new language. This one keeps the words "
-                 "it was built with — its labels are set when it opens, and rewriting them "
-                 "under somebody mid-sentence is worse than reopening a window."))
+        # One grid. As two sentences the two combos started at different places, because
+        # "Theme" and "Language" are different widths — six characters of difference deciding
+        # where a control sits.
+        self.root.addWidget(_fields(
+            (t("Theme"), self.theme,
+             t("System follows the Windows setting and switches with it.")),
+            (t("Language"), self.language,
+             t("Windows opened after this read the new language. This one keeps the words "
+               "it was built with — its labels are set when it opens, and rewriting them "
+               "under somebody mid-sentence is worse than reopening a window."))))
         self.root.addSpacing(24)
 
         self.root.addWidget(_label("STARTUP", "section"))

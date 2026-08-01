@@ -35,10 +35,13 @@ class Tray(QObject):
     stack_requested = Signal(str)          # stack name — a stack is one script
     menu_opened = Signal()
 
-    def __init__(self, config_getter, store: st.Store, parent=None):
+    def __init__(self, config_getter, store: st.Store, parent=None, hub=None):
         super().__init__(parent)
         self._config = config_getter
         self._store = store
+        #: The hub this app reads, or None when it does the work itself. A getter, because on
+        #: this app the hub is replaced when the address changes rather than mutated.
+        self._hub = hub if callable(hub) else (lambda: hub)
 
         self.icon = QSystemTrayIcon(icons.base_icon("green"))
         self.icon.setToolTip("")       # our hover card does this job
@@ -105,6 +108,16 @@ class Tray(QObject):
     def apply_state(self):
         """Colour reflects how many services are running; the spinner takes over
         while anything is mid-transition or an action of ours is in flight."""
+        if self._in_the_dark():
+            # Before everything else, including the spinner. The store still holds whatever it
+            # last heard, so the counts still add up to a colour — and that colour was green,
+            # on nine services this app had not heard from in minutes. An icon that says
+            # "all fine" while nothing is being watched is worse than no icon: it is the one
+            # thing most people look at, and it was actively reassuring.
+            if self._spin.isActive():
+                self._spin.stop()
+            self.icon.setIcon(icons.emergency_icon())
+            return
         if self._should_spin():
             if not self._spin.isActive():
                 self._spin.start()
@@ -119,6 +132,17 @@ class Tray(QObject):
         if colour == "green" and self._anything_unsettled():
             colour = "yellow"
         self.icon.setIcon(icons.base_icon(colour))
+
+    def _in_the_dark(self) -> bool:
+        """Whether this app has any idea what is going on.
+
+        Only one thing can put it here today: a hub it cannot reach. Named for the condition
+        rather than for the hub, because the question the icon answers is "is anybody
+        watching" — and if a second way to lose sight of everything ever appears, it belongs
+        in here rather than in a second colour nobody can tell apart.
+        """
+        hub = self._hub()
+        return hub is not None and not getattr(hub, "connected", True)
 
     def _anything_unsettled(self) -> bool:
         """Anything running that nobody has vouched for — failing its checks, or

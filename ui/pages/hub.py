@@ -12,6 +12,8 @@ in this product; there is an address.
 
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QMessageBox, QVBoxLayout,
                                QWidget)
@@ -20,8 +22,9 @@ from core import local as local_mod
 from core.i18n import t
 from core import version
 
+from .. import theme
 from ..widgets import button as _button, label as _label
-from .base import _Page, _sentence
+from .base import LABEL_WIDTH, _Page, _fields
 
 
 class HubPage(_Page):
@@ -51,18 +54,26 @@ class HubPage(_Page):
         self.root.addSpacing(9)
         # Two fields, laid out like the installer's: a host is a host and a port is a
         # port, and "ctl052:9100" asks somebody to know that a colon means something here.
+        #
+        # A row each, in the shared grid rather than side by side in one sentence. Side by side
+        # they put Port's label in the middle of the line, so nothing on this page lined up with
+        # anything else on it — and the one note had to explain both fields at once. Now every
+        # label on the page starts at the same place and every dot explains one thing.
         self.hub_url = QLineEdit()
         self.hub_url.setPlaceholderText("empty — this computer does the work itself")
         self.hub_url.setMinimumWidth(220)
         self.hub_port = QLineEdit()
         self.hub_port.setFixedWidth(64)
         self.hub_port.setPlaceholderText("8797")
-        self.root.addWidget(_sentence(
-            "Host", self.hub_url, "Port", self.hub_port,
-            note="A host name or IP; leave the host empty to watch this computer's own "
-                 "services instead, and the port empty for 8797.\n\n"
-                 "This is not the port a hub on this computer listens on — that one is under "
-                 "SERVING below."))
+        self.root.addWidget(_fields(
+            (t("Host"), self.hub_url,
+             t("A host name or IP. Leave it empty to watch this computer's own services "
+               "instead — that is what a single-machine install is.")),
+            (t("Port"), self.hub_port,
+             t("Empty means 8797.\n\n"
+               "This is not the port a hub on this computer listens on — that one is under "
+               "SERVING below.")),
+            fill=True))
         self.root.addSpacing(20)
 
         self.root.addWidget(_label("TOKEN", "section"))
@@ -70,8 +81,14 @@ class HubPage(_Page):
         self.hub_token = QLineEdit()
         self.hub_token.setEchoMode(QLineEdit.Password)
         self.hub_token.setMinimumWidth(260)
-        self.root.addWidget(_sentence("Token", self.hub_token))
+        self.root.addWidget(_fields(
+            (t("Token"), self.hub_token,
+             t("What proves this computer may read that hub. Shown once, when the hub "
+               "issues it, and stored on this computer afterwards.")),
+            fill=True))
         self.hub_token_hint = _label("", "hint", wrap=True)
+        # Indented to the value column: it is about the field above it, not about the section.
+        self.hub_token_hint.setContentsMargins(LABEL_WIDTH + theme.SP_12, 4, 0, 0)
         self.root.addWidget(self.hub_token_hint)
         self.root.addSpacing(20)
 
@@ -92,14 +109,22 @@ class HubPage(_Page):
         serving.addSpacing(9)
         self.listen_port = QLineEdit()
         self.listen_port.setFixedWidth(80)
-        serving.addWidget(_sentence(
-            t("This computer serves clients on port"), self.listen_port,
-            note=t("The port the Hub service listens on — not the one above, which is where "
-                   "this panel reads from. Applying it moves the socket and the firewall "
-                   "rule, and every client is told the new number first so they follow "
-                   "rather than losing the hub.\n"
-                   "ServiceOfficerHub.exe port <n> does the same from a command line, which "
-                   "is the way in when the hub cannot be reached at all.")))
+        # "This computer serves clients on port" as a label is wider than the label column, so
+        # it would have pushed its own field out of line with every other field on the page —
+        # the thing this change is for. Under a heading that already says SERVING, "Listens on"
+        # says it, and the dot carries the rest.
+        serving.addWidget(_fields(
+            (t("Listens on"), self.listen_port,
+             t("The port the Hub service listens on — not the one above, which is where "
+               "this panel reads from. Applying it moves the socket and the firewall "
+               "rule, and every client is told the new number first so they follow "
+               "rather than losing the hub.\n"
+               "ServiceOfficerHub.exe port <n> does the same from a command line, which "
+               "is the way in when the hub cannot be reached at all.")),
+            # Filling like the rows above it, even though a port box is narrow: measured
+            # without it, this one dot sat at x=240 while the other three were at 884. Two
+            # rules on one page is the raggedness again, one row of it.
+            fill=True))
         serving.addSpacing(10)
         moving = QHBoxLayout()
         moving.addWidget(_button(t("Move to this port"), "primary", self._move_port))
@@ -107,7 +132,52 @@ class HubPage(_Page):
         serving.addLayout(moving)
         self.serve_result = _label("", "hint", wrap=True)
         serving.addWidget(self.serve_result)
+
+        # -- the release this hub is on ----------------------------------------
+        # Inside `serving`, so it appears exactly where the port does: on the hub's own
+        # machine. A workstation cannot install a hub's update — the hub is the elevated,
+        # always-running piece and the client is deliberately not — so offering the button
+        # there would be offering something that cannot work.
+        serving.addSpacing(24)
+        serving.addWidget(_label(t("UPDATE"), "section"))
+        serving.addSpacing(9)
+        self.update_state = _label("", "hint", wrap=True)
+        serving.addWidget(self.update_state)
+        serving.addSpacing(10)
+        updating = QHBoxLayout()
+        self.update_button = _button(t("Install it"), "primary", self._install_update)
+        updating.addWidget(self.update_button)
+        updating.addWidget(_button(t("Check now"), "quiet", self._check_update))
+        updating.addStretch(1)
+        serving.addLayout(updating)
+        self.update_result = _label("", "hint", wrap=True)
+        serving.addWidget(self.update_result)
+
         self.root.addWidget(self.serving)
+
+        # -- catching this computer up -----------------------------------------
+        # The other side of the same coin, and it appears where SERVING does not: on a
+        # workstation. The hub updates first — that is the forced order, because a new client
+        # against an old hub is the mismatch the wrong way round — and then this computer is
+        # the one that is behind.
+        self.catching_up = QWidget()
+        catch = QVBoxLayout(self.catching_up)
+        catch.setContentsMargins(0, 22, 0, 0)
+        catch.setSpacing(0)
+        catch.addWidget(_label(t("UPDATE"), "section"))
+        catch.addSpacing(9)
+        self.catch_state = _label("", "hint", wrap=True)
+        catch.addWidget(self.catch_state)
+        catch.addSpacing(10)
+        catching = QHBoxLayout()
+        self.catch_button = _button(t("Update this computer"), "primary",
+                                    self._catch_up)
+        catching.addWidget(self.catch_button)
+        catching.addStretch(1)
+        catch.addLayout(catching)
+        self.catch_result = _label("", "hint", wrap=True)
+        catch.addWidget(self.catch_result)
+        self.root.addWidget(self.catching_up)
         # Without this the layout hands the spare height to the gaps between sections, and
         # a page with six widgets on it drifts into a page with six widgets *spread* over
         # it — 50 pixels between a heading and its field where General has 10. Every other
@@ -151,6 +221,162 @@ class HubPage(_Page):
             "The hub is moving from {was} to {port}. This panel follows it, and the other "
             "clients were told first.",
             was=said.get("was", "?"), port=said.get("port", wanted)))
+
+    # -- the release this hub is on ----------------------------------------
+    def _describe_update(self) -> None:
+        """What the hub's own daily check found. One read, answered from its memory."""
+        hub = self._hub()
+        self.update_button.setEnabled(False)
+        if hub is None:
+            self.update_state.setText(t("This computer watches its own services."))
+            return
+        try:
+            said = hub.update_state()
+        except Exception as exc:
+            self.update_state.setText(t("Could not ask the hub: {why}", why=exc))
+            return
+        running, offered = said.get("running", "?"), said.get("available") or ""
+        if not offered:
+            trouble = said.get("trouble") or ""
+            self.update_state.setText(
+                t("Running {version} — the newest there is.", version=running) if not trouble
+                # "Nothing new" and "could not ask" are different facts, and a hub that has
+                # not reached the feed for a week should not read as up to date.
+                else t("Running {version}. The last check did not get through: {why}",
+                       version=running, why=trouble))
+            return
+        busy = said.get("busy") or ""
+        notes = (said.get("notes") or "").strip()
+        text = t("{offered} is available — this hub is on {running}.",
+                 offered=offered, running=running)
+        if notes:
+            text += "\n" + notes
+        if busy:
+            # Named, not merely disabled: a button that is off for no visible reason reads as
+            # a bug in the button.
+            text += "\n" + t("Not now — {why}. It will wait.", why=busy)
+        self.update_state.setText(text)
+        self.update_button.setEnabled(not busy)
+
+    def _check_update(self) -> None:
+        """Ask the feed now rather than waiting for the daily check.
+
+        On the hub's own thread, not this one: the panel must not sit on a network call, and
+        the hub is where the answer is kept anyway.
+        """
+        hub = self._hub()
+        if hub is None:
+            return
+        self.update_result.setText(t("Asking…"))
+        self.update_result.repaint()
+        engine = getattr(hub, "engine", None)
+        watcher = getattr(hub, "updates", None) or (
+            getattr(engine, "updates", None) if engine is not None else None)
+        if watcher is not None:                    # the hub is in this process
+            threading.Thread(target=self._checked, args=(watcher,), daemon=True,
+                             name="update-check-now").start()
+            return
+        # A client of a hub in another process: it checks daily and this panel reads what it
+        # found. Asking again from here would be asking the wrong computer.
+        self.update_result.setText("")
+        self._describe_update()
+
+    def _checked(self, watcher) -> None:
+        watcher.check_now()
+        self.update_result.setText("")
+        self._describe_update()
+
+    def _install_update(self) -> None:
+        """Hand it to the hub. The hub verifies the download and stops itself."""
+        hub = self._hub()
+        if hub is None:
+            return
+        self.update_result.setText(t("Downloading and checking it…"))
+        self.update_result.repaint()
+        try:
+            said = hub.install_update()
+        except Exception as exc:
+            self.update_result.setText(t("It was not installed: {why}", why=exc))
+            return
+        self.update_result.setText(t(
+            "Installing {version}. This hub stops for a moment, so every panel shows "
+            "disconnected until it is back — including this one.",
+            version=said.get("version", "")))
+
+    # -- catching this computer up -----------------------------------------
+    def _describe_catch_up(self) -> None:
+        """Whether this computer is behind its hub, and whether there is a way to fix it here.
+
+        Asked of the hub even when this client is refusing to connect: the mismatch is exactly
+        the state that needs a way out, and `_ask` deliberately has no version guard on it.
+        """
+        hub = self._hub()
+        self.catch_button.setEnabled(False)
+        if hub is None:
+            self.catching_up.setVisible(False)
+            return
+        try:
+            said = hub.update_state()
+        except Exception as exc:
+            self.catching_up.setVisible(True)
+            self.catch_state.setText(t("Could not ask the hub: {why}", why=exc))
+            return
+        theirs = said.get("running") or ""
+        if version.compatible(theirs):
+            # Nothing to catch up on. The section goes away rather than saying "you are fine":
+            # a page that reports non-problems is a page nobody reads.
+            self.catching_up.setVisible(False)
+            return
+        self.catching_up.setVisible(True)
+        offered = said.get("installer") or None
+        text = t("This computer is running {mine} and the hub is running {theirs}. A client "
+                 "and its hub have to be the same release.",
+                 mine=version.short(), theirs=theirs)
+        if offered:
+            text += "\n" + t("The hub can hand this computer the installer, so no internet "
+                             "is needed here.")
+            self.catch_button.setEnabled(True)
+        else:
+            # Honest about the dead end rather than offering a button that cannot work.
+            text += "\n" + t("The hub does not have the installer for its own release, so it "
+                             "has to be fetched from the release page and run here.")
+        self.catch_state.setText(text)
+
+    def _catch_up(self) -> None:
+        """Fetch the hub's installer, prove it, and hand it to Windows.
+
+        Windows, not this process: a client panel is deliberately not elevated, and starting an
+        installer that requires administrator from an unelevated process fails outright rather
+        than prompting. ShellExecute is what puts the consent prompt on screen.
+        """
+        hub = self._hub()
+        if hub is None:
+            return
+        self.catch_button.setEnabled(False)
+        self.catch_result.setText(t("Downloading from the hub and checking it…"))
+        self.catch_result.repaint()
+        threading.Thread(target=self._catch_up_now, args=(hub,), daemon=True,
+                         name="client-update").start()
+
+    def _catch_up_now(self, hub) -> None:
+        """Off the drawing thread: this is 37 MB over the customer's network."""
+        from core import updates
+        try:
+            said = hub.update_state()
+            offered = said.get("installer") or {}
+            path = hub.fetch_installer(offered.get("sha256", ""))
+        except Exception as exc:
+            self.catch_result.setText(t("It was not installed: {why}", why=exc))
+            self.catch_button.setEnabled(True)
+            return
+        try:
+            updates.install(path, how=updates.ASK_THE_PERSON)
+        except Exception as exc:
+            self.catch_result.setText(t("It was not installed: {why}", why=exc))
+            self.catch_button.setEnabled(True)
+            return
+        self.catch_result.setText(t(
+            "Installing. This app closes and reopens on the new release."))
 
     # -- the two fields as one address -------------------------------------
     def _normalised(self, given: str = None, port: str = None) -> str:
@@ -212,11 +438,14 @@ class HubPage(_Page):
             self.hub_result.setText(f"{url} did not answer: {exc}")
             return
         theirs = str(answer.get("version", "?"))
-        mine = version.short()
         note = (f"{answer.get('name', '?')} answered — version {theirs}")
-        if theirs.split(".")[:3] != mine.split(".")[:3]:
-            note += (f", which is not this panel's {mine}. A client and its hub have to "
-                     "match; upgrade one of them.")
+        # The same rule the client's own handshake uses, from the same function. Spelled out
+        # here it was free to drift from the one that decides whether the panel connects at
+        # all, and a Test that says "these match" beside a panel that refuses to is worse
+        # than either answer on its own.
+        if not version.compatible(theirs):
+            note += (f", which is not this panel's {version.short()}. A client and its hub "
+                     "have to be the same release; update one of them.")
         self.hub_result.setText(note)
 
     def _apply_hub(self):
@@ -273,5 +502,11 @@ class HubPage(_Page):
         self._describe_hub()
         shown = self._serves_here()
         self.serving.setVisible(shown)
+        if shown:
+            self._describe_update()
+        else:
+            # The two are exclusive by construction: on the hub's own machine the question is
+            # "is there a newer release", and on a workstation it is "am I behind my hub".
+            self._describe_catch_up()
         if shown and _cfg is not None:
             self.listen_port.setText(str(getattr(getattr(_cfg, "hub", None), "port", "")))

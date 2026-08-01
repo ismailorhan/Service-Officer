@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QScrollArea, QVBoxLayout,
                                QWidget)
 
 from core import state as st
+from core.i18n import t
 from . import theme
 from .rows import ServiceRow
 from .servicelist import ServiceListMixin
@@ -37,10 +38,13 @@ class DashboardPage(ServiceListMixin, QWidget):
     refresh_requested = Signal()
     open_services_mmc = Signal()
 
-    def __init__(self, config_getter, store, parent=None):
+    def __init__(self, config_getter, store, parent=None, hub=None):
         super().__init__(parent)
         self._config = config_getter
         self._store = store
+        #: The hub this panel reads, or None when this computer does the work. Same getter the
+        #: other pages take; the dashboard needs it only to say when it has stopped hearing.
+        self._hub = hub if callable(hub) else (lambda: hub)
         self._rows: dict = {}
         self._extras: list = []          # section bars, stack rows, placeholders
 
@@ -57,7 +61,7 @@ class DashboardPage(ServiceListMixin, QWidget):
         head.addStretch(1)
         head.addWidget(_button(f"{theme.GLYPH_REFRESH}  Refresh", "quiet",
                                self.refresh_requested.emit))
-        head.addWidget(_button(f"{theme.GLYPH_SERVICES}  Services", "quiet",
+        head.addWidget(_button(f"{theme.GLYPH_SERVICES}  services.msc", "quiet",
                                self.open_services_mmc.emit))
         root.addLayout(head)
 
@@ -132,6 +136,22 @@ class DashboardPage(ServiceListMixin, QWidget):
                 stopped += 1
 
         total = len(cfg.services)
+        hub = self._hub()
+        if hub is not None and not getattr(hub, "connected", True):
+            # The tray flyout said this and the dashboard did not, so the same app told two
+            # stories about the same moment: "not connected" in the little window, "9 of 9
+            # running" in the big one. The big one is the one left open on a second monitor.
+            #
+            # Not a count, for the same reason it is not one in the flyout: every status here
+            # is whatever was last heard, and nothing has confirmed any of it since.
+            self.badge.set_state(t("not connected"), "stopped")
+            # The hub's own words when it has them. Every failure used to read as "cannot
+            # reach", including the one where the hub answers instantly and is simply a
+            # different release — which sends somebody to look at a firewall for an hour.
+            self.summary.setText(t(getattr(hub, "why", "") or t(
+                "Cannot reach {where} — trying again. What these services are doing is "
+                "unknown until it answers.", where=getattr(hub, "url", "the hub"))))
+            return
         self.badge.set_state(
             f"{running} of {total} running" if total else "no services",
             "running" if total and running == total

@@ -18,6 +18,7 @@ Edits are made on a copy of the config; nothing reaches disk until Save.
 from __future__ import annotations
 
 import copy
+import threading
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QMessageBox, QPushButton,
@@ -40,6 +41,10 @@ class MainPanel(QDialog):
     """The window the tray icon opens on a double-click."""
 
     saved = Signal(object)               # the new Config
+    #: What the sidebar's foot should say about updates, or "" for nothing. A signal because
+    #: the answer arrives on a socket thread and a worker thread has no Qt thread — the same
+    #: reason every other cross-thread hop in this product is one.
+    update_found = Signal(str)
     test_run = Signal(object, str)       # the stack being edited, action
     run_trigger = Signal(object)         # a trigger, run on demand from its page
     theme_changed = Signal(str)          # applied immediately, stored immediately
@@ -105,7 +110,7 @@ class MainPanel(QDialog):
 
         # The dashboard acts on real services, so it reads the saved config and
         # the live store — not the copy being edited on the other pages.
-        self.dashboard = DashboardPage(self._live, self._store)
+        self.dashboard = DashboardPage(self._live, self._store, hub=self._hub)
         self.dashboard.action_requested.connect(self.action_requested)
         self.dashboard.bulk_requested.connect(self.bulk_requested)
         self.dashboard.run_stack.connect(self.run_stack)
@@ -182,6 +187,25 @@ class MainPanel(QDialog):
             self._by_name[kind] = page
             self._buttons_by_name[kind] = b
         nl.addStretch(1)
+        # An update, at the foot of the sidebar, and only when there is one.
+        #
+        # It was only on the Hub page, which is three clicks away and a page nobody opens
+        # twice — on an ERP server that is weeks of not knowing. Here it is in the one place
+        # that is on screen whenever the panel is, and it goes away entirely when there is
+        # nothing to say: a permanent row reading "up to date" is a row people stop seeing,
+        # and then they stop seeing it when it changes.
+        self.update_hint = QPushButton("")
+        self.update_hint.setProperty("kind", "nav")
+        self.update_hint.setProperty("nudge", "true")
+        self.update_hint.setCursor(Qt.PointingHandCursor)
+        self.update_hint.setIcon(icons.nav_icon("hub", 19))
+        self.update_hint.setIconSize(QSize(19, 19))
+        # Straight to where the button that acts on it lives, rather than explaining itself
+        # in a tooltip nobody hovers.
+        self.update_hint.clicked.connect(lambda: self.go_to("hub"))
+        self.update_hint.setVisible(False)
+        nl.addWidget(self.update_hint)
+        self.update_found.connect(self._show_update_hint)
         # No hub, nobody to pair: the page and its button are not there rather than
         # there and empty. A panel that runs its own engine has no clients by
         # definition — it is the only thing reading itself.
@@ -222,6 +246,44 @@ class MainPanel(QDialog):
         # over a network, and most times the panel is opened nobody goes near it.
         if page is self.clients_page or page is self.hub_page:
             page.refresh()
+
+    def check_for_update(self) -> None:
+        """Ask the hub what it knows and put it at the foot of the sidebar, or take it away.
+
+        One read, off the drawing thread: the hub answers from memory, but "the hub answers
+        from memory" is a promise about the hub and this is a socket. A panel that freezes
+        while opening is a panel people close.
+        """
+        hub = self._hub()
+        if hub is None:
+            return
+        threading.Thread(target=self._asked_about_update, args=(hub,), daemon=True,
+                         name="panel-update-hint").start()
+
+    def _asked_about_update(self, hub) -> None:
+        try:
+            said = hub.update_state()
+        except Exception:
+            # Quietly. The hub being unreachable is already said in three louder places, and a
+            # third voice saying it in the sidebar is noise.
+            return
+        from core import version as version_mod
+        offered = said.get("available") or ""
+        running = said.get("running") or ""
+        if offered:
+            # The hub has a newer release to install. Its own business, but worth surfacing
+            # wherever somebody is looking.
+            self.update_found.emit(t("{version} is available", version=offered))
+        elif running and not version_mod.compatible(running):
+            # This panel is the one that is behind. Different sentence, same row: what somebody
+            # needs to know is that a version is in the way, and where to go about it.
+            self.update_found.emit(t("Update this computer to {version}", version=running))
+        else:
+            self.update_found.emit("")
+
+    def _show_update_hint(self, text: str) -> None:
+        self.update_hint.setText("  " + text if text else "")
+        self.update_hint.setVisible(bool(text))
 
     def go_to(self, name: str) -> bool:
         """Open a named section — the tray menu offers them directly."""

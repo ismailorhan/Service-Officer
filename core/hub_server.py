@@ -20,6 +20,10 @@ The shape:
     GET  /api/v1/machines/<name>/services   what that machine has installed
     GET    /api/v1/clients   who is paired: name, when issued, when last used
     POST   /api/v1/clients   {name, description} -> 201 {token, url, ...} — once
+    GET  /api/v1/update      what the daily check found, and whether now is a bad moment
+    POST /api/v1/update      install it -> 202, and this hub stops a moment later
+    GET  /api/v1/update/installer   the installer for the release this hub runs, for
+                             a client that has to catch up and no way out to the internet
     DELETE /api/v1/clients/<name>   revoke, effective immediately
     GET  /                   one page, for a browser (core/hub_pages/index.html)
 
@@ -48,7 +52,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import applog, hub_auth, history, version, wire
+from . import applog, hub_auth, history, updates, version, wire
 from . import engine as engine_mod
 
 log = applog.get("hub")
@@ -232,6 +236,15 @@ class HubServer:
         self._listeners_lock = threading.RLock()
         self._server = None
         self._thread = None
+        #: Watches for a newer release, once a day, and installs nothing. The hub is the only
+        #: piece that can install anything: it is the elevated, always-running one, and a
+        #: client is deliberately unelevated — see app.needs_elevation.
+        #:
+        #: Made here and *started* by hub.py, not by `start()`. A background thread reaching
+        #: GitHub is the service's business, not the API object's — and every test that stands
+        #: a HubServer up would otherwise phone home, which is dozens of outbound requests in
+        #: a suite that has no business touching the network.
+        self.updates = updates.Watcher()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -296,6 +309,7 @@ class HubServer:
         log.info("hub listening on %s", self.url)
 
     def stop(self) -> None:
+        self.updates.stop()
         try:
             self.engine.store.unsubscribe(self._on_state)
         except Exception:
@@ -557,6 +571,10 @@ def _make_handler(hub: HubServer):
                 self._send(200, {"clients": hub_auth.clients(),
                                  "url": hub.public_url(),
                                  "fingerprint": hub.fingerprint()})
+            elif path == "/api/v1/update":
+                self._update_state()
+            elif path == "/api/v1/update/installer":
+                self._update_installer()
             elif path == "/api/v1/history":
                 self._history(query)
             elif path == "/api/v1/events":
@@ -584,6 +602,8 @@ def _make_handler(hub: HubServer):
             path = self.path.partition("?")[0]
             if path == "/api/v1/hub/port":
                 self._hub_port(body, who)
+            elif path == "/api/v1/update":
+                self._update_now(who)
             elif path == "/api/v1/actions":
                 self._action(body, who)
             elif path == "/api/v1/stacks/run":
@@ -737,6 +757,89 @@ def _make_handler(hub: HubServer):
                 return
             log.info("%s saved the config", actor)
             self._send(204)
+
+        def _update_state(self) -> None:
+            """What this hub knows about newer releases. A read, and it never asks the
+            network: the answer is whatever the daily check last found, so opening a page
+            cannot cost a round trip to GitHub."""
+            found = hub.updates.available
+            # The installer for the release this hub is *running*, which is a different
+            # question from what the feed offers it. A client is behind and the hub is
+            # ahead — that is the normal order — so what a client needs is the file the hub
+            # installed from, and the hub is the one machine that fetched it.
+            mine = updates.kept()
+            self._send(200, {
+                "running": version.short(),
+                "available": found.version if found else "",
+                "notes": found.notes if found else "",
+                "trouble": hub.updates.trouble,
+                # Answered here rather than worked out by each caller: the hub is the only
+                # thing that knows whether a stack is halfway up.
+                "busy": updates.why_not_now(hub.engine),
+                "installer": {
+                    "version": version.short(),
+                    "sha256": updates.sha256_of(mine),
+                    "bytes": os.path.getsize(mine),
+                } if mine else None,
+            })
+
+        def _update_installer(self) -> None:
+            """Hand a client the installer for the release this hub runs.
+
+            So a workstation needs no internet at all, which is what a customer's network
+            actually looks like. Behind the same token as everything else — this is a
+            37 MB executable and an unauthenticated copy of it is a download anybody on the
+            network can have.
+            """
+            mine = updates.kept()
+            if not mine:
+                self._refuse(404, "this hub has no installer for the release it is running")
+                return
+            try:
+                size = os.path.getsize(mine)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(size))
+                self.send_header("X-Installer-Sha256", updates.sha256_of(mine))
+                self.end_headers()
+                with open(mine, "rb") as f:
+                    while True:
+                        chunk = f.read(256 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                # A client that gave up mid-download. Its business, not an error here.
+                log.info("a client stopped downloading the installer")
+
+        def _update_now(self, who: str) -> None:
+            """Download, verify, and hand over to the installer.
+
+            202, not 200: this hub is about to stop. The reply has to be written before
+            anything touches the service, the same reason the port change answers early.
+            """
+            found = hub.updates.available
+            if found is None:
+                self._refuse(409, "there is no newer release to install")
+                return
+            in_the_way = updates.why_not_now(hub.engine)
+            if in_the_way:
+                # 409, not 500: nothing is broken. Somebody pressed a button at a bad moment
+                # and the honest answer names the moment.
+                self._refuse(409, f"not now — {in_the_way}")
+                return
+            try:
+                installer = updates.download(found)
+            except Exception as exc:
+                log.warning("the update was not installed: %s", exc)
+                self._refuse(502, f"the download failed: {exc}")
+                return
+            log.info("%s asked this hub to install %s", who, found.version)
+            self._send(202, {"version": found.version, "installer": installer})
+            # After the reply is out, and detached — the installer stops this service, so a
+            # child of this process would be killed partway through replacing the files.
+            threading.Thread(target=lambda: updates.install(installer), daemon=True,
+                             name="hub-update").start()
 
         def _hub_port(self, body: dict, who: str) -> None:
             """Change the port this hub listens on, and move to it.

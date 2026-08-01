@@ -74,9 +74,13 @@ class Flyout(ServiceListMixin, QWidget):
         head = QHBoxLayout()
         head.setContentsMargins(14, 11, 10, 9)
         head.setSpacing(8)
-        logo = QLabel()
-        logo.setPixmap(icons.base_pixmap("green", 20))
-        head.addWidget(logo)
+        # A logo, until it is not: it is fixed green through every other state this window can
+        # be in, which is why it can carry the emergency one without becoming a second status
+        # light nobody can read. A green gear beside a red "not connected" is the same
+        # contradiction the tray icon was making.
+        self.logo = QLabel()
+        self.logo.setPixmap(icons.base_pixmap("green", 20))
+        head.addWidget(self.logo)
         title = QLabel("Service Officer")
         title.setObjectName("flyoutTitle")
         head.addWidget(title)
@@ -149,7 +153,7 @@ class Flyout(ServiceListMixin, QWidget):
         fl.setContentsMargins(*theme.FOOT_PAD)
         fl.setSpacing(6)
         for text, slot in ((f"{theme.GLYPH_REFRESH}  Refresh", self.refresh),
-                           (f"{theme.GLYPH_SERVICES}  Services",
+                           (f"{theme.GLYPH_SERVICES}  services.msc",
                             self.open_services_mmc.emit),
                            (f"{theme.GLYPH_SETTINGS}  Manage", self._settings)):
             b = QPushButton(text)
@@ -265,11 +269,19 @@ class Flyout(ServiceListMixin, QWidget):
             # Not a count. Every status here is Unknown because nothing has answered, and
             # "0 of 4 running" about four services that are probably running fine is the
             # kind of wrong that gets somebody out of bed.
-            self.badge.set_state(t("not connected"), "none")
-            self.summary.setText(t(
+            # Red, not grey. Grey is this chip's "nothing to say" — the colour it wears when
+            # there are no services configured at all — and it read as calm. Nothing being
+            # watched is not calm, and it is the same news the tray icon now goes red for.
+            self.logo.setPixmap(icons.emergency_pixmap(20))
+            self.badge.set_state(t("not connected"), "stopped")
+            # The hub's own words when it has them. Every failure used to read as "cannot
+            # reach", including the one where the hub answers instantly and is simply a
+            # different release — which sends somebody to look at a firewall for an hour.
+            self.summary.setText(t(getattr(hub, "why", "") or t(
                 "Cannot reach {where} — trying again. What these services are doing is "
-                "unknown until it answers.", where=getattr(hub, "url", "the hub")))
+                "unknown until it answers.", where=getattr(hub, "url", "the hub"))))
             return
+        self.logo.setPixmap(icons.base_pixmap("green", 20))
         # The badge takes the worst state in the list, so a green pill is never the
         # summary of something that is starting or not answering.
         worst = ("stopped" if unwell else

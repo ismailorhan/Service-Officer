@@ -85,7 +85,13 @@ def declared_versions() -> dict:
 
     iss = TARGET.parent.parent / "installer.iss"
     if iss.exists():
-        match = re.search(r'^#define MyAppVersion\s+"(.*)"$',
+        # `MyRelease`, not `MyAppVersion`. MyAppVersion became *computed* — read from the file
+        # stamp_version leaves, so the installer can show a build number — and this regex went
+        # on looking for a literal that no longer exists. It matched nothing from that day on,
+        # so the "three copies" this docstring promises to compare were two, silently. A test
+        # catches the same disagreement, but the release-time guard had quietly stopped being
+        # one.
+        match = re.search(r'^#define MyRelease\s+"(.*)"$',
                           iss.read_text(encoding="utf-8"), flags=re.M)
         if match:
             found["installer.iss"] = match.group(1)

@@ -43,9 +43,21 @@ _STATE = {
     1: "Stopped", 2: "Starting", 3: "Stopping", 4: "Running",
     5: "Resuming", 6: "Pausing", 7: "Paused",
 }
+#: What a deleted service is reported as. The same string as `core.state.NOT_FOUND`, by value
+#: rather than by import: every name in `_STATE` is already one of those constants spelled out,
+#: and this module is deliberately the one place that talks to advapi32 and nothing else.
+GONE = "Not Found"
 
 WAIT_IO_COMPLETION = 0x000000C0
 ERROR_SERVICE_NOTIFY_CLIENT_LAGGING = 1294
+#: The SCM's answer to "open this service" and to "register again" once somebody has deleted
+#: it. It is also what an installer gets from CreateService while a deleted service still has
+#: an open handle somewhere — see _Watch.gone for why that somebody used to be us.
+ERROR_SERVICE_MARKED_FOR_DELETE = 1072
+ERROR_SERVICE_DOES_NOT_EXIST = 1060
+#: One of the bits in _MASK, and the only one that is not a state: it says the service is on
+#: its way out of the database.
+SERVICE_NOTIFY_DELETE_PENDING = 0x0200
 
 
 class SERVICE_STATUS_PROCESS(ctypes.Structure):
@@ -102,12 +114,33 @@ class _Watch:
         self.buf = SERVICE_NOTIFY_2W()
         self.cb = PFN_SC_NOTIFY_CALLBACK(self._fired)
         self.hits = []          # states seen, drained by the loop
+        #: Somebody has deleted this service, so this handle has to go — and quickly.
+        #:
+        #: `DeleteService` only *marks* a service for deletion. The database entry survives
+        #: until every open handle to it is closed. This process held one per watched service
+        #: from the moment it started, so an uninstall left a ghost entry behind, and the
+        #: reinstall's CreateService got ERROR_SERVICE_MARKED_FOR_DELETE — after which the
+        #: service exists in some half-made state, disabled or stopped, and only a reboot
+        #: (which rebuilds the database) puts it right. Which is the bug as reported: uninstall
+        #: AppEngine, install it again, and it does not come up until Windows restarts.
+        #:
+        #: DELETE_PENDING was in `_MASK` all along and nobody read `dwNotificationTriggered`,
+        #: so the SCM was telling us to let go and we were not listening.
+        self.gone = False
 
     def _fired(self, _param):
         # Runs as an APC on the watcher thread. Record only; the loop re-arms.
         self.armed = False
         try:
-            if self.buf.dwNotificationStatus == 0:
+            status = self.buf.dwNotificationStatus
+            # Both spellings of the same news: the SCM reports the deletion either as the
+            # triggering reason or, if it has already been marked by the time this registration
+            # is serviced, as the status itself.
+            if (status == ERROR_SERVICE_MARKED_FOR_DELETE
+                    or self.buf.dwNotificationTriggered & SERVICE_NOTIFY_DELETE_PENDING):
+                self.gone = True
+                return
+            if status == 0:
                 s = self.buf.ServiceStatus
                 # The exit code is what separates a crash from a deliberate
                 # stop, so it has to travel with the status.
@@ -190,13 +223,36 @@ class Watcher:
 
     def _arm_all(self):
         for name, w in list(self._watches.items()):
-            if w.armed:
+            if w.gone or w.armed:
                 continue
             ok, rc = w.arm()
             if not ok and rc == ERROR_SERVICE_NOTIFY_CLIENT_LAGGING:
                 # Docs: reopen the handle and register again.
                 w.close()
                 self._watches.pop(name, None)
+            elif not ok and rc in (ERROR_SERVICE_MARKED_FOR_DELETE,
+                                   ERROR_SERVICE_DOES_NOT_EXIST):
+                # The second way to hear it. Without this the loop re-armed a handle to a
+                # deleted service every 400ms for ever, holding the entry open the whole time:
+                # only 1294 was acted on, and every other failure fell through to "try again".
+                w.gone = True
+
+    def _reap(self):
+        """Let go of any service that has been deleted.
+
+        The handle goes first and the report second: the point of this is to stop holding the
+        database entry open, and a listener doing something slow with the news must not sit
+        between the deletion and the release.
+        """
+        for name, w in list(self._watches.items()):
+            if not w.gone:
+                continue
+            self._watches.pop(name, None)
+            w.close()
+            self._last.pop(name, None)
+            # Not silently: the store would otherwise keep whatever it last heard, so a
+            # service somebody has just uninstalled would read as Running.
+            self._report(name, GONE)
 
     def _report(self, name, status, exit_code=0, pid=0):
         """Report a state, skipping repeats. While a service is start/stop
@@ -216,6 +272,28 @@ class Watcher:
                 status, exit_code, pid = w.hits.pop(0)
                 self._report(w.name, status, exit_code, pid)
 
+    def _sweep(self):
+        """Ask outright, for the case where a registration was silently lost.
+
+        Its own method rather than eight lines inside the loop, because the only way to test it
+        there was to run the loop — and a loop told to stop runs its body zero times, so a test
+        of the sweep passed on the shutdown path's handle closing instead. It asserted the right
+        things for entirely the wrong reason.
+        """
+        for name in list(self._watches):
+            try:
+                seen = self._safety_query(name)
+            except Exception:
+                continue
+            self._report(name, seen)
+            if seen == GONE:
+                # The same net one layer out. The whole failure was a signal nobody acted on,
+                # so a signal cannot be the only thing that makes this let go of a handle.
+                w = self._watches.pop(name, None)
+                if w is not None:
+                    w.close()
+                    self._last.pop(name, None)
+
     def _loop(self):
         last_sync = 0.0
         last_safety = time.monotonic()
@@ -229,15 +307,15 @@ class Watcher:
             # Alertable wait: this is when the SCM's APCs get delivered.
             _kernel.SleepEx(400, True)
             self._drain()
+            # Before the next wait, so the longest this process can hold a deleted service's
+            # database entry open is one turn of this loop — 400ms, against an uninstall and a
+            # reinstall that are seconds apart.
+            self._reap()
 
             # Slow belt-and-braces sweep in case a registration was lost.
             if self._safety_query and (time.monotonic() - last_safety) >= 20.0:
                 last_safety = time.monotonic()
-                for name in list(self._watches):
-                    try:
-                        self._report(name, self._safety_query(name))
-                    except Exception:
-                        continue
+                self._sweep()
 
         for w in self._watches.values():
             w.close()
