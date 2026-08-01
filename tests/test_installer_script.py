@@ -46,13 +46,27 @@ def test_the_script_is_utf8_with_a_bom(script):
     assert ISS.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
+def _without_comments(body: str) -> str:
+    """The code, with `//` comments taken out.
+
+    Because these checks read text, and text includes the sentence explaining why the code no
+    longer does the thing. `PortAlreadyHere` was reported as expanding `{app}` by a comment
+    saying it must not — a test that fails on its own explanation is a test nobody keeps.
+    """
+    kept = []
+    for line in body.splitlines():
+        cut = line.find("//")
+        kept.append(line if cut < 0 else line[:cut])
+    return "\n".join(kept)
+
+
 def _routines(script: str) -> dict:
     bodies = {}
     for name, body in ROUTINE.findall(script):
         # A `forward;` declaration has no body; the real one comes later and wins.
         if body.strip():
             bodies.setdefault(name, "")
-            bodies[name] += "\n" + body
+            bodies[name] += "\n" + _without_comments(body)
     return bodies
 
 
@@ -76,19 +90,38 @@ def _reachable_from(start: str, routines: dict) -> set:
     return seen
 
 
-def test_initialize_wizard_expands_no_constant_that_does_not_exist_yet(script):
+#: Every hook Inno can call before `{app}` exists — which is to say before the directory page
+#: has been left. `InitializeWizard` was the only one checked, and that was not enough: a
+#: person double-clicking 2.2.10 got
+#:
+#:     Runtime error (at 27:156): An attempt was made to expand the "app" constant
+#:     before it was initialized.
+#:
+#: from `ShouldSkipPage` → `EnsureExistingPort` → `PortAlreadyHere`. Inno asks ShouldSkipPage
+#: about the directory page *itself*, and the comment in it claimed the opposite. Silent
+#: installs never showed it, because a silent install has no pages to skip — so the hub's own
+#: updates worked and only a person clicking the file saw it.
+EARLY_HOOKS = ("InitializeSetup", "InitializeWizard", "ShouldSkipPage",
+               "CurPageChanged", "NextButtonClick", "BackButtonClick",
+               "UpdateReadyMemo", "CheckPassword")
+
+
+def test_nothing_that_runs_early_expands_a_constant_that_does_not_exist_yet(script):
     routines = _routines(script)
     assert "InitializeWizard" in routines, "InitializeWizard is not in installer.iss"
     guilty = []
-    for name in sorted(_reachable_from("InitializeWizard", routines)):
-        for constant in LATE_CONSTANTS:
-            if constant in routines[name]:
-                guilty.append(f"{name} touches {constant}")
+    for hook in EARLY_HOOKS:
+        if hook not in routines:
+            continue
+        for name in sorted(_reachable_from(hook, routines)):
+            for constant in LATE_CONSTANTS:
+                if constant in routines[name]:
+                    guilty.append(f"{hook} -> {name} touches {constant}")
     assert guilty == [], (
-        "reachable from InitializeWizard, which runs before Inno initializes these: "
+        "reachable from a hook that runs before Inno initializes these: "
         f"{guilty}. It compiles and then fails at run time with \"an attempt was made "
-        "to expand the app constant before it was initialized\". Look it up when "
-        "something needs it instead — see EnsureExistingPort.")
+        "to expand the app constant before it was initialized\". Use WizardDirValue() "
+        "instead — it names the same folder and is valid from the start.")
 
 
 def test_no_line_in_the_code_starts_with_a_bracket(script):

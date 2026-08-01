@@ -28,7 +28,7 @@
 ; before ISCC runs, so stamp_version.py leaves it in a file. Without this the installer said
 ; "2.2.7 will be upgraded to 2.2.7" — true about the release and useless about the build,
 ; which is the only thing that differed.
-#define MyRelease        "2.2.10"
+#define MyRelease        "2.2.11"
 #if FileExists("installer-version.txt")
   #define VersionFile    FileOpen("installer-version.txt")
   #define MyAppVersion   Trim(FileRead(VersionFile))
@@ -497,7 +497,21 @@ var
   Code: Integer;
 begin
   Result := '';
-  Exe := ExpandConstant('{app}\{#MyHubService}\{#MyHubExeName}');
+  // `WizardDirValue`, not `{app}`. They name the same folder, and only one of them can be
+  // asked for at any time: `{app}` is not initialized until the directory page has been left,
+  // and expanding it before that is a runtime error rather than an empty string —
+  //
+  //     Runtime error (at 27:156): An attempt was made to expand the "app" constant
+  //     before it was initialized.
+  //
+  // which is what a person double-clicking 2.2.10 got. `ShouldSkipPage` calls this, and it is
+  // asked about the directory page itself, so the comment there — "every page this is asked
+  // about comes after the directory page" — was an assumption and not a fact. Silent installs
+  // never showed it, because a silent install has no pages to skip.
+  //
+  // WizardDirValue is the directory edit's current value: valid from the moment the wizard
+  // exists, and pre-filled with the previous installation's folder on an upgrade.
+  Exe := AddBackslash(WizardDirValue()) + '{#MyHubService}\{#MyHubExeName}';
   if FileExists(Exe) then
   begin
     Output := ExpandConstant('{tmp}\port.txt');
@@ -796,7 +810,9 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  // Safe here: every page this is asked about comes after the directory page.
+  // Not "safe here" — that is what the comment used to say, and it was wrong: Inno asks this
+  // about the directory page itself, before `{app}` exists. What made it safe was changing
+  // PortAlreadyHere to read WizardDirValue instead.
   EnsureExistingPort();
   // The components page is gone: the setup type says which components, and a list of two
   // parts is a worse question than "what should this computer do".

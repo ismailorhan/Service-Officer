@@ -3776,3 +3776,68 @@ def test_the_sidebar_keeps_asking_while_the_window_is_open(qapp, sample):
     win.check_for_update()
     assert win._hint_timer is first
     win.deleteLater()
+
+
+def test_opening_the_panel_is_reason_enough_for_a_fresh_look(qapp, sample):
+    """The panel asked the hub every minute and the hub had nothing new to say for up to a
+    day — a fast question about a stale answer. A release published an hour after the hub's
+    last look went unmentioned until the next one.
+
+    So a stale answer makes the hub look again. Bounded, and self-limiting: a check stamps the
+    hub's clock whether or not it reached GitHub.
+    """
+    from core import updates, version as version_mod
+
+    class _Hub:
+        connected, host, url = True, "CTL052", "https://CTL052:8797"
+
+        def __init__(self, age):
+            self.age = age
+            self.asked_to_look = 0
+            self.offers = ""
+
+        def update_state(self):
+            return {"running": version_mod.short(), "available": self.offers,
+                    "trouble": "", "busy": "", "installer": None,
+                    "checked_ago": self.age}
+
+        def check_for_update(self):
+            self.asked_to_look += 1
+            self.age = 0
+            self.offers = "9.9.9"        # what it finds when it does look
+            return {"available": self.offers}
+
+    win = panel_mod.MainPanel(sample, hub=lambda: None)
+    # Shown, or every isVisible() below reads False whatever the corner says — the same trap
+    # this file keeps walking into.
+    win.show()
+
+    fresh = _Hub(60)
+    win._asked_about_update(fresh)
+    qapp.processEvents()
+    assert fresh.asked_to_look == 0, "asked GitHub about an answer one minute old"
+    assert not win.update_hint.isVisible()
+
+    stale = _Hub(updates.STALE_SECONDS + 1)
+    win._asked_about_update(stale)
+    qapp.processEvents()
+    assert stale.asked_to_look == 1, "sat on an answer an hour old"
+    assert win.update_hint.isVisible(), "the fresher answer never reached the corner"
+    assert "9.9.9" in win.update_hint.text()
+
+    # And once it has looked, the next minute does not ask again.
+    win._asked_about_update(stale)
+    assert stale.asked_to_look == 1
+
+    # A hub too old to report its age is left to its own daily check rather than asked every
+    # minute — guessing would undo the pacing this is bounded by.
+    class _Older(_Hub):
+        def update_state(self):
+            said = _Hub.update_state(self)
+            said.pop("checked_ago")
+            return said
+
+    older = _Older(0)
+    win._asked_about_update(older)
+    assert older.asked_to_look == 0
+    win.deleteLater()

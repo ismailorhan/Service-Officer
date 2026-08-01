@@ -775,6 +775,10 @@ def _make_handler(hub: HubServer):
                 "available": found.version if found else "",
                 "notes": found.notes if found else "",
                 "trouble": hub.updates.trouble,
+                # How old this answer is, so a panel can decide that opening a window is
+                # reason enough to ask again. Seconds, not a timestamp: the clock behind it
+                # is monotonic and means nothing outside this process.
+                "checked_ago": hub.updates.checked_ago(),
                 # Answered here rather than worked out by each caller: the hub is the only
                 # thing that knows whether a stack is halfway up.
                 "busy": updates.why_not_now(hub.engine),

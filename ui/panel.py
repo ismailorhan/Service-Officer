@@ -280,6 +280,7 @@ class MainPanel(QDialog):
     def _asked_about_update(self, hub) -> None:
         try:
             said = hub.update_state()
+            said = self._freshened(hub, said)
         except Exception:
             # Quietly. The hub being unreachable is already said in three louder places, and a
             # third voice saying it in the sidebar is noise.
@@ -297,6 +298,35 @@ class MainPanel(QDialog):
             self.update_found.emit(t("Update this computer to {version}", version=running))
         else:
             self.update_found.emit("")
+
+    @staticmethod
+    def _freshened(hub, said: dict) -> dict:
+        """Make the hub look again if its answer is old, and return the newer one.
+
+        Opening a window is a person wanting to know now. Without this the panel asked the hub
+        every minute and the hub had nothing new to say for up to a day — a fast question about
+        a stale answer, and a release published an hour after the hub's last look went
+        unmentioned until the next one.
+
+        Bounded by `updates.STALE_SECONDS`, and self-limiting: a check stamps the hub's clock
+        whether or not it reached GitHub, so a hub with no way out is asked once an hour rather
+        than once a minute.
+        """
+        from core import updates
+        ago = said.get("checked_ago")
+        if ago is None:
+            # An older hub, before it reported this. Its own daily check still runs; there is
+            # simply nothing here to decide with, and guessing would mean asking every minute.
+            return said
+        if 0 <= float(ago) < updates.STALE_SECONDS:
+            return said
+        try:
+            hub.check_for_update()
+            return hub.update_state()
+        except Exception:
+            # The hub not answering is said elsewhere. What was already known is better than
+            # nothing, so the stale answer stands.
+            return said
 
     def _show_update_hint(self, text: str) -> None:
         self.update_hint.setText("  " + text if text else "")

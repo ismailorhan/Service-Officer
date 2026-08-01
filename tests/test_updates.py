@@ -356,3 +356,43 @@ def test_a_refused_prompt_is_an_answer_not_a_crash(monkeypatch, tmp_path):
     with pytest.raises(updates.Refused) as caught:
         updates.install(str(setup), how=updates.ASK_THE_PERSON)
     assert "refused" in str(caught.value)
+
+
+# ── how fresh the answer is ───────────────────────────────────────────────
+def test_a_watcher_that_has_never_looked_says_so():
+    """-1, not 0. Zero seconds ago and never are opposite answers, and a caller deciding
+    whether to ask again must not read one as the other."""
+    clock = {"t": 1000.0}
+    watcher = updates.Watcher(now=lambda: clock["t"])
+    assert watcher.checked_ago() == -1
+    assert watcher.stale() is True, "never asked is the stalest there is"
+
+
+def test_the_age_of_the_answer_is_reported(monkeypatch):
+    clock = {"t": 1000.0}
+    watcher = updates.Watcher(now=lambda: clock["t"])
+    monkeypatch.setattr(updates.urllib.request, "urlopen",
+                        lambda *_a, **_k: _Answer(b"{}"))
+    watcher.check_now()
+    assert watcher.checked_ago() == 0
+    assert watcher.stale() is False
+
+    clock["t"] += updates.STALE_SECONDS - 1
+    assert watcher.stale() is False
+    clock["t"] += 2
+    assert watcher.stale() is True
+
+
+def test_a_failed_check_still_counts_as_having_looked(monkeypatch):
+    """Self-limiting, and this is the mechanism: a hub with no way out is asked once an hour
+    rather than once a minute, because the attempt stamps the clock."""
+    clock = {"t": 1000.0}
+    watcher = updates.Watcher(now=lambda: clock["t"])
+
+    def broken(*_a, **_k):
+        raise OSError("no route to host")
+    monkeypatch.setattr(updates.urllib.request, "urlopen", broken)
+
+    watcher.check_now()
+    assert watcher.checked_ago() == 0
+    assert watcher.stale() is False

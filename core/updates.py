@@ -41,6 +41,18 @@ FEED_URL = ("https://github.com/ismailorhan/Service-Officer/releases/latest/down
             "latest.json")
 #: Once a day. A server tool that phones home every ten minutes is a server tool nobody keeps.
 EVERY_SECONDS = 24 * 60 * 60
+#: How old the daily check's answer may be before somebody *opening the panel* is reason enough
+#: to ask again.
+#:
+#: Without this, a release published an hour after the hub's last look went unmentioned for
+#: nearly a day — the panel asked the hub every minute and the hub had nothing new to say,
+#: which is a fast question about a stale answer. Opening a window is a person wanting to know
+#: now, and it is the one moment where a request to GitHub is clearly wanted.
+#:
+#: An hour, not a minute: the pacing above is deliberate and this must not quietly undo it. It
+#: is also self-limiting — a check updates `last_checked` whether or not it succeeded, so a hub
+#: with no way out asks once an hour rather than once a minute.
+STALE_SECONDS = 60 * 60
 #: A feed is a few hundred bytes. Anything slower than this is a network problem, and this runs
 #: on a thread that must not hold a shutdown up.
 TIMEOUT = 20
@@ -305,9 +317,25 @@ class Watcher:
         #: Why the last check failed, worded, or "" — shown rather than swallowed, because
         #: "no updates" and "could not ask" are different facts.
         self.trouble = ""
+        #: When the feed was last read, on the clock `_now` keeps. Zero means never.
         self.last_checked = 0.0
         self._stop = threading.Event()
         self._thread = None
+
+    def checked_ago(self) -> float:
+        """Seconds since the feed was last read, or -1 if it never has been.
+
+        A number for a caller to judge rather than a timestamp on a clock it does not share:
+        `_now` is monotonic, so the value is meaningless anywhere but in this process.
+        """
+        if not self.last_checked:
+            return -1.0
+        return max(0.0, self._now() - self.last_checked)
+
+    def stale(self) -> bool:
+        """Whether asking again is worth a request. True when it has never been asked."""
+        ago = self.checked_ago()
+        return ago < 0 or ago >= STALE_SECONDS
 
     def check_now(self) -> object:
         """One check, on the calling thread. Returns the release or None."""
