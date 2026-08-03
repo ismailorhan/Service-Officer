@@ -25,7 +25,19 @@ from . import applog
 
 log = applog.get("session")
 
+# Which DLL each of these actually lives in, asked of Windows rather than remembered. Two were
+# wrong, and both were invisible until the feature ran for real:
+#
+#   WTSGetActiveConsoleSessionId  kernel32  — *not* wtsapi32, despite the name
+#   WTSQueryUserToken             wtsapi32
+#   CreateProcessAsUserW          advapi32
+#   CreateEnvironmentBlock        userenv
+#
+# `ctypes.windll.x` loads the DLL happily and only fails when the missing name is *used*, so a
+# wrong DLL is an AttributeError at the call rather than at import — which is why nothing was
+# logged and the exit code was all there was to go on.
 _kernel = ctypes.windll.kernel32
+_advapi = ctypes.windll.advapi32
 _wts = ctypes.windll.wtsapi32
 _userenv = ctypes.windll.userenv
 
@@ -70,7 +82,7 @@ class _ProcessInfo(ctypes.Structure):
 
 def console_session() -> int:
     """The session somebody is actually sitting at, or NOBODY."""
-    return int(_wts.WTSGetActiveConsoleSessionId())
+    return int(_kernel.WTSGetActiveConsoleSessionId())
 
 
 def _as_the_person(session: int, command: str, folder: str) -> int:
@@ -92,7 +104,7 @@ def _as_the_person(session: int, command: str, folder: str) -> int:
     startup.lpDesktop = DESKTOP
     info = _ProcessInfo()
     try:
-        started = _kernel.CreateProcessAsUserW(
+        started = _advapi.CreateProcessAsUserW(
             token, None, ctypes.create_unicode_buffer(command), None, None,
             False, CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS,
             environment if made_environment else None,

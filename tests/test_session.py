@@ -76,3 +76,32 @@ def test_the_desktop_is_named():
     r"""Without `winsta0\default` the process starts on no desktop at all and a Qt application
     exits on the spot."""
     assert session.DESKTOP == "winsta0" + chr(92) + "default"
+
+
+# ── the calls themselves ──────────────────────────────────────────────────
+def test_every_windows_function_this_uses_actually_exists():
+    """The lesson from 2.2.10, paid for on a real machine.
+
+    `WTSGetActiveConsoleSessionId` is exported by **kernel32**, not by wtsapi32 despite its
+    name, and `CreateProcessAsUserW` by **advapi32**, not kernel32. Both were wrong. And
+    `ctypes.windll.x` loads a DLL happily and only fails when a missing name is *used*, so a
+    wrong DLL is an AttributeError at the call — not at import.
+
+    Nothing caught it because every test above stubs `console_session`: they replaced the one
+    function that was broken. So this one asks Windows, which is the only thing that knows.
+    """
+    for holder, name in ((session._kernel, "WTSGetActiveConsoleSessionId"),
+                         (session._kernel, "CloseHandle"),
+                         (session._wts, "WTSQueryUserToken"),
+                         (session._advapi, "CreateProcessAsUserW"),
+                         (session._userenv, "CreateEnvironmentBlock"),
+                         (session._userenv, "DestroyEnvironmentBlock")):
+        assert hasattr(holder, name), f"{name} is not in that DLL"
+
+
+def test_the_console_session_can_really_be_asked():
+    """Not stubbed, and not compared against a number: what a session id *is* depends on who is
+    signed in. That it answers at all is the thing that was broken."""
+    answer = session.console_session()
+    assert isinstance(answer, int)
+    assert answer >= 0
