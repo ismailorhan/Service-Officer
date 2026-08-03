@@ -28,7 +28,7 @@
 ; before ISCC runs, so stamp_version.py leaves it in a file. Without this the installer said
 ; "2.2.7 will be upgraded to 2.2.7" — true about the release and useless about the build,
 ; which is the only thing that differed.
-#define MyRelease        "2.2.12"
+#define MyRelease        "2.2.13"
 #if FileExists("installer-version.txt")
   #define VersionFile    FileOpen("installer-version.txt")
   #define MyAppVersion   Trim(FileRead(VersionFile))

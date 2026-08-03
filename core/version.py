@@ -15,7 +15,7 @@ import os
 import sys
 
 #: bumped by hand for a release, and matched by installer.iss
-VERSION = "2.2.12"
+VERSION = "2.2.13"
 
 #: Which build this is, counted by build.bat and restarted when VERSION changes.
 #: Zero means this *is* the release; anything else is an internal build and shows
