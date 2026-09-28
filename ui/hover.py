@@ -13,6 +13,7 @@ from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from core import state as st
+from core.i18n import t
 from . import icons
 
 SHOW_DELAY_MS = 350
@@ -152,23 +153,27 @@ class HoverCard(QWidget):
             # says. It used to read "Running" beside a row reading "Starting...",
             # because it decided for itself and knew only one verdict.
             sick = shown == "stopped" and st.category(status) == "running"
-            state = QLabel(label if label == status else label.lower())
+            # A verdict reads in lower case here, and each has its own catalogue entry.
+            lowered = {st.LABEL_STARTING: "starting…", st.LABEL_UNHEALTHY: "not responding"}
+            state = QLabel(t(label) if label == status
+                           else t(lowered.get(label, label.lower())))
             state.setProperty("role", "cardState")
             state.setProperty("bad", "true" if sick else "false")
             rl.addWidget(state)
             self._rows.addWidget(row)
 
         if not services:
-            empty = QLabel("No services configured")
+            empty = QLabel(t("No services configured"))
             empty.setProperty("role", "hint")
             self._rows.addWidget(empty)
 
         if not services:
             self.title.setText("Service Officer")
         else:
-            count = f"{running}/{len(services)} running"
+            count = t("{running}/{total} running", running=running,
+                      total=len(services))
             if unsettled:
-                count += f", {unsettled} to watch"
+                count += t(", {count} to watch", count=unsettled)
             self.title.setText(f"Service Officer  —  {count}")
 
     def _anchor(self) -> QPoint:

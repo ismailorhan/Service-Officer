@@ -288,6 +288,74 @@ def test_already_running_on_the_start_waits_again_rather_than_giving_up(monkeypa
     assert len(attempts) == 2, "gave up on the first refusal"
 
 
+def _slow_starter(monkeypatch, refusals, states=()):
+    """A service that misses Windows' 30 seconds `refusals` times, then starts."""
+    attempts = []
+
+    def ask(name, machine=""):
+        attempts.append(name)
+        if len(attempts) <= refusals:
+            raise FakeError(scm_windows.START_TIMED_OUT, "did not respond in a timely fashion")
+
+    states = iter(states)
+    monkeypatch.setattr(scm_windows, "_ask_to_start", ask)
+    monkeypatch.setattr(scm_windows, "query_status",
+                        lambda name, machine="": next(states, "Stopped"))
+    monkeypatch.setattr(scm_windows, "pywintypes",
+                        type("m", (), {"error": FakeError}))
+    monkeypatch.setattr(scm_windows.time, "sleep", lambda _s: None)
+    return attempts
+
+
+def test_a_start_that_missed_the_30_seconds_is_tried_once_more(monkeypatch):
+    """AppEngine takes 22 to 32 seconds to tell Windows it has started, measured, and
+    Windows gives it 30 — so a start failed with 1053 about as often as it didn't, and
+    the same start from services.msc a moment later worked, because the first attempt
+    had warmed everything up. The second attempt is what a person did by hand."""
+    attempts = _slow_starter(monkeypatch, refusals=1)
+
+    scm_windows.start_service("AppEngine")
+
+    assert attempts == ["AppEngine", "AppEngine"]
+
+
+def test_a_start_that_misses_twice_is_reported(monkeypatch):
+    attempts = _slow_starter(monkeypatch, refusals=5)
+
+    with pytest.raises(FakeError) as raised:
+        scm_windows.start_service("AppEngine")
+
+    assert raised.value.winerror == scm_windows.START_TIMED_OUT
+    assert len(attempts) == 2, "one retry, not a loop"
+
+
+def test_a_late_start_is_not_started_again(monkeypatch):
+    """Windows can still be tidying up the attempt it gave up on; if the service got
+    there anyway, starting it again would only be refused with "already running"."""
+    attempts = _slow_starter(monkeypatch, refusals=1, states=["Starting", "Running"])
+
+    scm_windows.start_service("AppEngine")
+
+    assert attempts == ["AppEngine"]
+
+
+def test_other_start_failures_are_not_retried(monkeypatch):
+    attempts = []
+
+    def ask(name, machine=""):
+        attempts.append(name)
+        raise FakeError(1058, "disabled")
+
+    monkeypatch.setattr(scm_windows, "_ask_to_start", ask)
+    monkeypatch.setattr(scm_windows, "pywintypes",
+                        type("m", (), {"error": FakeError}))
+
+    with pytest.raises(FakeError):
+        scm_windows.start_service("AppEngine")
+
+    assert len(attempts) == 1
+
+
 def test_an_unanswering_machine_gives_up_instead_of_hanging(monkeypatch):
     """Measured on 10.77.3.110, which has RPC's dynamic ports firewalled:
     OpenSCManager took **42 seconds** to answer "the RPC server is unavailable".

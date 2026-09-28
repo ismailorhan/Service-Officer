@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QPushButton,
                                QVBoxLayout, QWidget)
 
 from core import state as st
+from core.i18n import t, upper
+
 from . import theme
 from .widgets import Chip, Elide
 
@@ -45,7 +47,7 @@ class ServiceRow(QWidget):
         # Ticking rows is how a whole SAP stack gets stopped without clicking
         # five separate buttons and hoping the order held.
         self.tick = QCheckBox()
-        self.tick.setToolTip("Include in a bulk action")
+        self.tick.setToolTip(t("Include in a bulk action"))
         self.tick.toggled.connect(lambda _on: self.picked.emit())
         lay.addWidget(self.tick)
 
@@ -78,7 +80,7 @@ class ServiceRow(QWidget):
         # Stop does nothing and the SCM reports "Stopping" for ever.
         kill = QPushButton(theme.GLYPH_KILL)
         kill.setProperty("kind", "kill")
-        kill.setToolTip("Kill the process — for when Stop doesn't work")
+        kill.setToolTip(t("Kill the process — for when Stop doesn't work"))
         kill.setCursor(Qt.PointingHandCursor)
         kill.setEnabled(False)
         kill.clicked.connect(lambda: self.act.emit(
@@ -109,11 +111,11 @@ class ServiceRow(QWidget):
         # A disabled service can't be started at all, so say so instead of
         # showing "Stopped" next to a Start button that would only fail.
         if disabled and cat == "stopped":
-            self.chip.set_state(busy_label or "Disabled", "none")
+            self.chip.set_state(t(busy_label or "Disabled"), "none")
             for action, b in self.buttons.items():
                 b.setEnabled(False)
-            self.setToolTip("This service is disabled in Windows — enable it in "
-                            "services.msc before it can start.")
+            self.setToolTip(t("This service is disabled in Windows — enable it in "
+                              "services.msc before it can start."))
             return
         # What it effectively is: st.effective() owns that judgement, so the row,
         # the hover card and the tray icon cannot disagree about it.
@@ -121,15 +123,17 @@ class ServiceRow(QWidget):
         if busy_label:
             label, shown = busy_label, "pending"
         if shown == "stopped" and cat == "running":
-            self.setToolTip("The service is running, but its health checks are "
-                            "failing:\n" + (health_detail or "no detail"))
+            self.setToolTip(t("The service is running, but its health checks are failing:")
+                            + "\n" + (health_detail or t("no detail")))
         elif shown == "pending" and cat == "running" and not busy_label:
-            self.setToolTip(health_detail or "It has started; its health checks "
-                                             "have not passed yet.")
+            self.setToolTip(health_detail
+                            or t("It has started; its health checks have not passed yet."))
         else:
-            self.setToolTip(f"Health checks pass — {health_detail}"
+            self.setToolTip(t("Health checks pass — {detail}", detail=health_detail)
                             if health == st.HEALTHY and health_detail else "")
-        self.chip.set_state(label, shown)
+        # The label is a state value ("Running", "Not responding"), so it is translated
+        # here, where it becomes words, and nowhere upstream where it is compared.
+        self.chip.set_state(t(label), shown)
         self._set_buttons(cat, busy_label)
 
     def _set_buttons(self, cat: str, busy_label: str) -> None:
@@ -173,7 +177,7 @@ class StackRow(QWidget):
         trigger.setProperty("kind", "primary")
         trigger.setCursor(Qt.PointingHandCursor)
         trigger.setEnabled(bool(stack.steps))
-        trigger.setToolTip(stack.describe(services) or "Add steps in Settings")
+        trigger.setToolTip(stack.describe(services) or t("Add steps in Settings"))
         trigger.clicked.connect(lambda: self.run.emit(stack.name))
         lay.addWidget(trigger)
 
@@ -218,7 +222,8 @@ class SectionBar(QWidget):
         self.chevron.setProperty("role", "chevron")
         self.chevron.setFixedWidth(12)
         lay.addWidget(self.chevron)
-        head = Elide(title.upper(), "section")
+        # Only the built-in heading is translated; a category's name is the user's own.
+        head = Elide(upper(t(title) if not category else title), "section")
         lay.addWidget(head, 1)
         self.tally = QLabel(f"{running}/{count}")
         self.tally.setProperty("role", "hint")
@@ -231,8 +236,8 @@ class SectionBar(QWidget):
         # one costs ~600 ms of colour-emoji font loading in this process.
         folded = is_collapsed(self.category)
         self.chevron.setText(theme.GLYPH_FOLDED if folded else theme.GLYPH_FOLD)
-        self.setToolTip("Click to show these services" if folded
-                        else "Click to fold this group away")
+        self.setToolTip(t("Click to show these services") if folded
+                        else t("Click to fold this group away"))
 
     def mousePressEvent(self, event):
         folded = not is_collapsed(self.category)
@@ -279,7 +284,7 @@ class BulkBar(QWidget):
             if kind:
                 b.setProperty("kind", kind)
             b.setCursor(Qt.PointingHandCursor)
-            b.setToolTip(f"{text} every selected service")
+            b.setToolTip(t("{action} every selected service", action=text))
             b.setMaximumWidth(self.MAX_BUTTON)
             b.clicked.connect(lambda _=False, a=action: self.chosen.emit(a))
             lay.addWidget(b, 1)
@@ -287,7 +292,7 @@ class BulkBar(QWidget):
         clear = QPushButton("Clear")
         clear.setProperty("kind", "quiet")
         clear.setCursor(Qt.PointingHandCursor)
-        clear.setToolTip("Unselect everything")
+        clear.setToolTip(t("Unselect everything"))
         clear.setMaximumWidth(self.MAX_BUTTON)
         clear.clicked.connect(self.cleared.emit)
         lay.addWidget(clear, 1)

@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFrame,
                                QListWidget, QListWidgetItem, QPushButton,
                                QSpinBox, QVBoxLayout, QWidget)
 
+from core.i18n import t
+
 from . import icons, theme
 
 
@@ -268,7 +270,7 @@ class Grip(QLabel):
         self.setFixedWidth(14)
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.OpenHandCursor)
-        self.setToolTip("Drag to reorder")
+        self.setToolTip(t("Drag to reorder"))
         self.setProperty("role", "grip")
         self._press = None
         self._live = False

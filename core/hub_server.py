@@ -22,6 +22,8 @@ The shape:
     POST   /api/v1/clients   {name, description} -> 201 {token, url, ...} — once
     GET  /api/v1/update      what the daily check found, and whether now is a bad moment
     POST /api/v1/update      install it -> 202, and this hub stops a moment later
+    POST /api/v1/machines/<name>/test   reach that machine from the hub and report facts
+    POST /api/v1/health/check   {service, machine} -> run its checks here, now
     GET  /api/v1/update/installer   the installer for the release this hub runs, for
                              a client that has to catch up and no way out to the internet
     DELETE /api/v1/clients/<name>   revoke, effective immediately
@@ -52,7 +54,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import applog, hub_auth, history, updates, version, wire
+from . import applog, hub_auth, history, probe, updates, version, wire
 from . import engine as engine_mod
 
 log = applog.get("hub")
@@ -606,6 +608,10 @@ def _make_handler(hub: HubServer):
                 self._update_now(who)
             elif path == "/api/v1/update/check":
                 self._update_check(who)
+            elif path.startswith("/api/v1/machines/") and path.endswith("/test"):
+                self._test_machine(path.split("/")[4], who)
+            elif path == "/api/v1/health/check":
+                self._check_health(body, who)
             elif path == "/api/v1/actions":
                 self._action(body, who)
             elif path == "/api/v1/stacks/run":
@@ -817,6 +823,33 @@ def _make_handler(hub: HubServer):
             except (BrokenPipeError, ConnectionResetError):
                 # A client that gave up mid-download. Its business, not an error here.
                 log.info("a client stopped downloading the installer")
+
+        def _test_machine(self, name: str, who: str) -> None:
+            """Reach a machine from *here*, which is the only interesting answer.
+
+            The panel used to do this itself, so on a workstation it proved that desk could
+            reach a server — a different question from the one this hub answers every five
+            seconds. Facts come back and the panel words them: see core/probe.
+            """
+            wanted = urllib.parse.unquote(name or "")
+            record = next((m for m in hub.engine.config().machines
+                           if m.name == wanted), None)
+            if record is None:
+                self._refuse(404, f"no machine called {wanted!r}")
+                return
+            log.info("%s asked this hub to test %s", who, wanted or "this computer")
+            self._send(200, probe.test_machine(record))
+
+        def _check_health(self, body: dict, who: str) -> None:
+            """Run one service's health checks from here, now."""
+            name = (body.get("service") or "").strip()
+            machine = body.get("machine") or ""
+            service = hub.engine.config().service(name, machine)
+            if service is None:
+                self._refuse(404, f"no service called {name!r}")
+                return
+            log.info("%s asked this hub to check %s", who, name)
+            self._send(200, probe.run_health(service))
 
         def _update_check(self, who: str) -> None:
             """Ask the feed now instead of waiting for the daily check.

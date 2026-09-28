@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from core import state as st
+from core.i18n import t
 from . import icons
 
 
@@ -91,7 +92,7 @@ class Tray(QObject):
         # sections are offered directly, since "open the panel then click
         # History" is two steps for one intention.
         opener = self._menu.addAction(
-            "Service Management Panel", lambda: self.panel_requested.emit(""))
+            t("Service Management Panel"), lambda: self.panel_requested.emit(""))
         font = opener.font()
         font.setBold(True)
         opener.setFont(font)
@@ -99,7 +100,7 @@ class Tray(QObject):
                            ("Settings…", "general")):
             self._menu.addAction(text, lambda p=page: self.panel_requested.emit(p))
         self._menu.addSeparator()
-        self._menu.addAction("Open Services", self.services_requested.emit)
+        self._menu.addAction(t("Open Services"), self.services_requested.emit)
         self._menu.addAction("Refresh", self.refresh_requested.emit)
         self._menu.addSeparator()
         self._menu.addAction("Quit", self.quit_requested.emit)

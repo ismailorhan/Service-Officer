@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
                                QTableWidgetItem)
 
 from core import clock, history
+from core.i18n import t
 
 from .. import theme
 from ..widgets import button as _button, label as _label
@@ -86,7 +87,7 @@ class HistoryPage(_Page):
 
         row = QHBoxLayout()
         row.setSpacing(9)
-        self.enabled = QCheckBox("Record state changes")
+        self.enabled = QCheckBox(t("Record state changes"))
         self.enabled.toggled.connect(self._set_enabled)
         row.addWidget(self.enabled)
         row.addStretch(1)
@@ -112,7 +113,7 @@ class HistoryPage(_Page):
 
         self.range_filter = QComboBox()
         for text, hours in self.RANGES:
-            self.range_filter.addItem(text, hours)
+            self.range_filter.addItem(t(text), hours)
         self.range_filter.setCurrentIndex(2)
         self.range_filter.currentIndexChanged.connect(self.reload)
         filt.addWidget(_label("Range", "hint"))
@@ -120,17 +121,17 @@ class HistoryPage(_Page):
 
         self.source_filter = QComboBox()
         for text, value in self.SOURCES:
-            self.source_filter.addItem(text, value)
+            self.source_filter.addItem(t(text), value)
         self.source_filter.currentIndexChanged.connect(self.reload)
         filt.addWidget(_label("Trigger", "hint"))
         filt.addWidget(self.source_filter)
 
         # Only offered once something is actually filtered — a permanently
         # visible "clear" invites the question of what it would clear.
-        self.clear_filters = _button(f"Clear filters {theme.GLYPH_KILL}",
+        self.clear_filters = _button(f"{t('Clear filters')} {theme.GLYPH_KILL}",
                                      "quiet", self._clear_filters)
-        self.clear_filters.setToolTip("Back to all services, the last 24 hours, "
-                                      "any trigger.")
+        self.clear_filters.setToolTip(t("Back to all services, the last 24 hours, any "
+                                        "trigger."))
         self.clear_filters.setVisible(False)
         filt.addWidget(self.clear_filters)
         filt.addStretch(1)
@@ -139,31 +140,33 @@ class HistoryPage(_Page):
 
         opts = QHBoxLayout()
         opts.setSpacing(8)
-        self.full_detail = QCheckBox("Full detail")
-        self.full_detail.setToolTip(
-            "Every state the SCM reported, including the halfway ones. Off, a "
-            "restart reads as “restart requested” then “Running” instead of four "
-            "rows saying the same thing. Nothing is left out of the file either "
-            "way.")
+        self.full_detail = QCheckBox(t("Full detail"))
+        self.full_detail.setToolTip(t(
+            "Every state the SCM reported, including the halfway ones. Off, a restart reads "
+            "as “restart requested” then “Running” instead of four rows saying the same "
+            "thing. Nothing is left out of the file either way."))
         self.full_detail.toggled.connect(self.reload)
         opts.addWidget(self.full_detail)
 
-        self.include_windows = QCheckBox("Windows event log")
-        self.include_windows.setToolTip(
-            "Merge what Windows recorded about these services — the SCM's "
-            "\"terminated unexpectedly\", and errors the service itself logged. "
-            "This is usually where the reason is.")
+        self.include_windows = QCheckBox(t("Windows event log"))
+        self.include_windows.setToolTip(t(
+            "Merge what Windows recorded about these services — the SCM's \"terminated "
+            "unexpectedly\", and errors the service itself logged. This is usually where "
+            "the reason is."))
         self.include_windows.toggled.connect(self.reload)
         opts.addWidget(self.include_windows)
 
         opts.addStretch(1)
-        opts.addWidget(_button("Refresh", "quiet", self.reload))
-        opts.addWidget(_button("Export CSV…", "quiet", self._export))
+        opts.addWidget(_button(t("Refresh"), "quiet", self.reload))
+        opts.addWidget(_button(t("Export CSV…"), "quiet", self._export))
         self.root.addLayout(opts)
         self.root.addSpacing(10)
 
         self.table = QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        # Translated here rather than in COLUMNS: a class constant is built at import,
+        # before anybody has chosen a language. The English names stay the keys — the code
+        # that hides a column looks one up by name.
+        self.table.setHorizontalHeaderLabels([t(name) for name in self.COLUMNS])
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(False)
@@ -194,7 +197,7 @@ class HistoryPage(_Page):
         self.path_label = _label("", "hint")
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         where.addWidget(self.path_label)
-        where.addWidget(_button("Open folder", "quiet", self._open_folder))
+        where.addWidget(_button(t("Open folder"), "quiet", self._open_folder))
         where.addStretch(1)
         self.root.addLayout(where)
         self._show_path()
@@ -239,27 +242,27 @@ class HistoryPage(_Page):
             # they can see on screen, and it is empty — only an engine writes rows, and a
             # client has none. Seen in the end-to-end run, on the page it describes.
             self._set_path_state("")
-            self.path_label.setText(f"Kept by the hub at  {getattr(hub, 'url', '')}"
-                                    + (f"  ·  {hub.host}" if getattr(hub, "host", "")
-                                       else ""))
+            self.path_label.setText(
+                t("Kept by the hub at  {url}", url=getattr(hub, "url", ""))
+                + (f"  ·  {hub.host}" if getattr(hub, "host", "") else ""))
             return
         path = history.path()
         try:
             size = os.path.getsize(path)
             note = f"  ·  {size / 1024:.0f} KB"
         except OSError:
-            note = "  ·  not written yet"
+            note = "  ·  " + t("not written yet")
         broken = history.last_error()
         if broken:
             # An empty timeline that turns out to be a permissions problem reads
             # as "nothing happened" until somebody checks, so say it here.
-            self.path_label.setText(
-                f"Cannot write the history — {broken}. Is Service Officer "
-                f"running as administrator?")
+            self.path_label.setText(t(
+                "Cannot write the history — {why}. Is Service Officer running as "
+                "administrator?", why=broken))
             self._set_path_state("error")
             return
         self._set_path_state("")
-        self.path_label.setText(f"Written to  {path}{note}")
+        self.path_label.setText(t("Written to  {path}", path=path) + note)
 
     def _open_folder(self):
         folder = os.path.dirname(history.path())
@@ -267,7 +270,8 @@ class HistoryPage(_Page):
             os.startfile(folder)                       # noqa: S606 - Explorer
         except Exception as exc:
             QMessageBox.warning(self, "Service Officer",
-                                f"Could not open\n{folder}\n\n{exc}")
+                                t("Could not open\n{folder}\n\n{why}",
+                                  folder=folder, why=exc))
 
     def _set_enabled(self, on):
         self.cfg().history.enabled = on
@@ -287,7 +291,7 @@ class HistoryPage(_Page):
 
         self.service_filter.blockSignals(True)
         self.service_filter.clear()
-        self.service_filter.addItem("All services", None)
+        self.service_filter.addItem(t("All services"), None)
         for svc in cfg.services:
             self.service_filter.addItem(svc.display(), svc.name)
         self.service_filter.blockSignals(False)
@@ -397,8 +401,8 @@ class HistoryPage(_Page):
             self.table.insertRow(row)
             stored = r.get("ts", "")
             cells = [clock.local_text(stored), r.get("label") or r.get("service", ""),
-                     r.get("event", ""), r.get("detail", ""), r.get("source", ""),
-                     r.get("actor", "")]
+                     r.get("event", ""), r.get("detail", ""),
+                     self._word_source(r.get("source", "")), r.get("actor", "")]
             for col, text in enumerate(cells):
                 item = (_TimeCell(text, stored) if col == 0
                         else QTableWidgetItem(text))
@@ -420,16 +424,30 @@ class HistoryPage(_Page):
 
         shown = len(rows)
         extra = sum(1 for r in rows if r.get("kind") == "windows")
-        parts = [f"{shown} entr{'y' if shown == 1 else 'ies'}"]
+        parts = [t("1 entry") if shown == 1 else t("{count} entries", count=shown)]
         if extra:
-            parts.append(f"{extra} from the Windows event log")
-        self.count.setText("  ·  ".join(parts) if shown else "Nothing recorded yet.")
+            parts.append(t("{count} from the Windows event log", count=extra))
+        self.count.setText("  ·  ".join(parts) if shown
+                           else t("Nothing recorded yet."))
+
+    def _word_source(self, stored: str) -> str:
+        """What the file recorded, in the words the filter above offers.
+
+        The value in the file is English and stays English — it is written by an engine that
+        may not be reading in the same language as the panel showing it. So it is looked up
+        rather than translated in place, which also keeps the column and the Trigger filter
+        saying the same thing.
+        """
+        for text, value in self.SOURCES:
+            if value is not None and value == stored:
+                return t(text)
+        return stored
 
     def _export(self):
-        excel = "For Excel (*.csv)"
-        plain = "Plain comma-separated (*.csv)"
+        excel = t("For Excel (*.csv)")
+        plain = t("Plain comma-separated (*.csv)")
         dest, chosen = QFileDialog.getSaveFileName(
-            self, "Export history", "history.csv", f"{excel};;{plain}")
+            self, t("Export history"), "history.csv", f"{excel};;{plain}")
         if not dest:
             return
         try:
@@ -437,6 +455,8 @@ class HistoryPage(_Page):
             n = history.export_csv(dest, rows=self._current_rows(),
                                    for_excel=(chosen != plain))
             QMessageBox.information(self, "Service Officer",
-                                    f"Exported {n} rows to\n{dest}")
+                                    t("Exported {count} rows to\n{path}",
+                                      count=n, path=dest))
         except Exception as exc:
-            QMessageBox.warning(self, "Service Officer", f"Export failed:\n{exc}")
+            QMessageBox.warning(self, "Service Officer",
+                                t("Export failed:\n{why}", why=exc))

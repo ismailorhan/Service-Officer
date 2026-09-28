@@ -1,4 +1,4 @@
-"""What any store has to provide, whether it holds the data or fetches it.
+r"""What any store has to provide, whether it holds the data or fetches it.
 
 This exists because the coming remote store is not a subclass of Store: it will
 answer the same questions by asking a hub over HTTP instead of reading a dict. A

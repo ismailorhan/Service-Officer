@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (QApplication, QDialog, QGridLayout, QHBoxLayout,
 
 from core import clock
 
+from core.i18n import t
+
 from .. import theme
 from ..widgets import button as _button, label as _label
 from .base import _Page
@@ -42,50 +44,52 @@ class _IssuedDialog(QDialog):
 
     def __init__(self, made: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Client added")
+        self.setWindowTitle(t("Client added"))
         self.setModal(True)
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
         root.setSpacing(10)
 
-        root.addWidget(_label(f"{made.get('name', '')} — token issued", "h2"))
-        root.addWidget(_label(
-            "This is the only time it is shown. The hub keeps a hash of it, not the "
-            "token, so it cannot be looked up again — issue another if it is lost.",
+        root.addWidget(_label(t("{name} — token issued", name=made.get("name", "")),
+                              "h2"))
+        root.addWidget(_label(t(
+            "This is the only time it is shown. The hub keeps a hash of it, not the token, "
+            "so it cannot be looked up again — issue another if it is lost."),
             "hint", wrap=True))
 
         token = QLineEdit(made.get("token", ""))
         token.setReadOnly(True)
         token.setCursorPosition(0)
         token.setFont(QFont(theme.MONO, 9))
-        root.addWidget(_label("Token", "hint"))
+        root.addWidget(_label(t("Token"), "hint"))
         root.addWidget(token)
 
         command = QLineEdit(made.get("command", ""))
         command.setReadOnly(True)
         command.setCursorPosition(0)
         command.setFont(QFont(theme.MONO, 9))
-        root.addWidget(_label("Run this on that computer", "hint"))
+        root.addWidget(_label(t("Run this on that computer"), "hint"))
         root.addWidget(command)
 
         if made.get("fingerprint"):
             root.addWidget(_label(
-                f"It should see this certificate:  {made['fingerprint']}",
+                t("It should see this certificate:  {fingerprint}",
+                  fingerprint=made["fingerprint"]),
                 "hint", wrap=True))
         if made.get("replaced"):
             root.addWidget(_label(
-                "That name already had a token. The old one has stopped working.",
+                t("That name already had a token. The old one has stopped working."),
                 "hint", wrap=True))
 
         row = QHBoxLayout()
-        row.addWidget(_button("Copy token", "quiet",
+        row.addWidget(_button(t("Copy token"), "quiet",
                               lambda: QApplication.clipboard().setText(
                                   made.get("token", ""))))
-        row.addWidget(_button("Copy command", "primary",
+        row.addWidget(_button(t("Copy command"), "primary",
                               lambda: QApplication.clipboard().setText(
                                   made.get("command", ""))))
         row.addStretch(1)
-        row.addWidget(_button("Done", "quiet", self.accept))
+        row.addWidget(_button(t("Done"), "quiet", self.accept))
         root.addLayout(row)
         self.setMinimumWidth(560)
 
@@ -96,33 +100,33 @@ class _AddDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add a client")
+        self.setWindowTitle(t("Add a client"))
         self.setModal(True)
         form = QGridLayout(self)
         form.setContentsMargins(18, 16, 18, 14)
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(8)
 
-        form.addWidget(_label("Name", "hint"), 0, 0)
+        form.addWidget(_label(t("Name"), "hint"), 0, 0)
         self.name = QLineEdit()
         self.name.setPlaceholderText("ismail-laptop")
         self.name.setMinimumWidth(280)
         form.addWidget(self.name, 0, 1)
 
-        form.addWidget(_label("Description", "hint"), 1, 0)
+        form.addWidget(_label(t("Description"), "hint"), 1, 0)
         self.description = QLineEdit()
-        self.description.setPlaceholderText("whose it is, or why it exists")
+        self.description.setPlaceholderText(t("whose it is, or why it exists"))
         form.addWidget(self.description, 1, 1)
 
-        form.addWidget(_label(
+        form.addWidget(_label(t(
             "The name is how this client appears here and in the hub's log. It is not "
             "checked against anything — the machine reports its own host name when it "
-            "connects, and that appears beside it.", "hint", wrap=True), 2, 1)
+            "connects, and that appears beside it."), "hint", wrap=True), 2, 1)
 
         row = QHBoxLayout()
         row.addStretch(1)
-        row.addWidget(_button("Cancel", "quiet", self.reject))
-        self.ok = _button("Issue token", "primary", self.accept)
+        row.addWidget(_button(t("Cancel"), "quiet", self.reject))
+        self.ok = _button(t("Issue token"), "primary", self.accept)
         row.addWidget(self.ok)
         form.addLayout(row, 3, 1)
         self.name.textChanged.connect(
@@ -150,7 +154,8 @@ class ClientsPage(_Page):
         self.failed.connect(self._complain)
 
         self.table = QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        # A class constant, so the English names stay the keys and are translated here.
+        self.table.setHorizontalHeaderLabels([t(name) for name in self.COLUMNS])
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -168,11 +173,11 @@ class ClientsPage(_Page):
         self.root.addWidget(self.note)
 
         row = QHBoxLayout()
-        self.add_button = _button("Add client…", "primary", self._add)
-        self.revoke_button = _button("Revoke", "quiet", self._revoke)
+        self.add_button = _button(t("Add client…"), "primary", self._add)
+        self.revoke_button = _button(t("Revoke"), "quiet", self._revoke)
         row.addWidget(self.add_button)
         row.addWidget(self.revoke_button)
-        row.addWidget(_button("Refresh", "quiet", self.refresh))
+        row.addWidget(_button(t("Refresh"), "quiet", self.refresh))
         row.addStretch(1)
         self.root.addSpacing(8)
         self.root.addLayout(row)
@@ -185,10 +190,10 @@ class ClientsPage(_Page):
         thread is the one that paints."""
         hub = self.hub()
         if hub is None:
-            self.note.setText("No hub: there is nobody to pair with this computer.")
+            self.note.setText(t("No hub: there is nobody to pair with this computer."))
             self.table.setRowCount(0)
             return
-        self.note.setText("Asking the hub…")
+        self.note.setText(t("Asking the hub…"))
 
         def work():
             try:
@@ -199,7 +204,7 @@ class ClientsPage(_Page):
         threading.Thread(target=work, daemon=True, name="hub-clients").start()
 
     def _complain(self, why: str):
-        self.note.setText(f"Could not read the hub's client list: {why}")
+        self.note.setText(t("Could not read the hub's client list: {why}", why=why))
 
     def _fill(self, answer: dict):
         clients = answer.get("clients") or []
@@ -212,17 +217,19 @@ class ClientsPage(_Page):
                      client.get("host", ""),
                      clock.local_text(client.get("added", "")),
                      clock.local_text(client.get("last_seen", ""))
-                     or "never used")
+                     or t("never used"))
             for column, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if column == 4 and not client.get("last_seen"):
                     item.setForeground(QColor(theme.FG2))
                 self.table.setItem(row, column, item)
+        where = answer.get("url", "") or t("this hub")
         self.note.setText(
-            f"{len(clients)} client{'' if len(clients) == 1 else 's'} may read "
-            f"{answer.get('url', 'this hub')}."
+            (t("1 client may read {where}.", where=where) if len(clients) == 1
+             else t("{count} clients may read {where}.", count=len(clients),
+                    where=where))
             if clients else
-            "Nothing is paired with this hub yet.")
+            t("Nothing is paired with this hub yet."))
         self._selection_changed()
 
     def _selected(self) -> str:
@@ -249,7 +256,7 @@ class ClientsPage(_Page):
             made = hub.add_client(name, asked.description.text().strip())
         except Exception as exc:
             QMessageBox.warning(self, "Service Officer",
-                                f"The hub would not issue a token: {exc}")
+                                t("The hub would not issue a token: {why}", why=exc))
             return
         _IssuedDialog(made, self).exec()
         self.refresh()
@@ -261,9 +268,9 @@ class ClientsPage(_Page):
             return
         if QMessageBox.question(
                 self, "Service Officer",
-                f"Stop {name} from reading this hub?\n\n"
-                "It takes effect immediately. Issuing another token is the only way "
-                "back.",
+                t("Stop {name} from reading this hub?\n\n"
+                  "It takes effect immediately. Issuing another token is the only way "
+                  "back.", name=name),
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No) != QMessageBox.Yes:
             return
@@ -271,11 +278,11 @@ class ClientsPage(_Page):
             gone = hub.revoke_client(name)
         except Exception as exc:
             QMessageBox.warning(self, "Service Officer",
-                                f"Could not revoke {name}: {exc}")
+                                t("Could not revoke {name}: {why}", name=name, why=exc))
             return
         if not gone:
             QMessageBox.information(self, "Service Officer",
-                                    f"{name} was not paired with this hub.")
+                                    t("{name} was not paired with this hub.", name=name))
         self.refresh()
 
     # -- the panel's own protocol ------------------------------------------

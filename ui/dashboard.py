@@ -105,8 +105,8 @@ class DashboardPage(ServiceListMixin, QWidget):
         self._extras.extend(self._add_service_groups(cfg, add))
 
         if not cfg.services:
-            empty = _label("Nothing is being monitored yet — add services on the "
-                           "Services page.", "hint")
+            empty = _label(t("Nothing is being monitored yet — add services on the "
+                             "Services page."), "hint")
             empty.setAlignment(Qt.AlignCenter)
             empty.setContentsMargins(0, 30, 0, 30)
             self._extras.append(empty)
@@ -153,28 +153,30 @@ class DashboardPage(ServiceListMixin, QWidget):
                 "unknown until it answers.", where=getattr(hub, "url", "the hub"))))
             return
         self.badge.set_state(
-            f"{running} of {total} running" if total else "no services",
+            t("{running} of {total} running", running=running, total=total) if total
+            else t("no services"),
             "running" if total and running == total
             else "stopped" if not running else "pending")
-        parts = [f"{total} service{'s' if total != 1 else ''}",
-                 f"{running} running", f"{stopped} stopped"]
+        parts = [t("1 service") if total == 1 else t("{count} services", count=total),
+                 t("{count} running", count=running),
+                 t("{count} stopped", count=stopped)]
         other = total - running - stopped
         if other > 0:
-            parts.append(f"{other} other")
+            parts.append(t("{count} other", count=other))
         disabled = sum(1 for s in cfg.services
                        if self._store.is_disabled(s.name, s.machine))
         if disabled:
-            parts.append(f"{disabled} disabled in Windows")
+            parts.append(t("{count} disabled in Windows", count=disabled))
         # Worth its own count: a service that is running and not answering is the
         # one somebody is about to ring up about.
         sick = sum(1 for s in cfg.services
                    if self._store.health_of(s.name, s.machine) == "unhealthy")
         if sick:
-            parts.append(f"{sick} not responding")
+            parts.append(t("{count} not responding", count=sick))
         warming = sum(1 for s in cfg.services
                       if self._store.health_of(s.name, s.machine) == "starting")
         if warming:
-            parts.append(f"{warming} starting")
+            parts.append(t("{count} starting", count=warming))
         self.summary.setText("  ·  ".join(parts))
 
     # Grouping, visibility, selection and bulk actions come from

@@ -173,10 +173,10 @@ class Flyout(ServiceListMixin, QWidget):
         on = self.pin.isChecked()
         self.pin.setIcon(icons.nav_icon("pin" if on else "unpin", 13,
                                         theme.RUN if on else theme.FG3))
-        self.pin.setToolTip("Pinned — stays open until you close it.\n"
-                            "Click to unpin." if on else
-                            "Pin the panel open, so clicking elsewhere doesn't "
-                            "close it.")
+        self.pin.setToolTip(t("Pinned — stays open until you close it.\n"
+                              "Click to unpin.") if on else
+                            t("Pin the panel open, so clicking elsewhere doesn't "
+                              "close it."))
 
     def _pin_toggled(self, on: bool):
         self._paint_pin()
@@ -221,7 +221,7 @@ class Flyout(ServiceListMixin, QWidget):
         self._sections = self._add_service_groups(cfg, add)
 
         if not cfg.services:
-            empty = QLabel("No services configured.\nAdd some from Settings.")
+            empty = QLabel(t("No services configured.\nAdd some from Settings."))
             empty.setAlignment(Qt.AlignCenter)
             empty.setProperty("role", "hint")
             empty.setContentsMargins(0, 26, 0, 26)
@@ -287,17 +287,19 @@ class Flyout(ServiceListMixin, QWidget):
         worst = ("stopped" if unwell else
                  "pending" if starting else
                  "running" if total else "none")
-        self.badge.set_state(f"{running} of {total} running" if total
-                             else "no services", worst)
-        parts = [f"{total} service{'s' if total != 1 else ''}", f"{running} running"]
+        # The dashboard's sentences, so the two windows read the same in either language.
+        self.badge.set_state(t("{running} of {total} running", running=running, total=total)
+                             if total else t("no services"), worst)
+        parts = [t("1 service") if total == 1 else t("{count} services", count=total),
+                 t("{count} running", count=running)]
         if starting:
-            parts.append(f"{starting} starting")
+            parts.append(t("{count} starting", count=starting))
         if unwell:
-            parts.append(f"{unwell} not responding")
-        parts.append(f"{stopped} stopped")
+            parts.append(t("{count} not responding", count=unwell))
+        parts.append(t("{count} stopped", count=stopped))
         other = total - running - starting - unwell - stopped
         if other > 0:
-            parts.append(f"{other} other")
+            parts.append(t("{count} other", count=other))
         self.summary.setText("  ·  ".join(parts))
 
     def _selection_settled(self, settled: bool) -> None:

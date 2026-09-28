@@ -60,7 +60,7 @@ class HubPage(_Page):
         # anything else on it — and the one note had to explain both fields at once. Now every
         # label on the page starts at the same place and every dot explains one thing.
         self.hub_url = QLineEdit()
-        self.hub_url.setPlaceholderText("empty — this computer does the work itself")
+        self.hub_url.setPlaceholderText(t("empty — this computer does the work itself"))
         self.hub_url.setMinimumWidth(220)
         self.hub_port = QLineEdit()
         self.hub_port.setFixedWidth(64)
@@ -93,7 +93,7 @@ class HubPage(_Page):
         self.root.addSpacing(20)
 
         row = QHBoxLayout()
-        row.addWidget(_button("Apply and restart", "primary", self._apply_hub))
+        row.addWidget(_button(t("Apply and restart"), "primary", self._apply_hub))
         row.addWidget(_button("Test", "quiet", self._test_hub))
         row.addStretch(1)
         self.root.addLayout(row)
@@ -426,26 +426,28 @@ class HubPage(_Page):
         version — the two things that make an address wrong in a way nobody notices."""
         url = self._normalised()
         if not url:
-            self.hub_result.setText("No address: this computer will do the work itself.")
+            self.hub_result.setText(t("No address: this computer will do the work "
+                                      "itself."))
             return
         from core import hub_client
-        self.hub_result.setText(f"Asking {url}…")
+        self.hub_result.setText(t("Asking {machine}…", machine=url))
         self.hub_result.repaint()
         client = hub_client.HubClient(url, self.hub_token.text().strip())
         try:
             answer = client.ping()
         except Exception as exc:
-            self.hub_result.setText(f"{url} did not answer: {exc}")
+            self.hub_result.setText(t("{url} did not answer: {why}", url=url, why=exc))
             return
         theirs = str(answer.get("version", "?"))
-        note = (f"{answer.get('name', '?')} answered — version {theirs}")
+        note = t("{name} answered — version {version}",
+                 name=answer.get("name", "?"), version=theirs)
         # The same rule the client's own handshake uses, from the same function. Spelled out
         # here it was free to drift from the one that decides whether the panel connects at
         # all, and a Test that says "these match" beside a panel that refuses to is worse
         # than either answer on its own.
         if not version.compatible(theirs):
-            note += (f", which is not this panel's {version.short()}. A client and its hub "
-                     "have to be the same release; update one of them.")
+            note += t(", which is not this panel's {mine}. A client and its hub have to be "
+                      "the same release; update one of them.", mine=version.short())
         self.hub_result.setText(note)
 
     def _apply_hub(self):
@@ -464,7 +466,7 @@ class HubPage(_Page):
         settings.hub_url = url
         if not local_mod.save(settings):
             QMessageBox.warning(self, "Service Officer",
-                                "Could not save this client's settings.")
+                                t("Could not save this client's settings."))
             return
         if url and token:
             local_mod.set_token(url, token)
@@ -475,18 +477,19 @@ class HubPage(_Page):
     def _describe_hub(self):
         settings = local_mod.load()
         if settings.hub_url:
-            pinned = settings.hub_fingerprint or "not pinned yet"
+            pinned = settings.hub_fingerprint or t("not pinned yet")
             self.hub_state.setText(
-                f"Reading {settings.hub_url}\nCertificate  {pinned}")
+                t("Reading {url}", url=settings.hub_url) + "\n"
+                + t("Certificate  {fingerprint}", fingerprint=pinned))
             self.hub_token_hint.setText(
-                "Stored already — type a new one only to replace it."
+                t("Stored already — type a new one only to replace it.")
                 if local_mod.token(settings.hub_url) else
-                "Needed. On the hub: ServiceOfficerHub.exe client add <a name for this "
-                "computer>")
+                t("Needed. On the hub: ServiceOfficerHub.exe client add <a name for this "
+                  "computer>"))
         else:
             self.hub_state.setText(
-                "No hub: this computer watches its own services, and stops watching when "
-                "this app is closed.")
+                t("No hub: this computer watches its own services, and stops watching when "
+                  "this app is closed."))
             self.hub_token_hint.setText("")
 
     # -- the panel's contract ---------------------------------------------

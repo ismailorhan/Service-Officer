@@ -562,7 +562,7 @@ class Application(QObject):
         self._refresh_lists()
         if not connected and local_mod.load().notify:
             self.tray.notify("Service Officer",
-                             "Lost the connection to the hub. Trying again.")
+                             t("Lost the connection to the hub. Trying again."))
 
     # -- startup -----------------------------------------------------------
     def start(self) -> int:
@@ -587,9 +587,10 @@ class Application(QObject):
             # Reuses the crash switch on purpose: "it stopped working" is the
             # same news to whoever is on call, whether the process died or not.
             self.tray.notify("Service Officer",
-                             f"{label} is running but not responding.")
+                             t("{name} is running but not responding.", name=label))
         elif verdict == health.HEALTHY and self.cfg.notifications.on_recovery:
-            self.tray.notify("Service Officer", f"{label} is responding again.")
+            self.tray.notify("Service Officer",
+                             t("{name} is responding again.", name=label))
 
     def _on_health_action(self, name, machine, detail):
         """Health checks asked for a restart. The engine does it and writes the
@@ -627,7 +628,8 @@ class Application(QObject):
         machine = event.state.machine
         if event.status == st.RUNNING and self.cfg.notifications.on_recovery \
                 and self.watchdog.attempts_for(event.name, machine):
-            self.tray.notify("Service Officer", f"{event.name} is running again.")
+            self.tray.notify("Service Officer",
+                             t("{name} is running again.", name=event.name))
 
     def _note_started(self, name: str, machine: str = "") -> None:
         """Kept as a name the wiring tests use; the work is the engine's."""
@@ -650,8 +652,10 @@ class Application(QObject):
         if action == "kill":
             self.kill_process(name, machine)
             return
-        verb = {"start": "Starting", "stop": "Stopping", "restart": "Restarting"}[action]
-        self._mark_busy(name, machine, verb + "…")
+        # Whole labels, not a verb plus "…": each is a catalogue entry, translated by the
+        # row that draws it.
+        busy = {"start": "Starting…", "stop": "Stopping…", "restart": "Restarting…"}[action]
+        self._mark_busy(name, machine, busy)
         self.tray.action_started()
         self._announce.setdefault((name, machine or ""), announce_errors)
         try:
@@ -720,11 +724,11 @@ class Application(QObject):
         on screen holding references to the store they write to. A second is cheaper than
         a whole class of bug.
         """
-        where = url or "this computer's own services"
+        where = url or t("this computer's own services")
         answer = QMessageBox.question(
             self.panel, "Service Officer",
-            f"Saved. Service Officer will read {where} after a restart.\n\n"
-            "Restart it now?",
+            t("Saved. Service Officer will read {where} after a restart.\n\n"
+              "Restart it now?", where=where),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer != QMessageBox.Yes:
             return
@@ -776,11 +780,12 @@ class Application(QObject):
         for name, machine in list(chosen):
             reason = None
             if action == "start" and self.store.is_disabled(name, machine):
-                reason = "disabled in Windows"
+                reason = t("disabled in Windows")
             elif action == "kill" and machine:
-                reason = f"on {machine}, not this computer"
+                reason = t("on {machine}, not this computer", machine=machine)
             elif self.store.status_of(name, machine) == settled.get(action):
-                reason = f"already {settled[action].lower()}"
+                reason = (t("already running") if settled[action] == st.RUNNING
+                          else t("already stopped"))
             if reason:
                 chosen.remove((name, machine))
                 skipped.append(f"{name} — {reason}")
@@ -791,20 +796,34 @@ class Application(QObject):
             self.refresh()
             return
 
-        verb = {"start": "Start", "stop": "Stop", "restart": "Restart",
-                "kill": "Kill the process of"}[action]
-        lines = "\n".join(f"  ·  {n}" for n, _m in chosen[:12])
-        if len(chosen) > 12:
-            lines += f"\n  ·  … and {len(chosen) - 12} more"
-        subject = ("this service" if len(chosen) == 1
-                   else f"these {len(chosen)} services")
-        question = f"{verb} {subject}?\n\n{lines}"
+        # Whole sentences per action and count, not a verb glued to a subject: the verb
+        # goes last in Turkish, so "{verb} {subject}?" cannot be translated as a template.
+        n = len(chosen)
+        ask, title = {
+            "start": (t("Start this service?"), t("Start 1 service")) if n == 1 else
+                     (t("Start these {count} services?", count=n),
+                      t("Start {count} services", count=n)),
+            "stop": (t("Stop this service?"), t("Stop 1 service")) if n == 1 else
+                    (t("Stop these {count} services?", count=n),
+                     t("Stop {count} services", count=n)),
+            "restart": (t("Restart this service?"), t("Restart 1 service")) if n == 1 else
+                       (t("Restart these {count} services?", count=n),
+                        t("Restart {count} services", count=n)),
+            "kill": (t("Kill the process of this service?"),
+                     t("Kill the process of 1 service")) if n == 1 else
+                    (t("Kill the processes of these {count} services?", count=n),
+                     t("Kill the processes of {count} services", count=n)),
+        }[action]
+        lines = "\n".join(f"  ·  {name}" for name, _m in chosen[:12])
+        if n > 12:
+            lines += "\n  ·  " + t("… and {count} more", count=n - 12)
+        question = f"{ask}\n\n{lines}"
         if action == "kill":
-            question += ("\n\nEach is killed outright, with no chance to shut "
-                         "down cleanly.")
+            question += "\n\n" + t("Each is killed outright, with no chance to shut "
+                                   "down cleanly.")
         if skipped:
-            question += "\n\nSkipping:\n" + "\n".join(f"  ·  {s}" for s in skipped)
-        title = f"{verb} {len(chosen)} service{'s' if len(chosen) != 1 else ''}"
+            question += ("\n\n" + t("Skipping:") + "\n"
+                         + "\n".join(f"  ·  {s}" for s in skipped))
         if QMessageBox.question(None, title, question,
                                QMessageBox.Yes | QMessageBox.No,
                                QMessageBox.No) != QMessageBox.Yes:
@@ -857,13 +876,14 @@ class Application(QObject):
             pass
         if not pid:
             QMessageBox.information(None, "Service Officer",
-                                    f"{label} has no running process to kill.")
+                                    t("{name} has no running process to kill.",
+                                      name=label))
             return
         answer = QMessageBox.question(
-            None, "Kill process",
-            f"Terminate {label} (process {pid})?\n\n"
-            "The service is killed outright — it gets no chance to shut down "
-            "cleanly. Use this when Stop has no effect.",
+            None, t("Kill process"),
+            t("Terminate {name} (process {pid})?\n\n"
+              "The service is killed outright — it gets no chance to shut down "
+              "cleanly. Use this when Stop has no effect.", name=label, pid=pid),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
@@ -936,7 +956,7 @@ class Application(QObject):
             self.tray.action_finished()
             if self.runner.busy:
                 QMessageBox.information(None, "Service Officer",
-                                        "A stack run is already in progress.")
+                                        t("A stack run is already in progress."))
 
     def _on_stack_step(self, index, total, service, action, phase):
         """The pixels of a stack step. Its history row and its "it just started"

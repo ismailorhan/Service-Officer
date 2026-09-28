@@ -7,6 +7,8 @@ ui/pages/services.py, where the list and the detail together ran to 932 lines.
 
 from __future__ import annotations
 
+import threading
+
 from datetime import datetime
 
 from PySide6.QtCore import QTimer, Qt, Signal
@@ -24,17 +26,24 @@ from core.i18n import t
 
 from ..widgets import (Duration, FlatFactor, FlatSpin, InfoDot,
                        button as _button, label as _label)
-from .base import _Page, _fields, _sentence, _show_row, _spin
+from .base import _Page, _fields, _sentence, _show_row, _spin, _state_word
 
 
 class ServiceDetail(_Page):
     back = Signal()
+    #: A health check finished, with (ok, [lines]). A signal because it runs on a worker
+    #: thread — reaching a port takes seconds, and over a hub it is a network call.
+    checked = Signal(bool, list)
     changed = Signal()
 
-    def __init__(self, store=None):
+    def __init__(self, store=None, hub=None):
         super().__init__("", "")
         self.svc = None
         self._store = store
+        #: The hub this panel reads, or None when this computer does the watching. A health
+        #: check is asked of whoever does the watching — see _check_now.
+        self._hub = hub if callable(hub) else (lambda: hub)
+        self.checked.connect(self._show_check)
         self._open_checks = set()
         self._summaries = {}
 
@@ -97,10 +106,10 @@ class ServiceDetail(_Page):
         body = recovery
         body.addWidget(_label("RECOVERY", "section"))
         body.addSpacing(10)
-        self.keep = QCheckBox("Keep this service running")
+        self.keep = QCheckBox(t("Keep this service running"))
         self.keep.toggled.connect(self._keep_toggled)
         body.addWidget(self.keep)
-        body.addWidget(_label("If it stops on its own, start it again.", "hint"))
+        body.addWidget(_label(t("If it stops on its own, start it again."), "hint"))
         body.addSpacing(10)
 
         # Same treatment as the stack editor: values read as text and only turn
@@ -149,12 +158,12 @@ class ServiceDetail(_Page):
         body.addWidget(self.rules)
         body.addSpacing(16)
 
-        self.clean = QCheckBox("Also restart after a clean stop")
+        self.clean = QCheckBox(t("Also restart after a clean stop"))
         self.clean.toggled.connect(self._save_rules)
         body.addWidget(_sentence(
             self.clean,
-            note="Off by default, only crashes are recovered — a non-zero exit code. A "
-                 "service you stopped yourself in services.msc is left alone."))
+            note=t("Off by default, only crashes are recovered — a non-zero exit code. A "
+                   "service you stopped yourself in services.msc is left alone.")))
         body.addStretch(1)
 
         # -- health ---------------------------------------------------------
@@ -165,19 +174,18 @@ class ServiceDetail(_Page):
         # A master switch, so watching can be stopped for an afternoon without
         # deleting the checks — turning something off should never cost you the
         # configuration you need to turn it back on.
-        self.h_enabled = QCheckBox("Watch this service")
-        self.h_enabled.setToolTip("Off keeps the checks below but stops asking. "
-                                  "Nothing is reported as unhealthy while it is "
-                                  "off.")
+        self.h_enabled = QCheckBox(t("Watch this service"))
+        self.h_enabled.setToolTip(t("Off keeps the checks below but stops asking. Nothing "
+                                    "is reported as unhealthy while it is off."))
         self.h_enabled.toggled.connect(self._health_switched)
         head_row.addWidget(self.h_enabled)
         head_row.addSpacing(2)
-        head_row.addWidget(InfoDot(
+        head_row.addWidget(InfoDot(t(
             "Windows reports Running as soon as a process exists. These say whether anyone "
             "can actually use it — the “running but dead” case that a service list cannot "
             "show. Every check has to pass.\n\n"
             "Off keeps the checks below but stops asking, and nothing is reported as "
-            "unhealthy while it is off."))
+            "unhealthy while it is off.")))
         body.addLayout(head_row)
         body.addSpacing(12)
 
@@ -207,8 +215,8 @@ class ServiceDetail(_Page):
         for w in (self.h_interval, self.h_grace, self.h_failures):
             w.changed.connect(self._save_health)
         self.h_action = QComboBox()
-        self.h_action.addItem("Just tell me", "notify")
-        self.h_action.addItem("Restart the service", "restart")
+        self.h_action.addItem(t("Just tell me"), "notify")
+        self.h_action.addItem(t("Restart the service"), "restart")
         # 220 was set when this sat inside a sentence, where slack after the words did no
         # harm. In a grid the widest value decides where the dot column starts, so 70px of
         # empty box pushed every dot 70px away from the value it explains. Its own width plus
@@ -223,31 +231,31 @@ class ServiceDetail(_Page):
         # As five separate sentences they landed at five different indents — see _fields for
         # the measurements, which are the whole reason it exists.
         self.health_grid = _fields(
-            ("Ask every", self.h_interval,
-             "How often to run the checks below, while the service is running."),
+            (t("Ask every"), self.h_interval,
+             t("How often to run the checks below, while the service is running.")),
             # "Ask every 1 min, starting 1 min after it comes up" was asked about, and
             # fairly: two durations in one sentence, and "starting" reads as starting the
             # service. Its own row, with the reason behind the dot.
-            ("Ignore the first", (self.h_grace, "after it starts"),
-             "A service that has just come up hasn't opened its port yet, so asking "
-             "straight away would report every restart as a failure."),
-            ("Call it unhealthy after", (self.h_failures, "failures in a row"),
-             "Consecutive failures before it is called unhealthy. One bad answer is "
-             "usually load, not death."),
-            ("Then", self.h_action,
-             "What to do about a service that has stopped answering. Restarting is the "
-             "obvious fix and also the one that hides a problem, so it is not the "
-             "default."),
+            (t("Ignore the first"), (self.h_grace, t("after it starts")),
+             t("A service that has just come up hasn't opened its port yet, so asking "
+               "straight away would report every restart as a failure.")),
+            (t("Call it unhealthy after"), (self.h_failures, t("failures in a row")),
+             t("Consecutive failures before it is called unhealthy. One bad answer is "
+               "usually load, not death.")),
+            (t("Then"), self.h_action,
+             t("What to do about a service that has stopped answering. Restarting is the "
+               "obvious fix and also the one that hides a problem, so it is not the "
+               "default.")),
             # A qualifier on the row above, not a fifth setting: indented, and a row of the
             # *same* grid rather than a grid of its own — on its own its dot landed at x=196
             # with the four above it at 362, which is this whole change's complaint in one
             # row. It also only exists when the answer above is Restart. As a peer reading
             # "…but no more often than every 5 min" under "Just tell me" it looked like a
             # limit on how often you would be told, which is not a thing this does.
-            ("At most once every", self.h_cooldown,
-             "A service a restart cannot fix must not be restarted every minute for ever. "
-             "Zero restarts it on every verdict.\n\n"
-             "Only applies while the action above is Restart the service.", True))
+            (t("At most once every"), self.h_cooldown,
+             t("A service a restart cannot fix must not be restarted every minute for ever. "
+               "Zero restarts it on every verdict.\n\n"
+               "Only applies while the action above is Restart the service."), True))
         hl.addWidget(self.health_grid)
         body.addWidget(self.health_rules)
         body.addSpacing(20)
@@ -259,7 +267,7 @@ class ServiceDetail(_Page):
         # there reading "A port answers" describes the service rather than
         # offering to add something, and was invisible in plain sight.
         # No arrow in the text either — setMenu draws Qt's own indicator.
-        self.add_button = QPushButton("Add check")
+        self.add_button = QPushButton(t("Add check"))
         self.add_button.setProperty("kind", "primary")
         self.add_button.setCursor(Qt.PointingHandCursor)
         self.add_menu = QMenu(self.add_button)
@@ -271,7 +279,9 @@ class ServiceDetail(_Page):
                            ("It has a process", "process"),
                            ("A file is being written", "file"),
                            ("A command succeeds", "command")):
-            action = self.add_menu.addAction(text, lambda k=kind: self._add_check(k))
+            # The five kinds are written as English keys and translated here, where they
+            # are drawn — the same rule as the Machines page's choice lists.
+            action = self.add_menu.addAction(t(text), lambda k=kind: self._add_check(k))
             self._kind_actions[kind] = action
         self.add_button.setMenu(self.add_menu)
         add_row.addWidget(self.add_button)
@@ -353,7 +363,7 @@ class ServiceDetail(_Page):
         self.label_edit.setText(svc.label or svc.name)
         self.category.blockSignals(True)
         self.category.clear()
-        self.category.addItem(cfg_mod.NO_CATEGORY_TITLE, cfg_mod.NO_CATEGORY)
+        self.category.addItem(t(cfg_mod.NO_CATEGORY_TITLE), cfg_mod.NO_CATEGORY)
         for cat in categories:
             self.category.addItem(cat.name, cat.name)
         wanted = self.category.findData(svc.category or cfg_mod.NO_CATEGORY)
@@ -436,15 +446,16 @@ class ServiceDetail(_Page):
             return
         checks = self.svc.health.checks
         if not checks:
-            self.health_note.setText(
-                "No checks yet. Use Add check — until then this service is judged "
-                "only by whether Windows says it is running.")
+            self.health_note.setText(t(
+                "No checks yet. Use Add check — until then this service is judged only by "
+                "whether Windows says it is running."))
         else:
             # "1 CHECK, ALL OF WHICH MUST PASS" — "all of which" about one thing, which is
             # what it said in every single-check install, and every install starts as one.
             count = len(checks)
             self.health_note.setText(
-                f"{count} CHECKS · ALL MUST PASS" if count != 1 else "1 CHECK")
+                t("{count} CHECKS · ALL MUST PASS", count=count) if count != 1
+                else t("1 CHECK"))
         # Reads as a heading once there is a list under it, as a hint when empty.
         self.health_note.setProperty("role", "section" if checks else "hint")
         self.health_note.style().unpolish(self.health_note)
@@ -493,9 +504,9 @@ class ServiceDetail(_Page):
             return {}
         blocked = {}
         if not getattr(can, "file_check", True):
-            blocked["file"] = self.NOT_HERE["file"]
+            blocked["file"] = t(self.NOT_HERE["file"])
         if not getattr(can, "command_check", True):
-            blocked["command"] = self.NOT_HERE["command"]
+            blocked["command"] = t(self.NOT_HERE["command"])
         return blocked
 
     def _offer_only_what_the_machine_can_do(self) -> None:
@@ -535,7 +546,7 @@ class ServiceDetail(_Page):
         head.setSpacing(8)
         on = QCheckBox()
         on.setChecked(check.enabled)
-        on.setToolTip("Include this check")
+        on.setToolTip(t("Include this check"))
         on.toggled.connect(lambda state, c=check: self._set_check(c, "enabled",
                                                                   state))
         head.addWidget(on)
@@ -547,7 +558,8 @@ class ServiceDetail(_Page):
         summary = _label(check.describe(), "strong")
         self._summaries[summary] = check
         head.addWidget(summary, 1)
-        head.addWidget(_label(f"gives up after {check.timeout_seconds}s", "hint"))
+        head.addWidget(_label(t("gives up after {seconds}s",
+                                seconds=check.timeout_seconds), "hint"))
 
         expanded = index in self._open_checks
         toggle = _button("Close" if expanded else "Edit", "quiet")
@@ -570,7 +582,7 @@ class ServiceDetail(_Page):
         # double-click is not something anyone can see is available.
         row.mouseDoubleClickEvent = (
             lambda _ev, i=index: self._toggle_check(i))
-        row.setToolTip("Double-click to edit")
+        row.setToolTip(t("Double-click to edit"))
 
         if not expanded:
             return row
@@ -581,7 +593,9 @@ class ServiceDetail(_Page):
         for attr, caption in self.CHECK_FIELDS.get(check.kind, []):
             box = QVBoxLayout()
             box.setSpacing(2)
-            box.addWidget(_label(caption, "hint"))
+            # A class constant, so it is translated here rather than up there: a t() in a
+            # class body settles the language at import.
+            box.addWidget(_label(t(caption), "hint"))
             current = getattr(check, attr)
             if isinstance(current, int):
                 editor = _spin(current, 0, 999999)
@@ -598,7 +612,7 @@ class ServiceDetail(_Page):
 
         timeout = QVBoxLayout()
         timeout.setSpacing(2)
-        timeout.addWidget(_label("Give up after (seconds)", "hint"))
+        timeout.addWidget(_label(t("Give up after (seconds)"), "hint"))
         secs = _spin(check.timeout_seconds, 1, 120)
         secs.setFixedWidth(110)
         secs.valueChanged.connect(
@@ -607,8 +621,8 @@ class ServiceDetail(_Page):
         fields.addLayout(timeout)
 
         if check.kind == "http":
-            insecure = QCheckBox("Accept any certificate")
-            insecure.setToolTip("For an internal server with its own certificate.")
+            insecure = QCheckBox(t("Accept any certificate"))
+            insecure.setToolTip(t("For an internal server with its own certificate."))
             insecure.setChecked(check.insecure)
             insecure.toggled.connect(
                 lambda state, c=check: self._set_check(c, "insecure", state))
@@ -625,18 +639,23 @@ class ServiceDetail(_Page):
             return
         svc, health_cfg = self.svc, self.svc.health
         if not health_cfg.checks:
-            self.h_status.setText("Nothing is being checked yet.")
+            self.h_status.setText(t("Nothing is being checked yet."))
             return
         if not health_cfg.enabled:
-            self.h_status.setText("Watching is switched off — the checks below are "
-                                  "kept but never run.")
+            self.h_status.setText(t("Watching is switched off — the checks below are kept "
+                                    "but never run."))
             return
 
         status = self._store.status_of(svc.name, svc.machine)
         if status != st.RUNNING:
+            # Two sentences, so the state word is one entry the whole app can share rather
+            # than something glued into the middle of a sentence.
             self.h_status.setText(
-                f"{svc.display()} is {status.lower()}. Checks only run while it is "
-                f"running — a stopped service isn't unhealthy, it is stopped.")
+                t("{service} is {state}.", service=svc.display(),
+                  state=_state_word(status))
+                + " "
+                + t("Checks only run while it is running — a stopped service isn't "
+                    "unhealthy, it is stopped."))
             return
 
         facts = self._store.health_timing(svc.name, svc.machine)
@@ -644,25 +663,29 @@ class ServiceDetail(_Page):
         lines = []
         last = facts.get("last")
         if last is None:
-            lines.append("Not checked yet — "
-                         + (facts.get("detail") or "waiting for it to settle"))
+            lines.append(t("Not checked yet — {why}",
+                           why=facts.get("detail") or t("waiting for it to settle")))
         else:
-            outcome = ("passed" if facts.get("passed") else
-                       f"failed ({facts.get('failures', 0)} in a row)")
-            lines.append(f"Last checked {last.strftime('%H:%M:%S')} — {outcome}")
+            # Whole phrases: "failed (" and "in a row)" are not sentences anybody can
+            # translate, and the count sits in a different place in other languages.
+            outcome = (t("passed") if facts.get("passed") else
+                       t("failed ({count} in a row)", count=facts.get("failures", 0)))
+            lines.append(t("Last checked {when} — {outcome}",
+                           when=last.strftime("%H:%M:%S"), outcome=outcome))
         nxt = facts.get("next")
         if nxt is not None:
             seconds = int((nxt - datetime.now()).total_seconds())
             when = nxt.strftime("%H:%M:%S")
-            lines.append(f"Next check {when}"
-                         + (f", in {max(0, seconds)}s" if seconds < 600 else ""))
-        said = {"unhealthy": "Currently: not responding",
-                "healthy": "Currently: responding",
-                "unknown": "Currently: no verdict yet"}
+            lines.append(t("Next check {when}, in {seconds}s", when=when,
+                           seconds=max(0, seconds)) if seconds < 600
+                         else t("Next check {when}", when=when))
+        said = {"unhealthy": t("Currently: not responding"),
+                "healthy": t("Currently: responding"),
+                "unknown": t("Currently: no verdict yet")}
         lines.append(said.get(verdict, verdict))
         if verdict == "unhealthy" and health_cfg.action == "restart":
             gap = health_cfg.min_restart_interval_seconds
-            lines.append(f"Restarts are limited to one every {gap}s.")
+            lines.append(t("Restarts are limited to one every {seconds}s.", seconds=gap))
         self.h_status.setText("   ·   ".join(lines))
 
     def _health_switched(self, on: bool):
@@ -754,17 +777,51 @@ class ServiceDetail(_Page):
         _show_row(self.health_grid.rows[-1], wanted)
 
     def _check_now(self):
-        """Run the checks as they are on screen, not as last saved — otherwise
-        you are testing yesterday's settings."""
+        """Run this service's checks on whoever does the watching, now.
+
+        Two things were wrong. It ran **here** — so on a workstation "something answers on
+        CTL052:54001" asked whether *this desk* could open that port, which is not the question
+        the hub answers every minute. And it ran on the drawing thread: a check with a
+        five-second timeout froze the window for five seconds per check.
+
+        It also runs the **saved** checks rather than what is on screen. That is a change, and
+        deliberate: the alternative is a client handing the hub checks to run, and a check of
+        kind `command` is a shell command line executed as LocalSystem. Going through Save keeps
+        that visible to everybody and in the config's history.
+        """
         if self.svc is None:
             return
-        from core import health as health_mod
-        ok, results = health_mod.run_all(self.svc, control)
-        lines = [r.line() for r in results] or ["nothing to check"]
+        self.check_now_button.setEnabled(False)
+        self.check_now_button.setText(t("Checking…"))
+        threading.Thread(target=self._checked_now, args=(self.svc,), daemon=True,
+                         name="health-check-now").start()
+
+    def _checked_now(self, svc) -> None:
+        """Off the drawing thread. Asks the hub when there is one, this computer when not."""
+        hub = self._hub()
+        try:
+            if hub is not None:
+                said = hub.check_health(svc.name, svc.machine or "")
+            else:
+                from core import probe
+                said = probe.run_health(svc)
+        except Exception as exc:
+            said = {"ok": False, "lines": [f"{type(exc).__name__}: {exc}"]}
+        self.checked.emit(bool(said.get("ok")), list(said.get("lines") or []))
+
+    def _show_check(self, ok: bool, lines: list) -> None:
+        """On the drawing thread, and only if the page is still there."""
+        try:
+            self.check_now_button.setEnabled(True)
+            self.check_now_button.setText(t("Check now"))
+        except RuntimeError:
+            return
+        where = t("the hub") if self._hub() is not None else t("this computer")
         QMessageBox.information(
-            self, "Health check",
-            ("All checks pass." if ok else "Something is not answering.")
-            + "\n\n" + "\n".join(lines))
+            self, t("Health check"),
+            (t("All checks pass.") if ok else t("Something is not answering."))
+            + " " + t("Asked from {where}.", where=where)
+            + "\n\n" + "\n".join(lines or [t("nothing to check")]))
 
     def _save_rules(self, *_):
         if self.svc is None:

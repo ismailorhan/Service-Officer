@@ -11,11 +11,10 @@ from __future__ import annotations
 import threading
 import time
 
-from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout,
-                               QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QStackedWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLineEdit,
+                               QListWidget, QListWidgetItem, QMessageBox,
+                               QStackedWidget, QVBoxLayout, QWidget)
 
 from core import config as cfg_mod
 from core import connectors, control, secrets
@@ -23,8 +22,8 @@ from core import connectors, control, secrets
 from .. import theme
 from core.i18n import t
 
-from ..widgets import button as _button, label as _label, InfoDot
-from .base import _ListRow, _Page, _spin
+from ..widgets import button as _button, label as _label
+from .base import _ListRow, _Page, _fields, _show_row, _spin
 
 
 class MachinesPage(QWidget):
@@ -203,35 +202,40 @@ class MachinesPage(QWidget):
         known = self.store.machine_state(machine.name) if self.store else {}
         if not known:
             return (t("not asked yet"), t("waiting"), "none",
-                    "Nothing has asked this machine anything yet. It is asked "
-                    f"every {machine.poll_seconds}s once the app is watching a "
-                    "service on it.")
+                    t("Nothing has asked this machine anything yet. It is asked every "
+                      "{seconds}s once the app is watching a service on it.",
+                      seconds=machine.poll_seconds))
         ago = max(0.0, time.monotonic() - known.get("at", 0.0))
-        when = ("just now" if ago < 2 else
-                f"{ago:.0f}s ago" if ago < 60 else
-                f"{ago / 60:.0f} min ago" if ago < 3600 else
-                f"{ago / 3600:.1f} h ago")
+        # Each of these is a whole phrase with the number in it, not "s" glued onto a figure:
+        # a fragment cannot be translated, because where the number goes is part of the
+        # language. Same reason the Recovery rows were rewritten.
+        when = (t("just now") if ago < 2 else
+                t("{seconds}s ago", seconds=f"{ago:.0f}") if ago < 60 else
+                t("{minutes} min ago", minutes=f"{ago / 60:.0f}") if ago < 3600 else
+                t("{hours} h ago", hours=f"{ago / 3600:.1f}"))
         why = (known.get("detail") or "").strip()
         if known.get("reachable"):
             return (t("answered {when}", when=when), t("connected"), "running", "")
-        return (f"no answer, last tried {when}", "no answer", "stopped",
-                why or "It did not answer, and said nothing about why.")
+        return (t("no answer, last tried {when}", when=when), t("no answer"), "stopped",
+                why or t("It did not answer, and said nothing about why."))
 
     def _summary(self, machine, count: int, reach: str = "") -> str:
         """What it is and how it is reached, in one line."""
-        parts = [f"{count} service{'s' if count != 1 else ''}"]
+        # One service and several are two sentences, not a bolted-on "s": a language that
+        # does not form its plural that way cannot use the second half.
+        parts = [t("1 service") if count == 1 else t("{count} services", count=count)]
         if machine.is_local:
-            parts.append("Windows service manager")
+            parts.append(t("Windows service manager"))
         elif machine.is_linux:
-            who = machine.username or "no account set"
-            parts.append(f"systemd over SSH · {who}")
+            who = machine.username or t("no account set")
+            parts.append(t("systemd over SSH · {who}", who=who))
             if not machine.host_fingerprint:
-                parts.append("host key not confirmed")
+                parts.append(t("host key not confirmed"))
         elif machine.auth == "password":
-            parts.append("Windows service manager · "
-                         f"{machine.username or 'no account set'}")
+            parts.append(t("Windows service manager · {who}",
+                           who=machine.username or t("no account set")))
         else:
-            parts.append("Windows service manager · this computer's account")
+            parts.append(t("Windows service manager · this computer's account"))
         if reach:
             parts.append(reach)
         return "  ·  ".join(parts)
@@ -266,15 +270,15 @@ class MachinesPage(QWidget):
         # why it asks for the host name. The id itself is never shown again: it is
         # plumbing, and the one field on a machine that cannot be edited later.
         name, ok = QInputDialog.getText(
-            self, "Add machine",
-            "Host name or IP of the machine.\n"
-            "Its description, account and the rest are on the next page.")
+            self, t("Add machine"),
+            t("Host name or IP of the machine.\n"
+              "Its description, account and the rest are on the next page."))
         name = (name or "").strip().lstrip("\\")
         if not ok or not name:
             return
         if self.cfg().machine(name):
             QMessageBox.information(self, "Service Officer",
-                                    "That machine is already listed.")
+                                    t("That machine is already listed."))
             return
         # No reachability check here any more: we do not yet know whether this is
         # a Windows box or a Linux one, and probing the wrong way would report a
@@ -292,15 +296,16 @@ class MachinesPage(QWidget):
             return
         if machine.is_local:
             QMessageBox.information(self, "Service Officer",
-                                    "This computer can't be removed.")
+                                    t("This computer can't be removed."))
             return
         using = [s.display() for s in self.cfg().services
                  if (s.machine or "") == machine.name]
         if using:
             QMessageBox.information(
                 self, "Service Officer",
-                f"{machine.display()} still has {len(using)} service(s) here. "
-                "Remove them first:\n\n" + "\n".join(using[:8]))
+                t("{machine} still has {count} service(s) here. Remove them first:",
+                  machine=machine.display(), count=len(using))
+                + "\n\n" + "\n".join(using[:8]))
             return
         self.cfg().machines.remove(machine)
         connectors.forget(machine.name)
@@ -381,82 +386,28 @@ class MachineDetail(_Page):
         self.root.insertLayout(0, crumb)
         self.root.insertSpacing(1, 10)
 
-        # A form, not sentences: eight settings with a ragged left edge are
-        # harder to scan than a column of labels, and this is the one page where
-        # every row is a different kind of thing. Labels left, values right, and
-        # the ones whose meaning is not obvious carry a note beside them.
-        form = QGridLayout()
-        form.setHorizontalSpacing(theme.SP_12)
-        form.setVerticalSpacing(theme.SP_10)
-        form.setColumnMinimumWidth(0, 108)
-        form.setColumnStretch(1, 1)
-        # Column 2 holds a 16px dot, not a paragraph. Stretch nothing there, so what used to be
-        # a column of prose is now width the fields keep.
-        form.setColumnStretch(2, 0)
-        self.form = form
-        self._rows: dict = {}
-        #: the note beside a field, kept so it can be rewritten: what "User" means
-        #: on a Windows machine and on a Linux one are different sentences.
-        self._hints: dict = {}
-
-        def field(key: str, text: str, widget, note: str = ""):
-            """One row: label, the thing, and why it is there."""
-            row = form.rowCount()
-            caption = _label(text, "hint")
-            caption.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            form.addWidget(caption, row, 0)
-            if isinstance(widget, QWidget):
-                form.addWidget(widget, row, 1)
-            else:
-                form.addLayout(widget, row, 1)
-            # Behind a dot rather than spread across the page. Six fields' worth of notes was
-            # thirty lines of prose beside them, and the fields got what was left — see
-            # InfoDot. Its setText/text are the same as the label's, so _describe_fields did
-            # not have to change at all.
-            hint = InfoDot(note) if note else None
-            if hint is not None:
-                form.addWidget(hint, row, 2, Qt.AlignLeft | Qt.AlignVCenter)
-                self._hints[key] = hint
-            self._rows[key] = [w for w in (caption, widget, hint) if w is not None]
-            return row
-
-        def hide(key: str, shown: bool):
-            for part in self._rows.get(key, ()):
-                if isinstance(part, QWidget):
-                    part.setVisible(shown)
-                else:                          # a layout of widgets
-                    for i in range(part.count()):
-                        item = part.itemAt(i).widget()
-                        if item is not None:
-                            item.setVisible(shown)
-
-        self._hide_row = hide
-
+        # One grid, shared with every other settings page — see base._fields. This page had its
+        # own copy: the same three columns, the same 108px label column, the same dot at the end,
+        # built by a local `field()` closure. Two implementations of one layout, agreeing only
+        # because a test compared them. The keys are what the shared one was missing: this page
+        # hides rows and rewrites notes, because what "User" means on a Windows machine and on a
+        # Linux one are different sentences.
         self.label = QLineEdit()
-        self.label.setPlaceholderText("what this machine is")
+        self.label.setPlaceholderText(t("what this machine is"))
         self.label.editingFinished.connect(self._save)
-        field("label", "Description", self.label,
-              "Shown everywhere this machine appears.")
 
         self.kind = QComboBox()
         for text, _value in self.KINDS:
-            self.kind.addItem(text)
+            # Translated here, not in KINDS: a class constant is built at import, before
+            # anybody has chosen a language, so a t() up there would freeze the first one.
+            self.kind.addItem(t(text))
         self.kind.currentIndexChanged.connect(self._kind_changed)
-        field("kind", "Target type", self.kind,
-              "Everything else here follows from this.")
 
         self.address = QLineEdit()
-        self.address.setPlaceholderText("host name or IP address")
+        self.address.setPlaceholderText(t("host name or IP address"))
         self.address.editingFinished.connect(self._save)
-        where = QHBoxLayout()
-        where.setSpacing(theme.SP_8)
-        where.addWidget(self.address, 1)
-        where.addWidget(_label("port", "hint"))
         self.port = _spin(0, 0, 65535, width=72)
         self.port.valueChanged.connect(lambda _v: self._save())
-        where.addWidget(self.port)
-        field("address", "Host", where,
-              "Port 0 means the usual one — 22 for SSH.")
 
         # The method first, then what it asks for. The other way round put "User"
         # above the choice that decides whether a user is wanted at all.
@@ -464,77 +415,77 @@ class MachineDetail(_Page):
         self._auths = ()
         self._set_auth_choices("linux")
         self.auth.currentIndexChanged.connect(lambda _i: self._save())
-        field("auth", "Sign in method", self.auth,
-              "A key is preferred: no secret to keep.")
 
         self.username = QLineEdit()
-        self.username.setPlaceholderText("account on that machine")
+        self.username.setPlaceholderText(t("account on that machine"))
         self.username.editingFinished.connect(self._save)
-        field("username", "User", self.username,
-              "Who we log in as. Reading needs no privilege;\n"
-              "acting needs sudo without a password.")
 
         # A password is never read back out of the store to show it. The field
         # holds what you are typing now; once saved it says so and goes blank.
         self.password = _SecretEdit()
-        self.password.setPlaceholderText("type to set a password")
+        self.password.setPlaceholderText(t("type to set a password"))
         self.password.editingFinished.connect(self._save_password)
-        pw = QHBoxLayout()
-        pw.setSpacing(theme.SP_8)
-        # The field takes the room up to Forget. It had a "saved on this computer" label
-        # beside it, which squeezed the field to about six characters for a sentence the field
-        # already tells you: dots mean stored, empty means not.
-        pw.addWidget(self.password, 1)
-        pw.addWidget(_button("Forget", "quiet", self._forget_password))
-        field("password", "Password", pw,
-              "Kept encrypted on this computer, not in\n"
-              "services.json. Any administrator here can read it.")
 
         self.key_path = QLineEdit()
         self.key_path.setPlaceholderText(r"C:\Users\you\.ssh\id_ed25519")
         self.key_path.editingFinished.connect(self._save)
-        keys = QHBoxLayout()
-        keys.setSpacing(theme.SP_8)
-        keys.addWidget(self.key_path, 1)
-        keys.addWidget(_button("Browse…", "quiet", self._browse))
-        field("key_path", "Key file", keys,
-              "The private key here. Its public half goes\n"
-              "in that account's ~/.ssh/authorized_keys.")
 
         # The fingerprint is the whole of SSH's security on a first connection, so
         # it is a field a person fills in deliberately — never something the app
         # accepts because it was offered.
         self.fingerprint = QLineEdit()
-        self.fingerprint.setPlaceholderText("SHA256:… — confirm it on the machine")
+        self.fingerprint.setPlaceholderText(t("SHA256:… — confirm it on the machine"))
         self.fingerprint.editingFinished.connect(self._save)
-        keyrow = QHBoxLayout()
-        keyrow.setSpacing(theme.SP_8)
-        keyrow.addWidget(self.fingerprint, 1)
-        keyrow.addWidget(_button("Get it", "quiet", self._fetch_fingerprint))
-        field("fingerprint", "Host key", keyrow,
-              "Proves the machine is the one you meant.\n"
-              "A different key later is refused.")
 
         self.poll = _spin(5, 2, 300, width=64)
         self.poll.valueChanged.connect(lambda _v: self._save())
-        seconds = QHBoxLayout()
-        seconds.setSpacing(theme.SP_8)
-        seconds.addWidget(self.poll)
-        seconds.addWidget(_label("seconds", "hint"))
-        seconds.addStretch(1)
-        field("poll", "Check every", seconds,
-              "A remote machine cannot tell us on its own.\n"
-              "With journal access this is only a safety net.")
 
-        self.winrm = QCheckBox("Use WinRM on this machine")
+        self.winrm = QCheckBox(t("Use WinRM on this machine"))
         self.winrm.toggled.connect(self._set_winrm)
-        field("winrm", "Extras", self.winrm,
-              "Lets this machine's process be terminated, its event log read and a\n"
-              "command health check run on it. Without it those three are not offered.\n"
-              "Every WinRM call signs in, so it leaves a logon record in that\n"
-              "machine's Security log. Test connection sets this for you.")
 
-        self.root.addLayout(form)
+        form = _fields(
+            (t("Description"), self.label,
+             t("Shown everywhere this machine appears."), False, "label"),
+            (t("Target type"), self.kind,
+             t("Everything else here follows from this."), False, "kind"),
+            (t("Host"), (self.address, t("port"), self.port),
+             t("Port 0 means the usual one — 22 for SSH."), False, "address"),
+            (t("Sign in method"), self.auth,
+             t("A key is preferred: no secret to keep."), False, "auth"),
+            (t("User"), self.username,
+             t("Who we log in as. Reading needs no privilege; acting needs sudo without a "
+               "password."), False, "username"),
+            # The field takes the room up to Forget. It had a "saved on this computer" label
+            # beside it, which squeezed the field to about six characters for a sentence the
+            # field already tells you: dots mean stored, empty means not.
+            (t("Password"), (self.password,
+                             _button(t("Forget"), "quiet", self._forget_password)),
+             t("Kept encrypted on this computer, not in services.json. Any administrator here "
+               "can read it."), False, "password"),
+            (t("Key file"), (self.key_path,
+                             _button(t("Browse…"), "quiet", self._browse)),
+             t("The private key here. Its public half goes in that account's "
+               "~/.ssh/authorized_keys."), False, "key_path"),
+            (t("Host key"), (self.fingerprint,
+                             _button(t("Get it"), "quiet", self._fetch_fingerprint)),
+             t("Proves the machine is the one you meant. A different key later is refused."),
+             False, "fingerprint"),
+            (t("Check every"), (self.poll, t("seconds")),
+             t("A remote machine cannot tell us on its own. With journal access this is only a "
+               "safety net."), False, "poll"),
+            (t("Extras"), self.winrm,
+             t("Lets this machine's process be terminated, its event log read and a command "
+               "health check run on it. Without it those three are not offered.\n\n"
+               "Every WinRM call signs in, so it leaves a logon record in that machine's "
+               "Security log. Test connection sets this for you."), False, "winrm"),
+            fill=True)
+        self.form = form
+        #: Rows by name, and the dot of each — both from the shared grid now.
+        self._rows = form.by_key
+        self._hints = form.dots
+        self._hide_row = lambda key, shown: _show_row(form.by_key.get(key, ()), shown)
+
+        self.root.addWidget(form)
         self.root.addSpacing(theme.SP_12)
         self.sudo_note = _label("", "hint", wrap=True)
         self.root.addWidget(self.sudo_note)
@@ -542,10 +493,10 @@ class MachineDetail(_Page):
 
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        bar.addWidget(_button("Test connection", "primary", self._test))
+        bar.addWidget(_button(t("Test connection"), "primary", self._test))
         # Named for what it hands you, since it was asked what it meant: the
         # commands to run *on that machine* so this account may control services.
-        self.setup_button = _button("Copy what to run on that machine", None,
+        self.setup_button = _button(t("Copy what to run on that machine"), None,
                                     self._setup)
         bar.addWidget(self.setup_button)
         bar.addStretch(1)
@@ -621,7 +572,7 @@ class MachineDetail(_Page):
         blocked = self.auth.blockSignals(True)
         self.auth.clear()
         for text, _value in wanted:
-            self.auth.addItem(text)
+            self.auth.addItem(t(text))          # a class constant; see KINDS
         self.auth.blockSignals(blocked)
 
     def _set_winrm(self, on: bool) -> None:
@@ -682,58 +633,59 @@ class MachineDetail(_Page):
             held = secrets.has(machine.secret_ref)
             self.password.show_stored(held)
         if local:
-            self.result.setText("This computer is reached by being it — the "
-                                "service manager is right here.")
+            self.result.setText(t("This computer is reached by being it — the service "
+                                  "manager is right here."))
             self.sudo_note.setText("")
         elif by_password and machine.username == "root":
             # Root needs no sudo and no group: that is the entire reason sudo
             # exists. Worth saying, because the alternative is someone following
             # setup steps they do not need.
-            self.sudo_note.setText(
-                "Signing in as root needs nothing set up on that machine — no "
-                "sudo rule, no group. The cost is that a root password is stored "
-                "on this computer, where any administrator can read it.")
+            self.sudo_note.setText(t(
+                "Signing in as root needs nothing set up on that machine — no sudo rule, "
+                "no group. The cost is that a root password is stored on this computer, "
+                "where any administrator can read it."))
         elif linux:
-            self.sudo_note.setText(
-                "Reading a status needs no privilege. Starting and stopping needs "
-                "sudo without a password, and instant updates need the account in "
-                "the systemd-journal group — the button below writes out exactly "
-                "what to run for the services you have chosen.")
+            self.sudo_note.setText(t(
+                "Reading a status needs no privilege. Starting and stopping needs sudo "
+                "without a password, and instant updates need the account in the "
+                "systemd-journal group — the button below writes out exactly what to run "
+                "for the services you have chosen."))
         elif remote_windows and by_password:
-            self.sudo_note.setText(
+            self.sudo_note.setText(t(
                 "Windows allows one account per machine at a time: if this computer "
-                "already has a connection to it — a mapped drive, an open Explorer "
-                "window — as somebody else, that account is used and this one is "
-                "refused. The account must administer services on that machine, "
-                "which normally means its Administrators group.")
+                "already has a connection to it — a mapped drive, an open Explorer window "
+                "— as somebody else, that account is used and this one is refused. The "
+                "account must administer services on that machine, which normally means "
+                "its Administrators group."))
         elif remote_windows:
-            self.sudo_note.setText(
-                "Reached as whoever is signed in to this computer. Nothing to set "
-                "up, as long as that account administers services on the other "
-                "machine — otherwise choose a user name and password above.")
+            self.sudo_note.setText(t(
+                "Reached as whoever is signed in to this computer. Nothing to set up, as "
+                "long as that account administers services on the other machine — "
+                "otherwise choose a user name and password above."))
         else:
             self.sudo_note.setText("")
 
     def _describe_fields(self, linux: bool, remote_windows: bool) -> None:
         """The same three rows mean different things on the two kinds of machine,
         and a note about sudo beside a Windows account would be nonsense."""
+        # The Password note is the one the form already carries, word for word: the same
+        # sentence in two places is one entry in the catalogue and one thing to reword.
+        kept = t("Kept encrypted on this computer, not in services.json. Any administrator "
+                 "here can read it.")
         if remote_windows:
             notes = {
-                "username": "DOMAIN\\account, or .\\account for one local to that "
-                            "machine.",
-                "auth": "The signed-in account needs nothing set up. A user name "
-                        "and password is for when it is not an administrator "
-                        "there.",
-                "password": "Kept encrypted on this computer, not in\n"
-                            "services.json. Any administrator here can read it.",
+                "username": t("DOMAIN\\account, or .\\account for one local to that "
+                              "machine."),
+                "auth": t("The signed-in account needs nothing set up. A user name and "
+                          "password is for when it is not an administrator there."),
+                "password": kept,
             }
         else:
             notes = {
-                "username": "Who we log in as. Reading needs no privilege;\n"
-                            "acting needs sudo without a password.",
-                "auth": "A key is preferred: no secret to keep.",
-                "password": "Kept encrypted on this computer, not in\n"
-                            "services.json. Any administrator here can read it.",
+                "username": t("Who we log in as. Reading needs no privilege; acting needs "
+                              "sudo without a password."),
+                "auth": t("A key is preferred: no secret to keep."),
+                "password": kept,
             }
         for key, text in notes.items():
             hint = self._hints.get(key)
@@ -763,8 +715,8 @@ class MachineDetail(_Page):
             self.result.setText("")
         else:
             self.result.setText(secrets.last_error()
-                                or "The password could not be stored. Is Service "
-                                   "Officer running as administrator?")
+                                or t("The password could not be stored. Is Service "
+                                     "Officer running as administrator?"))
         self.changed.emit()
 
     def _forget_password(self):
@@ -774,8 +726,8 @@ class MachineDetail(_Page):
         secrets.forget(machine.secret_ref or secrets.ref_for_machine(machine.name))
         connectors.forget(machine.name)
         self.password.show_stored(False)
-        self.result.setText("Forgotten. That machine cannot be reached with a "
-                            "password until a new one is set.")
+        self.result.setText(t("Forgotten. That machine cannot be reached with a password "
+                              "until a new one is set."))
         self.changed.emit()
 
     def _fetch_fingerprint(self):
@@ -797,11 +749,11 @@ class MachineDetail(_Page):
             from core import ssh_linux
             found = ssh_linux.fingerprint_of(host, machine.port or 22)
         except Exception as exc:
-            self.result.setText(f"{host} did not offer a key — "
-                                f"{type(exc).__name__}: {exc}")
+            self.result.setText(t("{host} did not offer a key — {why}", host=host,
+                                  why=f"{type(exc).__name__}: {exc}"))
             return
         if not found:
-            self.result.setText(f"{host} did not offer a key.")
+            self.result.setText(t("{host} did not offer a key.", host=host))
             return
         was = self.fingerprint.text().strip()
         self.fingerprint.setText(found)
@@ -810,20 +762,20 @@ class MachineDetail(_Page):
         if was and was != found:
             # Worth shouting about: either the machine was rebuilt, or this is not
             # the same machine.
-            self.result.setText(
-                f"The key changed. It was {was} and is now {found}. Either that "
-                f"machine was rebuilt, or it is not the same machine — check "
-                f"before you keep this.")
+            self.result.setText(t(
+                "The key changed. It was {was} and is now {now}. Either that machine was "
+                "rebuilt, or it is not the same machine — check before you keep this.",
+                was=was, now=found))
         else:
-            self.result.setText(
-                f"{host} offers {found}. Read over the network, so it proves "
-                f"nothing on its own: confirm it on the machine with "
-                f"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub if the network "
-                f"between here and there is not trusted.")
+            self.result.setText(t(
+                "{host} offers {key}. Read over the network, so it proves nothing on its "
+                "own: confirm it on the machine with "
+                "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub if the network between "
+                "here and there is not trusted.", host=host, key=found))
 
     def _browse(self):
         from PySide6.QtWidgets import QFileDialog
-        found, _filter = QFileDialog.getOpenFileName(self, "Private key file")
+        found, _filter = QFileDialog.getOpenFileName(self, t("Private key file"))
         if found:
             self.key_path.setText(found)
             self._save()
@@ -845,84 +797,80 @@ class MachineDetail(_Page):
         if machine is None:
             return
         if machine.is_local:
-            self.result.setText("This computer answers — it is the one running "
-                                "Service Officer.")
+            self.result.setText(t("This computer answers — it is the one running Service "
+                                  "Officer."))
             return
-        self.result.setText(f"Asking {machine.where()}…")
+        self.result.setText(t("Asking {machine}…", machine=machine.where()))
         threading.Thread(target=self._run_test, args=(machine,),
                          daemon=True).start()
 
     def _run_test(self, machine):
-        """The test itself, off the UI thread. Reports through a signal."""
-        connectors.forget(machine.name)
-        conn = connectors.for_machine(machine.name, record=machine)
+        """The test itself, off the UI thread. Reports through a signal.
+
+        Asked of the **hub** when there is one. It used to be asked here, so on a workstation
+        the answer was "this desk can reach that server" — a different question from the one
+        the hub answers every five seconds, and not the one anybody pressing the button means.
+        The result even said "(from this computer)": honest about the wrong answer rather than
+        giving the right one.
+        """
+        hub = self._hub()
         try:
-            # Signing in explicitly, because reachable() cannot report why it
-            # failed — it answers a yes/no question for the poller. "The user name
-            # or password is wrong" and "the machine could not be found" need
-            # different things done about them.
-            sign_in = getattr(conn, "_sign_in", None)
-            if callable(sign_in):
-                sign_in()
-            if not conn.reachable():
-                self.tested.emit(self._why_unreachable(machine))
-                return
-            winrm_said = self._test_winrm(machine)
-            can = conn.abilities()
-        except RuntimeError as exc:
-            # Ours, and already a sentence — the transport's own words, not a
-            # class name in front of them.
-            self.tested.emit(f"{machine.where()}: {exc}")
-            return
+            if hub is not None:
+                found = hub.test_machine(machine.name)
+            else:
+                # No hub: this computer *is* the engine, so it is the right computer to ask.
+                from core import probe
+                found = probe.test_machine(machine)
         except Exception as exc:
             self.tested.emit(f"{type(exc).__name__}: {exc}")
             return
-        # Whose reach was just proved. With a hub, the chip on the machine shows what the
-        # *hub* found, and this test ran here, as whoever is signed in — two different
-        # subjects, and saying only "answered" invites the reading that they are one. Seen
-        # on 2026-07-28: sc-sql answered a test while its chip said `waiting`.
-        whose = " (from this computer)" if self._hub() is not None else ""
-        said = [f"{machine.where()} answered{whose}."]
-        if machine.auth == "password" and not machine.is_linux:
-            said.append(f"Signed in as {machine.username}.")
-        said.append("Services can be started and stopped." if can.control
-                    else "Watching only — no control.")
-        said.append("Changes arrive as they happen." if can.push
-                    else f"Status is asked for every {machine.poll_seconds}s.")
-        if winrm_said:
-            said.append(winrm_said)
-        if can.why:
-            said.append(can.why)
-        self.tested.emit("  ".join(said))
+        self.tested.emit(self._word_test(machine, found))
 
-    def _test_winrm(self, machine) -> str:
-        """Try WinRM and set the switch from the answer. Returns what to say about it.
+    def _word_test(self, machine, found: dict) -> str:
+        """The facts as a sentence. Here, not in core: this is what a person reads, in their
+        language, and `probe` returns booleans on purpose."""
+        if not found.get("reachable"):
+            # The diagnosis comes from wherever the probe ran — a firewall question is about
+            # the path between two machines — so it arrives worded and is passed through.
+            return found.get("why") or t("{machine} did not answer.",
+                                        machine=machine.where())
+
+        said = [t("{machine} answered.", machine=machine.where())]
+        if machine.auth == "password" and not machine.is_linux and found.get("signed_in"):
+            said.append(t("Signed in as {who}.", who=machine.username))
+        said.append(t("Services can be started and stopped.") if found.get("control")
+                    else t("Watching only — no control."))
+        said.append(t("Changes arrive as they happen.") if found.get("push")
+                    else t("Status is asked for every {seconds}s.",
+                           seconds=machine.poll_seconds))
+        said.append(self._word_winrm(machine, found.get("winrm")))
+        if found.get("abilities_why"):
+            said.append(found["abilities_why"])
+        return "  ".join(part for part in said if part)
+
+    def _word_winrm(self, machine, answer) -> str:
+        """What WinRM said, and the switch set from it.
 
         This is where the decision gets made for somebody who should not have to know what
         WinRM is: press Test connection, and the switch ends up right. It is still a switch
         they can override afterwards — a machine that answers today may be one they would
         rather not have logon records on.
 
-        Windows only, and never this computer.
+        None means the question does not apply: this computer, or Linux.
         """
-        if machine.is_local or machine.is_linux:
+        if answer is None:
             return ""
-        from core import secrets, winrm_windows
-
-        user = machine.username if machine.auth == "password" else ""
-        password = secrets.get(secrets.ref_for_machine(machine.name)) if user else ""
-        winrm_windows.forget(machine.address or machine.name)
-        answer = winrm_windows.probe(machine.address or machine.name, user, password)
-
         wanted = bool(answer.get("ok"))
         if wanted != bool(getattr(machine, "winrm", False)):
             machine.winrm = wanted
             self.winrm_found.emit()
         if wanted:
-            return ("WinRM answers, so it is switched on: its process can be terminated, "
-                    "its event log read, and a command run on it.")
+            return t("WinRM answers, so it is switched on: its process can be terminated, "
+                     "its event log read, and a command run on it.")
         why = answer.get("why", "")
-        return ("WinRM is not usable, so it is switched off." + (f"  {why}" if why else ""))
+        # The reason comes from the machine that ran the probe, already worded, so it is
+        # passed through rather than translated — see _word_test.
+        return t("WinRM is not usable, so it is switched off.") + (f"  {why}" if why else "")
 
     def _winrm_decided(self) -> None:
         """Test connection set the machine's switch; show it and save it."""
@@ -930,19 +878,6 @@ class MachineDetail(_Page):
             return
         self._load_winrm(self.machine)
         self.changed.emit()
-
-    def _why_unreachable(self, machine) -> str:
-        """A remote machine that did not answer: say what to open, not just that it
-        did not. A Linux machine's reasons come from SSH; a Windows one's from the
-        firewall diagnosis."""
-        if machine.is_linux:
-            return (f"{machine.where()} did not answer over SSH. Check that the "
-                    f"machine is on, that port {machine.port or 22} is open, and that "
-                    f"the account, key or password and the host key all match.")
-        from core import scm_windows
-        host = machine.address or machine.name
-        told = scm_windows.diagnose(host)
-        return told or f"{machine.where()} did not answer."
 
     def _say_result(self, text: str) -> None:
         """On the UI thread, and only if the page is still there — closing the panel
@@ -987,15 +922,18 @@ class MachineDetail(_Page):
             # Nothing to grant. Saying so is the useful answer; producing a
             # sudoers file for root would be theatre.
             QApplication.clipboard().setText(
-                f"# Nothing to set up on {machine.where()}: root already has\n"
-                f"# every privilege this app needs, and reads the journal.\n")
-            self.result.setText("Signing in as root needs no setup on that "
-                                "machine — nothing to run.")
+                t("# Nothing to set up on {machine}: root already has\n"
+                  "# every privilege this app needs, and reads the journal.\n",
+                  machine=machine.where()))
+            self.result.setText(t("Signing in as root needs no setup on that machine — "
+                                  "nothing to run."))
             return
 
+        # The comments in this block are read by whoever pastes it, so they are prose like
+        # anything else on the page. The commands are not: they are what the machine runs.
         services = self._services_here()
-        lines = [f"# Run this on {machine.where()} as root.",
-                 f"# If you are not root: sudo -i   (or su -)",
+        lines = [t("# Run this on {machine} as root.", machine=machine.where()),
+                 t("# If you are not root: sudo -i   (or su -)"),
                  "",
                  f"/usr/sbin/usermod -aG systemd-journal {account}"]
         if services:
@@ -1008,18 +946,19 @@ class MachineDetail(_Page):
                 f"{account} ALL=(root) NOPASSWD: {allowed}",
                 "EOF",
                 "chmod 0440 /etc/sudoers.d/service-officer",
-                "# Refuse a broken file rather than discovering sudo is gone:",
+                t("# Refuse a broken file rather than discovering sudo is gone:"),
                 "visudo -cf /etc/sudoers.d/service-officer",
             ]
         else:
             lines += ["",
-                      "# Choose this machine's services on the Services page and",
-                      "# copy this again — the sudo rule will then name them, and",
-                      "# grant nothing beyond them."]
+                      t("# Choose this machine's services on the Services page and\n"
+                        "# copy this again — the sudo rule will then name them, and\n"
+                        "# grant nothing beyond them.")]
         QApplication.clipboard().setText("\n".join(lines) + "\n")
         self.result.setText(
-            f"Copied — paste the whole block into a root shell on "
-            f"{machine.where()}. {len(services)} service(s) covered."
+            t("Copied — paste the whole block into a root shell on {machine}. "
+              "{count} service(s) covered.", machine=machine.where(),
+              count=len(services))
             if services else
-            "Copied. It only adds the journal group so far: choose this machine's "
-            "services first and copy again to include the sudo rule.")
+            t("Copied. It only adds the journal group so far: choose this machine's "
+              "services first and copy again to include the sudo rule."))

@@ -854,3 +854,50 @@ def test_check_now_really_checks(system, monkeypatch):
     assert said["available"] == "9.9.9"
     # And the state endpoint agrees, so the panel redrawing after this shows the same thing.
     assert client.update_state()["available"] == "9.9.9"
+
+
+# ── probing from the machine that does the watching ───────────────────────
+def test_a_machine_is_tested_from_the_hub(system, monkeypatch):
+    """Test connection used to run in the panel, so on a workstation it proved that desk could
+    reach a server — a different question from the one the hub answers every five seconds."""
+    client, _engine, _server, _states, _holder = system
+    asked = []
+
+    def probed(record):
+        asked.append(record.name)
+        return {"reachable": True, "control": True, "push": False, "winrm": None,
+                "abilities_why": "", "signed_in": True, "why": ""}
+
+    monkeypatch.setattr(hub_server.probe, "test_machine", probed)
+
+    said = client.test_machine("")          # this computer, the one machine in the sample
+    assert asked, "the hub never probed"
+    assert said["reachable"] is True and said["control"] is True
+
+
+def test_testing_a_machine_the_hub_does_not_have_is_a_404(system):
+    """Rather than a probe of nothing, or a 500."""
+    client, _engine, _server, _states, _holder = system
+    with pytest.raises(Exception) as caught:
+        client.test_machine("no-such-box")
+    assert "no machine" in str(caught.value).lower()
+
+
+def test_health_is_checked_from_the_hub(system, monkeypatch):
+    """A check asking "does something answer on CTL052:54001" is asking whether the machine
+    doing the watching can open that port. A workstation is not that machine."""
+    client, _engine, _server, _states, _holder = system
+    from core import probe
+    monkeypatch.setattr(probe, "run_health",
+                        lambda svc: {"ok": True, "lines": [f"{svc.name}: fine"]})
+
+    said = client.check_health("AppEngine")
+    assert said["ok"] is True
+    assert said["lines"] == ["AppEngine: fine"]
+
+
+def test_checking_a_service_the_hub_does_not_have_is_a_404(system):
+    client, _engine, _server, _states, _holder = system
+    with pytest.raises(Exception) as caught:
+        client.check_health("NotAService")
+    assert "no service" in str(caught.value).lower()

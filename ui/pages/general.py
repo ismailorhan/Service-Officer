@@ -57,16 +57,16 @@ class GeneralPage(_Page):
 
         self.root.addWidget(_label("STARTUP", "section"))
         self.root.addSpacing(9)
-        self.auto = QCheckBox("Start automatically when Windows starts")
+        self.auto = QCheckBox(t("Start automatically when Windows starts"))
         self.auto.toggled.connect(self._set_auto)
         self.root.addWidget(self.auto)
         self.root.addSpacing(24)
 
         self.root.addWidget(_label("NOTIFICATIONS", "section"))
         self.root.addSpacing(9)
-        self.on_crash = QCheckBox("A service stopped unexpectedly")
-        self.on_recovery = QCheckBox("Recovery succeeded")
-        self.on_give_up = QCheckBox("Recovery gave up")
+        self.on_crash = QCheckBox(t("A service stopped unexpectedly"))
+        self.on_recovery = QCheckBox(t("Recovery succeeded"))
+        self.on_give_up = QCheckBox(t("Recovery gave up"))
         for box, attr in ((self.on_crash, "on_crash"),
                           (self.on_recovery, "on_recovery"),
                           (self.on_give_up, "on_give_up")):
@@ -87,12 +87,13 @@ class GeneralPage(_Page):
         # Where it is installed, and not where the data lives: that path is on the History
         # page, under the rows it holds, which is where somebody looking for it already is.
         # Copy build details still carries both, because a ticket wants both.
-        where = _label(f"Installed in  {version.install_dir()}", "hint", wrap=True)
+        where = _label(t("Installed in  {path}", path=version.install_dir()),
+                       "hint", wrap=True)
         where.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.root.addWidget(where)
         self.root.addSpacing(8)
         row = QHBoxLayout()
-        row.addWidget(_button("Copy build details", "quiet", self._copy_build))
+        row.addWidget(_button(t("Copy build details"), "quiet", self._copy_build))
         row.addStretch(1)
         self.root.addLayout(row)
         self.root.addStretch(1)
@@ -100,11 +101,14 @@ class GeneralPage(_Page):
     def _copy_build(self):
         """One click to paste into a ticket."""
         from PySide6.QtWidgets import QApplication
+        # For a ticket, so the labels are the reader's — whoever is copying it is the one
+        # who will paste it, and they are reading this window in their own language.
         QApplication.clipboard().setText(
             f"Service Officer {version.full()}\n"
-            f"Installed in: {version.install_dir()}\n"
-            f"Data in: {cfg_mod.APP_DIR}\n"
-            f"Machine: {control.host_name()} ({control.cached_address('') or '?'})")
+            + t("Installed in: {path}", path=version.install_dir()) + "\n"
+            + t("Data in: {path}", path=cfg_mod.APP_DIR) + "\n"
+            + t("Machine: {host} ({address})", host=control.host_name(),
+                address=control.cached_address("") or "?"))
 
     _THEMES = ("system", "dark", "light")
 

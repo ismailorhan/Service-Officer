@@ -65,21 +65,31 @@ def test_this_process_knows_which_session_it_is_in():
         "a test run from a desktop should not be in the services session"
 
 
-def test_the_sessions_somebody_is_in_can_really_be_listed():
-    """The question the previous version got wrong. It asked for the *console* session, which on
-    a server sits `Connected` with nobody in it while the operator is on RDP — measured:
+def test_the_sessions_to_try_can_really_be_listed():
+    """Two versions got this question wrong.
+
+    The first asked for the *console* session, which on a server sits with nobody in it while the
+    operator is on RDP — measured:
 
         session 0  Services   Disconnected
         session 1  RDP-Tcp#0  Active        <- the person
         session 2  Console    Connected     <- nobody
         WTSGetActiveConsoleSessionId -> 2
+
+    The second kept only the `Active` ones, which empties the moment a screen locks. Measured
+    minutes apart on the same machine: `[1]`, then `[]` — and on a server a locked screen is most
+    of the day. So the list is every session that *might* hold a user and `WTSQueryUserToken`
+    decides, which is also what makes this test's claim stable rather than a snapshot of who
+    happened to be looking.
     """
-    found = session.active_sessions()
+    found = session.sessions_to_try()
     assert isinstance(found, list)
     assert all(isinstance(s, int) for s in found)
     assert session.SERVICES_SESSION not in found, \
         "session 0 has no desktop and must never be offered as one"
-    # This test is running in a session somebody is signed into, by definition.
+    assert all(s < 65536 for s in found), "the RDP listener is not a session anybody is in"
+    # This test runs in a session somebody is signed into — locked screen or not, which is
+    # exactly what the second version got wrong.
     assert session.my_session() in found, found
 
 
@@ -92,7 +102,7 @@ def test_a_service_never_falls_back_to_an_ordinary_launch(monkeypatch, tmp_path)
     """
     exe = tmp_path / "ServiceOfficer.exe"
     exe.write_bytes(b"MZ")
-    monkeypatch.setattr(session, "active_sessions", lambda: [1])
+    monkeypatch.setattr(session, "sessions_to_try", lambda: [1])
     monkeypatch.setattr(session, "_as_the_person", lambda *_a: 0)   # no token
     monkeypatch.setattr(session, "my_session", lambda: session.SERVICES_SESSION)
 
@@ -108,7 +118,7 @@ def test_a_process_with_a_desktop_may_fall_back(monkeypatch, tmp_path):
     it is already on that person's desktop, so an ordinary launch reaches it."""
     exe = tmp_path / "ServiceOfficer.exe"
     exe.write_bytes(b"MZ")
-    monkeypatch.setattr(session, "active_sessions", lambda: [1])
+    monkeypatch.setattr(session, "sessions_to_try", lambda: [1])
     monkeypatch.setattr(session, "_as_the_person", lambda *_a: 0)
     monkeypatch.setattr(session, "my_session", lambda: 1)
 
@@ -128,7 +138,7 @@ def test_one_copy_per_session_somebody_is_in(monkeypatch, tmp_path):
     the machine. Two people signed in means two to put back."""
     exe = tmp_path / "ServiceOfficer.exe"
     exe.write_bytes(b"MZ")
-    monkeypatch.setattr(session, "active_sessions", lambda: [1, 3])
+    monkeypatch.setattr(session, "sessions_to_try", lambda: [1, 3])
     tried = []
     monkeypatch.setattr(session, "_as_the_person",
                         lambda s, c, f: tried.append(s) or (100 + s))
@@ -147,7 +157,7 @@ def test_nobody_signed_in_is_an_answer_not_a_failure(monkeypatch, tmp_path):
     nobody will ever look at."""
     exe = tmp_path / "ServiceOfficer.exe"
     exe.write_bytes(b"MZ")
-    monkeypatch.setattr(session, "active_sessions", lambda: [])
+    monkeypatch.setattr(session, "sessions_to_try", lambda: [])
     monkeypatch.setattr(session, "my_session", lambda: session.SERVICES_SESSION)
 
     def refuse(*_a, **_k):

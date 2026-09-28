@@ -660,7 +660,8 @@ def test_a_windows_machine_can_be_reached_as_a_named_account(qapp):
     # above the choice that decides whether a user is wanted at all.
     def row_of(key):
         caption = detail._rows[key][0]
-        return detail.form.getItemPosition(detail.form.indexOf(caption))[0]
+        grid = detail.form.grid
+        return grid.getItemPosition(grid.indexOf(caption))[0]
 
     assert row_of("auth") < row_of("username") < row_of("password")
     win.deleteLater()
@@ -724,17 +725,20 @@ def test_testing_a_connection_does_not_freeze_the_window(qapp):
         started = time.perf_counter()
         detail._test()
         elapsed = time.perf_counter() - started
+
+        assert elapsed < 0.5, "the click itself waited for the machine"
+        assert "Asking" in detail.result.text()
+        # The stand-in stays in place until the worker has actually used it. Restoring it in a
+        # `finally` right after `_test()` — which only *starts* the thread — was a race the test
+        # happened to win: it lost as soon as the worker had one more import to do on the way.
+        for _ in range(40):
+            qapp.processEvents()
+            if slow:
+                break
+            time.sleep(0.05)
+        assert slow == ["asked"]
     finally:
         conn_mod.for_machine = original
-
-    assert elapsed < 0.5, "the click itself waited for the machine"
-    assert "Asking" in detail.result.text()
-    for _ in range(40):                       # let the worker finish
-        qapp.processEvents()
-        if slow:
-            break
-        time.sleep(0.05)
-    assert slow == ["asked"]
     win.deleteLater()
 
 
@@ -1231,17 +1235,22 @@ def test_every_settings_grid_puts_its_fields_in_the_same_place(qapp, sample):
             win.services_page.detail._select_tab(tab)
         return go
 
+    def open_machine():
+        page = win.machines_page
+        page.list.setCurrentRow(page.list.count() - 1)
+        page._open()
+
     # Each page has to be the open one before it is measured: an unselected page's widgets have
     # no geometry yet, so every offset reads as 0 and the test fails on nothing. The first run
     # of this did exactly that.
-    # The Machines detail is not in here, and measured rather than assumed: it builds its own
-    # grid with its own row bookkeeping — per-target notes that get rewritten when Windows
-    # becomes Linux — so it carries no `rows` and this sweep finds nothing on it. Its offset is
-    # checked directly by test_the_hub_page_is_laid_out_like_the_machines_detail. Folding it
-    # onto the shared helper would leave one implementation instead of two; until then, this
-    # comment is the reason it is absent rather than forgotten.
+    # The Machines detail used to be absent from this sweep, because it built its own grid with
+    # its own row bookkeeping — per-target notes that get rewritten when Windows becomes Linux —
+    # so it carried no `rows` and this found nothing on it. Two implementations of one layout,
+    # agreeing only because another test compared them. It is on `_fields` now, with the rows
+    # named, so this sweep reaches it like every other page.
     plans = [("general", lambda: win.general_page, "general", None),
-             ("hub", lambda: win.hub_page, "hub", None)]
+             ("hub", lambda: win.hub_page, "hub", None),
+             ("machines detail", lambda: win.machines_page, "machines", open_machine)]
     for tab in ("General", "Recovery", "Health"):
         plans.append((f"service detail ▸ {tab}", lambda: win.services_page,
                       "services", open_service(tab)))
@@ -1272,8 +1281,14 @@ def test_every_settings_grid_puts_its_fields_in_the_same_place(qapp, sample):
                 f"{name}: values at {sorted(offsets)}, expected {wanted}"
             # And the dots in one column, per grid — a dot at its own indent is the same
             # complaint in miniature.
+            #
+            # Visible ones only, for the same reason the grid itself is skipped when it is not
+            # on screen: a hidden widget has no geometry and reads as x=0. On the Machines
+            # detail the hidden rows are *inside* the measured grid — Key file and Host key are
+            # away for a Windows machine — so this filter is what that page needs and every
+            # other page is unaffected, its dots all being shown.
             dots = {d.mapTo(grid, d.rect().topLeft()).x()
-                    for d in grid.findChildren(InfoDot)}
+                    for d in grid.findChildren(InfoDot) if d.isVisible()}
             assert len(dots) <= 1, f"{name}: dots at {sorted(dots)}"
             checked += 1
     assert checked >= 5, f"only found {checked} grids — did a page stop using _fields?"
@@ -2664,7 +2679,9 @@ def test_testing_a_connection_decides_the_switch(qapp, sample, monkeypatch):
     monkeypatch.setattr(winrm_windows, "probe",
                         lambda host, user="", password="", **k: {"ok": True, "why": "",
                                                                 "name": "SC-SQL"})
-    said = detail._test_winrm(machine)
+    # The probing moved to core/probe so the *hub* can do it; what is left here is the wording
+    # and the switch, which is what this test is about.
+    said = detail._word_winrm(machine, {"ok": True, "why": ""})
 
     assert machine.winrm is True
     assert "switched on" in said and "terminated" in said
@@ -2675,211 +2692,19 @@ def test_testing_a_connection_decides_the_switch(qapp, sample, monkeypatch):
         lambda host, user="", password="", **k: {
             "ok": False, "name": "",
             "why": "On that machine, as an administrator:  winrm quickconfig"})
-    said = detail._test_winrm(machine)
+    said = detail._word_winrm(
+        machine, {"ok": False,
+                  "why": "On that machine, as an administrator:  winrm quickconfig"})
 
     assert machine.winrm is False
     assert "switched off" in said and "winrm quickconfig" in said
+
+    # And a question that does not apply — this computer, or Linux — says nothing rather than
+    # "switched off", which would read as a finding.
+    assert detail._word_winrm(machine, None) == ""
     win.deleteLater()
 
 
-def test_a_connection_test_says_whose_reach_it_proved(qapp, tmp_path, monkeypatch):
-    """With a hub, the chip on a machine shows what the *hub* found, and Test connection runs
-    here as whoever is signed in. Two subjects — and on 2026-07-28 sc-sql answered a test
-    while its own chip said `waiting`, which read as a contradiction rather than as two
-    different questions."""
-    from core import config as cfg_mod, connectors
-    from ui.pages import machines as machines_mod
-
-    machine = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
-    cfg = cfg_mod.Config(machines=[machine])
-
-    class Answers:
-        def reachable(self): return True
-        def abilities(self): return connectors.Abilities(control=True)
-
-    monkeypatch.setattr(connectors, "for_machine", lambda name, record=None: Answers())
-    monkeypatch.setattr(connectors, "forget", lambda name=None: None)
-
-    alone = machines_mod.MachineDetail()
-    with_hub = machines_mod.MachineDetail(object())
-    for page in (alone, with_hub):
-        page.machine = machine
-        monkeypatch.setattr(page, "_test_winrm", lambda m: "")
-
-    said = []
-    alone.tested.connect(said.append)
-    with_hub.tested.connect(said.append)
-    alone._run_test(machine)
-    with_hub._run_test(machine)
-
-    assert "from this computer" not in said[0], "watching alone, there is no other computer"
-    assert "from this computer" in said[1], "did not say whose reach answered"
-
-
-class _Nods:
-    """Answers anything with a shrug. For the parts of an Application a test is not about."""
-
-    def __getattr__(self, _name):
-        return _Nods()
-
-    def __call__(self, *a, **k):
-        return None
-
-    def isVisible(self):
-        return False
-
-
-def test_a_machine_answering_repaints_the_machines_page(qapp, sample, monkeypatch):
-    """It was only redrawn on the way in. So a machine that started answering while the page
-    was open kept its `waiting` chip while the very services on it streamed in as Running —
-    the hub appearing to contradict itself. Seen on 2026-07-29.
-
-    Every screen that shows state is repainted from one place, and the Machines page was not
-    one of them. Driven through that one place rather than around it.
-    """
-    import app as app_mod
-
-    win = panel_mod.MainPanel(sample)
-    win.show()
-    try:
-        drawn = []
-        monkeypatch.setattr(win.machines_page, "refresh", lambda: drawn.append(True))
-
-        stub = _Nods()
-        stub.panel = win
-
-        app_mod.Application._refresh_lists(stub)
-
-        assert drawn, "the one place that repaints state does not reach the Machines page"
-    finally:
-        win.close()
-
-
-def test_the_hub_is_infrastructure_and_comes_first(qapp, sample):
-    """It was the last section of General, under appearance, startup and notifications —
-    four scrolls past the things it outranks. A hub decides where every service in this
-    window comes from and whether this computer does the watching at all, so it sits with
-    Machines and Clients, and above them: those two are what a hub *has*."""
-    win = panel_mod.MainPanel(sample)
-    try:
-        order = list(win._buttons_by_name)
-
-        assert "hub" in order, "there is nowhere to set the address"
-        assert order.index("hub") < order.index("machines"), "Machines came first"
-        assert order.index("hub") < order.index("general"), "still buried in Settings"
-
-        assert not win._buttons_by_name["hub"].icon().isNull(),             "the only nav entry without a picture reads as unfinished"
-
-        win._select(win.hub_page, win._buttons_by_name["hub"])
-        assert win.pages.currentWidget() is win.hub_page
-    finally:
-        win.close()
-
-
-def test_the_hub_page_is_there_without_a_hub(qapp, sample):
-    """Unlike Clients. A panel watching its own services still has to be able to point at
-    one — that field is how it becomes a client at all."""
-    win = panel_mod.MainPanel(sample)
-    try:
-        assert win._buttons_by_name["hub"].isVisible() or not win.isVisible()
-        assert win._buttons_by_name["clients"].isVisible() is False
-    finally:
-        win.close()
-
-
-def test_no_page_spreads_itself_over_the_window(qapp, sample):
-    """A layout with no trailing stretch hands its spare height to the widgets in it. The
-    Hub page shipped that way for one build: its ADDRESS heading was 55 pixels tall where it
-    wants 15, so every section floated in the middle of a gap and the page read as a
-    different product from General beside it.
-
-    Measured on the headings, not on the gaps between them — the gaps are fixed spacings and
-    stayed at 9 the whole time, which is how a first version of this test passed against the
-    very bug it was written for. What stretches is the widgets.
-    """
-    from PySide6.QtWidgets import QLabel
-
-    win = panel_mod.MainPanel(sample)
-    win.resize(1010, 700)
-    win.show()
-    try:
-        for name, button in win._buttons_by_name.items():
-            page = win._by_name[name]
-            win._select(page, button)
-            win.grab()          # a layout is only applied when something asks it to paint
-            for head in page.findChildren(QLabel):
-                if head.property("role") != "section" or not head.isVisible():
-                    continue
-                # Only headings in the page's own vertical flow. One sitting in a row beside
-                # a button is as tall as that button by design — Schedule's RECENT EXECUTIONS
-                # is 31px next to its Refresh, and that is alignment, not spare height.
-                owner = head.parentWidget().layout()
-                if owner is None or owner.indexOf(head) < 0:
-                    continue
-                # Ten pixels of slack: a heading inside a table header carries a couple of
-                # pixels of cell padding and that is fine. Nothing legitimately adds forty,
-                # which is what the spare height of a window looks like.
-                assert head.height() <= head.sizeHint().height() + 10, (
-                    f"{name}: the {head.text()!r} heading is {head.height()}px tall and "
-                    f"wants {head.sizeHint().height()}px — a missing addStretch(1) at the "
-                    f"end of that page's layout")
-    finally:
-        win.close()
-
-
-
-def test_kill_is_offered_where_something_can_carry_it(qapp):
-    """`Abilities.kill` was added, the connector routes a kill over WinRM, and the switch on
-    the Machines page promises in as many words that this machine's process "can be
-    terminated". The row never asked: it computed `local = not service.machine` and
-    hard-coded the button off for every remote service, so the whole WinRM kill path shipped
-    with no way to reach it. Found on 2026-07-29 by looking at the button.
-    """
-    from core import config as cfg_mod, state as st
-    from ui import rows as rows_mod
-    from ui.servicelist import _can_kill
-
-    cfg = cfg_mod.Config(machines=[
-        cfg_mod.Machine(),                                              # this computer
-        cfg_mod.Machine(name="sc-sql", address="10.77.3.112", winrm=True),
-        cfg_mod.Machine(name="sc-sap", address="10.77.3.110", winrm=False),
-        cfg_mod.Machine(name="hanadev", address="10.0.0.9", kind="linux"),
-    ])
-
-    assert _can_kill(cfg, "") is True, "on this computer it has always worked"
-    assert _can_kill(cfg, "sc-sql") is True, "WinRM is on, and WinRM carries a kill"
-    assert _can_kill(cfg, "sc-sap") is False, "switched off is off — no process is started"
-    assert _can_kill(cfg, "hanadev") is True, "SSH runs commands, so it can end one"
-    assert _can_kill(cfg, "gone") is False, "a machine that is not configured offers nothing"
-
-    # And the row obeys it, for running and for wedged mid-transition — which is the case
-    # kill exists for.
-    for able in (True, False):
-        row = rows_mod.ServiceRow(cfg_mod.Service(name="B1ServerTools64", machine="sc-sql"))
-        row.can_kill = able
-        for status in (st.RUNNING, "Stopping"):
-            row.set_status(status)
-            assert row.buttons["kill"].isEnabled() is able,                 f"can_kill={able} but the button says {row.buttons['kill'].isEnabled()} "                 f"at {status}"
-
-    # Stopped stays off whatever the machine can do: there is no process to end.
-    row = rows_mod.ServiceRow(cfg_mod.Service(name="B1ServerTools64", machine="sc-sql"))
-    row.can_kill = True
-    row.set_status(st.STOPPED)
-    assert row.buttons["kill"].isEnabled() is False
-
-
-def test_a_row_nobody_told_offers_no_remote_kill(qapp):
-    """The safe way round: a row built without being told falls back to this computer only."""
-    from core import config as cfg_mod, state as st
-    from ui import rows as rows_mod
-
-    row = rows_mod.ServiceRow(cfg_mod.Service(name="X", machine="sc-sql"))
-    row.set_status(st.RUNNING)
-    assert row.buttons["kill"].isEnabled() is False
-
-    here = rows_mod.ServiceRow(cfg_mod.Service(name="X"))
-    here.set_status(st.RUNNING)
-    assert here.buttons["kill"].isEnabled() is True
 
 
 def test_only_a_machine_with_winrm_on_is_asked_for_its_log(monkeypatch):
@@ -2961,38 +2786,55 @@ def test_the_history_page_asks_the_hub_and_never_the_gui_thread(qapp, monkeypatc
     assert [r["service"] for r in page._current_rows()] == ["A"]
 
 
-def test_a_connection_test_says_whose_reach_it_proved(qapp, tmp_path, monkeypatch):
-    """With a hub, the chip on a machine shows what the *hub* found, and Test connection runs
-    here as whoever is signed in. Two subjects — and on 2026-07-28 sc-sql answered a test
-    while its own chip said `waiting`, which read as a contradiction rather than as two
-    different questions."""
-    from core import config as cfg_mod, connectors
+def test_a_connection_test_asks_whoever_does_the_watching(qapp, monkeypatch):
+    """It used to run *here*, always. With a hub that means a workstation proving this desk can
+    reach a server — a different question from the one the hub answers every five seconds, and
+    not the one anybody pressing the button means. The result even said "(from this computer)":
+    honest about the wrong answer instead of giving the right one. Seen on 2026-07-28, when
+    sc-sql answered a test while its own chip said `waiting`.
+
+    So: ask the hub when there is one, and probe locally only when this computer is the engine.
+    """
+    from core import config as cfg_mod, probe
     from ui.pages import machines as machines_mod
 
     machine = cfg_mod.Machine(name="sc-sql", address="10.77.3.112", kind="windows")
-    cfg = cfg_mod.Config(machines=[machine])
 
-    class Answers:
-        def reachable(self): return True
-        def abilities(self): return connectors.Abilities(control=True)
+    class _Hub:
+        def __init__(self):
+            self.asked = []
 
-    monkeypatch.setattr(connectors, "for_machine", lambda name, record=None: Answers())
-    monkeypatch.setattr(connectors, "forget", lambda name=None: None)
+        def test_machine(self, name):
+            self.asked.append(name)
+            return {"reachable": True, "control": True, "push": True, "winrm": None}
 
-    alone = machines_mod.MachineDetail()
-    with_hub = machines_mod.MachineDetail(object())
-    for page in (alone, with_hub):
-        page.machine = machine
-        monkeypatch.setattr(page, "_test_winrm", lambda m: "")
+    def never(*_a, **_k):
+        raise AssertionError("probed from the panel although a hub was there")
 
+    hub = _Hub()
+    with_hub = machines_mod.MachineDetail(lambda: hub)
+    with_hub.machine = machine
+    monkeypatch.setattr(probe, "test_machine", never)
     said = []
-    alone.tested.connect(said.append)
     with_hub.tested.connect(said.append)
-    alone._run_test(machine)
     with_hub._run_test(machine)
+    assert hub.asked == ["sc-sql"], "the hub was not asked"
+    assert "answered" in said[0]
+    assert "from this computer" not in said[0], \
+        "the answer is the hub's now, so there is nothing to disclaim"
 
-    assert "from this computer" not in said[0], "watching alone, there is no other computer"
-    assert "from this computer" in said[1], "did not say whose reach answered"
+    # Watching alone: this computer *is* the engine, so it is the right one to ask.
+    monkeypatch.undo()
+    here = []
+    monkeypatch.setattr(probe, "test_machine",
+                        lambda record: here.append(record.name) or
+                        {"reachable": True, "control": False, "push": False, "winrm": None})
+    alone = machines_mod.MachineDetail()
+    alone.machine = machine
+    alone.tested.connect(said.append)
+    alone._run_test(machine)
+    assert here == ["sc-sql"]
+    assert "Watching only" in said[1]
 
 
 class _Nods:

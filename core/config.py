@@ -26,6 +26,8 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field, asdict, fields, replace
 
+from .i18n import t
+
 _PROGRAM_DATA = os.environ.get("ProgramData", r"C:\ProgramData")
 #: Named as the product is named, spaces and all, so it sits next to the other
 #: vendors' folders and matches the Start-menu entry and the install directory.
@@ -148,12 +150,23 @@ class Machine:
         return self.kind == "linux"
 
     def display(self) -> str:
-        return self.label or self.name or "This computer"
+        # The default label is stored in English — services.json is shared by a hub and
+        # clients reading in different languages — so it is translated here, on the way out.
+        label = self.label or self.name or "This computer"
+        return t("This computer") if label == "This computer" else label
 
     def where(self) -> str:
         """Host and port as one string, for a log line or a tooltip."""
         host = self.address or self.name or "this computer"
         return f"{host}:{self.port}" if self.port else host
+
+
+def _act(action: str, name: str) -> str:
+    """"restart AppEngine", worded whole: the verb goes last in Turkish."""
+    worded = {"start": t("start {name}", name=name),
+              "stop": t("stop {name}", name=name),
+              "restart": t("restart {name}", name=name)}
+    return worded.get(action, f"{action} {name}")
 
 
 NO_CATEGORY = ""                   # a service that hasn't been filed anywhere
@@ -207,26 +220,34 @@ class HealthCheck:
         with the URL missing, which looks like a check that is working.
         """
         if not self.is_configured():
-            blank = {"tcp": "No port set yet", "http": "No URL set yet",
-                     "file": "No file set yet", "command": "No command set yet"}
-            return blank.get(self.kind, "Not set up yet")
+            blank = {"tcp": t("No port set yet"), "http": t("No URL set yet"),
+                     "file": t("No file set yet"), "command": t("No command set yet")}
+            return blank.get(self.kind, t("Not set up yet"))
         if self.kind == "tcp":
-            where = f"{self.host or 'the service’s machine'}:{self.port}"
-            return f"something answers on {where}"
+            where = f"{self.host or t('the service’s machine')}:{self.port}"
+            return t("something answers on {where}", where=where)
         if self.kind == "http":
-            want = (f"HTTP {self.expect_status}" if self.expect_status
-                    else "a success response")
-            text = f" containing “{self.expect_text}”" if self.expect_text else ""
-            return f"{self.url} returns {want}{text}"
+            # Whole sentences rather than pieces: the verb goes last in Turkish.
+            if self.expect_status and self.expect_text:
+                return t("{url} returns HTTP {status} containing “{body}”", url=self.url,
+                         status=self.expect_status, body=self.expect_text)
+            if self.expect_status:
+                return t("{url} returns HTTP {status}", url=self.url,
+                         status=self.expect_status)
+            if self.expect_text:
+                return t("{url} returns a success response containing “{body}”",
+                         url=self.url, body=self.expect_text)
+            return t("{url} returns a success response", url=self.url)
         if self.kind == "process":
-            return "it actually has a process"
+            return t("it actually has a process")
         if self.kind == "file":
-            return (f"{self.path} was written in the last "
-                    f"{self.max_age_seconds}s")
+            return t("{path} was written in the last {seconds}s", path=self.path,
+                     seconds=self.max_age_seconds)
         if self.kind == "command":
-            exit_note = ("" if self.expect_exit == 0
-                         else f" (exit {self.expect_exit})")
-            return f"“{self.command}” succeeds{exit_note}"
+            if self.expect_exit == 0:
+                return t("“{command}” succeeds", command=self.command)
+            return t("“{command}” succeeds (exit {code})", command=self.command,
+                     code=self.expect_exit)
         return self.kind
 
 
@@ -338,16 +359,24 @@ class Stack:
         last = len(self.steps)
         for i, st in enumerate(self.steps, start=1):
             name = labels.get(st.service, st.service)
-            head = f"{i}. {st.action} {name}"
+            head = f"{i}. {_act(st.action, name)}"
             if i == last:
-                out.append(f"{head} — verified {st.target_state.lower()} "
-                           f"(up to {st.timeout_seconds}s)")
+                verified = (t("verified running (up to {seconds}s)",
+                              seconds=st.timeout_seconds)
+                            if st.target_state == "Running" else
+                            t("verified stopped (up to {seconds}s)",
+                              seconds=st.timeout_seconds))
+                out.append(f"{head} — {verified}")
+            elif st.wait == "applied" and st.grace_seconds:
+                out.append(f"{head} — " + t(
+                    "then wait until applied + {grace}s, timeout {seconds}s",
+                    grace=st.grace_seconds, seconds=st.timeout_seconds))
             elif st.wait == "applied":
-                extra = f" + {st.grace_seconds}s" if st.grace_seconds else ""
-                out.append(f"{head} — then wait until applied{extra}, "
-                           f"timeout {st.timeout_seconds}s")
+                out.append(f"{head} — " + t("then wait until applied, timeout {seconds}s",
+                                            seconds=st.timeout_seconds))
             else:
-                out.append(f"{head} — then wait {st.delay_seconds}s, always")
+                out.append(f"{head} — " + t("then wait {seconds}s, always",
+                                            seconds=st.delay_seconds))
         return "\n".join(out)
 
 
@@ -391,17 +420,18 @@ class Trigger:
             every = f"{seconds // 60}m"
         else:
             every = f"{seconds}s"
-        return f", then every {every}"
+        return t(", then every {every}", every=every)
 
     def when_text(self) -> str:
         if self.when == "startup":
             if self.delay_seconds:
-                return f"when Windows starts, after {self.delay_seconds}s"
-            return "when Windows starts"
+                return t("when Windows starts, after {seconds}s", seconds=self.delay_seconds)
+            return t("when Windows starts")
         if self.days and len(self.days) < 7:
-            days = ", ".join(self.DAY_NAMES[d] for d in sorted(self.days))
-            return f"{days} at {self.time_of_day}{self.repeat_text()}"
-        return f"every day at {self.time_of_day}{self.repeat_text()}"
+            days = ", ".join(t(self.DAY_NAMES[d]) for d in sorted(self.days))
+            return t("{days} at {time}", days=days, time=self.time_of_day) \
+                + self.repeat_text()
+        return t("every day at {time}", time=self.time_of_day) + self.repeat_text()
 
     #: what "tell me" can be set to; the combinations exist because the runs
     #: worth hearing about are the ones that didn't simply work.
@@ -422,13 +452,14 @@ class Trigger:
 
     def action_text(self, services=None) -> str:
         if self.action == "stack":
-            return f"run “{self.stack}”" if self.stack else "run a stack (none chosen)"
+            return (t("run “{stack}”", stack=self.stack) if self.stack
+                    else t("run a stack (none chosen)"))
         label = self.service
         for s in (services or []):
             if s.name == self.service:
                 label = s.display()
                 break
-        return f"{self.service_action} {label}" if self.service else "no service chosen"
+        return _act(self.service_action, label) if self.service else t("no service chosen")
 
     def summary(self, services=None) -> str:
         return f"{self.when_text()} → {self.action_text(services)}"
@@ -513,7 +544,7 @@ class Config:
 
     def machine_label(self, name: str) -> str:
         found = self.machine(name)
-        return found.display() if found else (name or "This computer")
+        return found.display() if found else (name or t("This computer"))
 
     def service_names(self) -> list:
         return [s.name for s in self.services]

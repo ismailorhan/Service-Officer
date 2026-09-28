@@ -24,7 +24,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QMessageBox, QPushButton,
                                QStackedWidget, QVBoxLayout, QWidget)
 
-from core.i18n import t
+from core.i18n import t, upper
 from core import config as cfg_mod
 from core import state as st
 
@@ -76,7 +76,7 @@ class MainPanel(QDialog):
         # No version here: the title bar is read every time the window opens, and
         # a build number is something you go and look up once. It lives in
         # General → About, with the commit and a copy button.
-        self.setWindowTitle("Service Officer — Service Management Panel")
+        self.setWindowTitle(t("Service Officer — Service Management Panel"))
         self.setWindowIcon(icons.base_icon("green"))
         # A dialog by class, a window by behaviour: this is where the work
         # happens now, so it gets minimise and maximise like any other window.
@@ -167,7 +167,7 @@ class MainPanel(QDialog):
                     ("General", "general", self.general_page)]
         for text, kind, page in sections:
             if page is None:
-                cap = _label(t(text).upper(), "section")
+                cap = _label(upper(t(text)), "section")
                 cap.setContentsMargins(16, 14, 16, 6)
                 nl.addWidget(cap)
                 continue
@@ -365,7 +365,7 @@ class MainPanel(QDialog):
     def _refresh_save_state(self):
         dirty = self.is_dirty()
         self.save_button.setEnabled(dirty)
-        self.status.setText("Unsaved changes" if dirty else "")
+        self.status.setText(t("Unsaved changes") if dirty else "")
 
     def _save(self):
         """Save without closing: you usually want to keep adjusting, and a
@@ -379,7 +379,7 @@ class MainPanel(QDialog):
         if self.is_dirty():
             answer = QMessageBox.question(
                 self, "Service Officer",
-                "You have unsaved changes. Save them before closing?",
+                t("You have unsaved changes. Save them before closing?"),
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
             if answer == QMessageBox.Cancel:
                 return

@@ -9,11 +9,12 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QHBoxLayout,
                                QVBoxLayout, QWidget)
 
 from core import config as cfg_mod
+from core.i18n import t
 
 from .. import theme
 from ..widgets import (Duration, Grip, SearchableList, button as _button,
                        label as _label)
-from .base import _ListRow, _Page
+from .base import _ListRow, _Page, _state_word
 
 
 class StacksPage(QWidget):
@@ -37,9 +38,9 @@ class StacksPage(QWidget):
         self.list.itemDoubleClicked.connect(lambda _i: self._open())
         self.list_page.root.addWidget(self.list, 1)
         bar = QHBoxLayout()
-        bar.addWidget(_button("New stack…", "primary", self._new))
-        bar.addWidget(_button("Open", None, self._open))
-        bar.addWidget(_button("Delete", "danger", self._delete))
+        bar.addWidget(_button(t("New stack…"), "primary", self._new))
+        bar.addWidget(_button(t("Open"), None, self._open))
+        bar.addWidget(_button(t("Delete"), "danger", self._delete))
         bar.addStretch(1)
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
@@ -58,7 +59,7 @@ class StacksPage(QWidget):
         services = self.cfg().services
         for s in self.cfg().stacks:
             item = QListWidgetItem()
-            widget = _ListRow(s.name, s.summary(services) or "no steps yet")
+            widget = _ListRow(s.name, s.summary(services) or t("no steps yet"))
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
@@ -69,13 +70,13 @@ class StacksPage(QWidget):
 
     def _new(self):
         from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "New stack", "Name:")
+        name, ok = QInputDialog.getText(self, t("New stack"), t("Name:"))
         name = (name or "").strip()
         if not ok or not name:
             return
         if self.cfg().stack(name):
             QMessageBox.information(self, "Service Officer",
-                                    "A stack with that name already exists.")
+                                    t("A stack with that name already exists."))
             return
         self.cfg().stacks.append(cfg_mod.Stack(name=name))
         self._refresh_and_signal()
@@ -85,8 +86,9 @@ class StacksPage(QWidget):
         if row < 0:
             return
         stack = self.cfg().stacks[row]
-        if QMessageBox.question(self, "Delete stack",
-                                f'Delete "{stack.name}"?') != QMessageBox.Yes:
+        if QMessageBox.question(self, t("Delete stack"),
+                                t('Delete "{name}"?',
+                                  name=stack.name)) != QMessageBox.Yes:
             return
         del self.cfg().stacks[row]
         self._refresh_and_signal()
@@ -124,14 +126,13 @@ class StackDetail(_Page):
 
         self.title = _label("", "h2")
         self.head.addWidget(self.title)
-        self.head.addWidget(_label(
-            "Each step starts, then waits before the next one begins. Some "
-            "services report Running before they can actually serve, so a fixed "
-            "wait is sometimes the honest answer. Drag a step by its handle to "
-            "change the order.", "hint", wrap=True))
-        self.in_flyout = QCheckBox("Show in the tray panel")
-        self.in_flyout.setToolTip("Offer this stack with a Run button under the "
-                                  "services, next to where you notice a problem.")
+        self.head.addWidget(_label(t(
+            "Each step starts, then waits before the next one begins. Some services report "
+            "Running before they can actually serve, so a fixed wait is sometimes the honest "
+            "answer. Drag a step by its handle to change the order."), "hint", wrap=True))
+        self.in_flyout = QCheckBox(t("Show in the tray panel"))
+        self.in_flyout.setToolTip(t("Offer this stack with a Run button under the services, "
+                                    "next to where you notice a problem."))
         self.in_flyout.toggled.connect(self._toggle_flyout)
         self.head.addWidget(self.in_flyout)
 
@@ -146,12 +147,12 @@ class StackDetail(_Page):
         self.root.addWidget(self.steps_area, 1)
 
         bar = QHBoxLayout()
-        bar.addWidget(_button("Add step…", "primary", self._add_step))
-        bar.addWidget(_button("Remove step", "danger", self._remove_step))
+        bar.addWidget(_button(t("Add step…"), "primary", self._add_step))
+        bar.addWidget(_button(t("Remove step"), "danger", self._remove_step))
         bar.addStretch(1)
         # Hand over the stack being edited, not its name: a test run has to use
         # what's on screen, otherwise it silently tests the last saved values.
-        bar.addWidget(_button(f"Test run {theme.GLYPH_FOLDED}", None,
+        bar.addWidget(_button(f"{t('Test run')} {theme.GLYPH_FOLDED}", None,
                               lambda: self.test_run.emit(self.stack, "start")))
         self.root.addSpacing(12)
         self.root.addLayout(bar)
@@ -228,7 +229,7 @@ class StackDetail(_Page):
             self._rows.append(row)
 
         if not self.stack.steps:
-            empty = _label("No steps yet — add the first service to start.", "hint")
+            empty = _label(t("No steps yet — add the first service to start."), "hint")
             self.steps_lay.insertWidget(self.steps_lay.count() - 1, empty)
             self._rows.append(empty)
         self._highlight()
@@ -244,8 +245,8 @@ class StackDetail(_Page):
         act.addItems(["start", "stop", "restart"])
         act.setCurrentIndex(["start", "stop", "restart"].index(step.action))
         act.setFixedWidth(96)
-        act.setToolTip("What this step does to the service. The stack runs these "
-                       "in order, so it reads as a script.")
+        act.setToolTip(t("What this step does to the service. The stack runs these in "
+                         "order, so it reads as a script."))
 
         def commit_action(_=None, s=step, a=act):
             s.action = ["start", "stop", "restart"][a.currentIndex()]
@@ -255,12 +256,15 @@ class StackDetail(_Page):
         lay.addWidget(act)
 
         if is_last:
+            # One sentence with the state and the limit in it, rather than three fragments:
+            # a fragment has nowhere to put the words a language needs in another order.
             lay.addWidget(_label(
-                f"this service — verified {step.target_state.lower()}, up to "
-                f"{step.timeout_seconds}s", "hint"))
+                t("this service — verified {state}, up to {seconds}s",
+                  state=_state_word(step.target_state),
+                  seconds=step.timeout_seconds), "hint"))
             lay.addStretch(1)
         else:
-            lay.addWidget(_label("this service, then wait", "hint"))
+            lay.addWidget(_label(t("this service, then wait"), "hint"))
             lay.addWidget(self._gap_editor(step), 1)
         return row
 
@@ -280,24 +284,25 @@ class StackDetail(_Page):
         mode = QComboBox()
         # One option covers both directions: "applied" means the state the step
         # was trying to produce — Running for start/restart, Stopped for stop.
-        mode.addItems(["until applied", "a fixed"])
+        mode.addItems([t("until applied"), t("a fixed")])
         mode.setCurrentIndex(0 if step.wait == "applied" else 1)
         mode.setFixedWidth(120)
-        mode.setToolTip(f"until applied — wait until this service is "
-                        f"{step.target_state.lower()}.\n"
-                        f"a fixed — wait a set time, whatever it reports.")
+        mode.setToolTip(
+            t("until applied — wait until this service is {state}.",
+              state=_state_word(step.target_state))
+            + "\n" + t("a fixed — wait a set time, whatever it reports."))
         lay.addWidget(mode)
 
         plus = _label("+", "hint")
         grace = Duration(step.grace_seconds)
-        grace.setToolTip("Extra pause once it reports Running, before the next "
-                         "step starts. Many services need a moment more.")
+        grace.setToolTip(t("Extra pause once it reports Running, before the next step "
+                           "starts. Many services need a moment more."))
         fixed = Duration(step.delay_seconds)
-        fixed.setToolTip("Wait exactly this long, whatever the service reports.")
-        sep = _label("·  give up after", "hint")
+        fixed.setToolTip(t("Wait exactly this long, whatever the service reports."))
+        sep = _label("·  " + t("give up after"), "hint")
         timeout = Duration(step.timeout_seconds, minimum=1)
-        timeout.setToolTip("If it hasn't reached its target state by then, stop "
-                           "the run here — later steps are not attempted.")
+        timeout.setToolTip(t("If it hasn't reached its target state by then, stop the run "
+                             "here — later steps are not attempted."))
 
         for w in (plus, grace, fixed, sep, timeout):
             lay.addWidget(w)
@@ -367,9 +372,9 @@ class StackDetail(_Page):
         options = self.cfg().services
         if not options:
             QMessageBox.information(self, "Service Officer",
-                                    "Add the services on the Services page first.")
+                                    t("Add the services on the Services page first."))
             return
-        dlg = SearchableList("Add step", "Which service?",
+        dlg = SearchableList(t("Add step"), t("Which service?"),
                             [(f"{s.display()}  ·  {s.name}", s.name) for s in options],
                             self, multi=True)
         if dlg.exec() != QDialog.Accepted:

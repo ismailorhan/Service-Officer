@@ -95,6 +95,21 @@ def t(text: str, **fields) -> str:
             return text
 
 
+#: Letters whose capital differs from Unicode's default in a language. Turkish has two i's,
+#: and `str.upper()` turns the dotted one into the dotless capital.
+_CAPITALS = {"tr": str.maketrans({"i": "İ"})}
+
+
+def upper(text: str) -> str:
+    """Capitals by the current language's rules, for a heading drawn in upper case.
+
+    Not `str.upper()`: that is Unicode's default, which wrote "KATEGORISIZ" for
+    "Kategorisiz". Dotless ı needs nothing — its default capital is already I.
+    """
+    table = _CAPITALS.get(_current)
+    return (text.translate(table) if table else text).upper()
+
+
 def missing(code: str, texts) -> list:
     """Which of these sentences that language has no entry for.
 

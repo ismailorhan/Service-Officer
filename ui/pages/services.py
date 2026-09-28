@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QListWidget,
 
 from core import config as cfg_mod
 from core import control
+from core.i18n import t, upper
 
 from .. import theme
 from ..widgets import (ReorderList, SearchableList, button as _button,
@@ -39,11 +40,10 @@ class ServicesPage(QWidget):
         lay.addWidget(self.stack)
 
         self.list_page = _Page("Services",
-                               "Grouped by category, in the order the tray flyout "
-                               "and the dashboard show them. Drag a service to "
-                               "move it, or onto another heading to file it there. "
-                               "Open one to set how it should recover when it "
-                               "stops on its own.")
+                               t("Grouped by category, in the order the tray flyout and the "
+                                 "dashboard show them. Drag a service to move it, or onto "
+                                 "another heading to file it there. Open one to set how it "
+                                 "should recover when it stops on its own."))
         self.list = ReorderList()
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.itemDoubleClicked.connect(lambda _i: self._open_selected())
@@ -52,17 +52,17 @@ class ServicesPage(QWidget):
 
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        bar.addWidget(_button("Add services…", "primary", self._add))
-        bar.addWidget(_button("Open", None, self._open_selected))
+        bar.addWidget(_button(t("Add services…"), "primary", self._add))
+        bar.addWidget(_button(t("Open"), None, self._open_selected))
         # Filing services is something you do to several at once, so it belongs
         # on the list and not only inside one service's page.
-        bar.addWidget(_button("Category…", None, self._set_category))
-        bar.addWidget(_button("Remove", "danger", self._remove))
+        bar.addWidget(_button(t("Category…"), None, self._set_category))
+        bar.addWidget(_button(t("Remove"), "danger", self._remove))
         bar.addStretch(1)
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
 
-        self.detail = ServiceDetail(store)
+        self.detail = ServiceDetail(store, hub=self._hub)
         self.detail.back.connect(self._show_list)
         self.detail.changed.connect(self._refresh_and_signal)
 
@@ -99,8 +99,9 @@ class ServicesPage(QWidget):
         row = QHBoxLayout(widget)
         row.setContentsMargins(theme.SP_10, theme.SP_4, theme.SP_8, theme.SP_4)
         row.setSpacing(4)
-        row.addWidget(_label(title.upper(), "section"), 1)
-        row.addWidget(_label("empty — drag a service here" if not count
+        # Only the built-in heading is translated; a category's name is the user's own.
+        row.addWidget(_label(upper(t(title) if not name else title), "section"), 1)
+        row.addWidget(_label(t("empty — drag a service here") if not count
                              else f"{count}", "hint"))
 
         cats = [c.name for c in self.cfg().categories]
@@ -109,7 +110,7 @@ class ServicesPage(QWidget):
             for glyph, delta, tip in ((theme.GLYPH_UP, -1, "Move this category up"),
                                       (theme.GLYPH_DOWN, 1, "Move this category down")):
                 b = _button(glyph, "step")
-                b.setToolTip(tip)
+                b.setToolTip(t(tip))
                 b.setEnabled(0 <= index + delta < len(cats))
                 b.clicked.connect(lambda _=False, i=index, d=delta:
                                   self._move_category(i, d))
@@ -134,11 +135,12 @@ class ServicesPage(QWidget):
     def _add_service(self, svc):
         rec = svc.recovery
         if not rec.enabled:
-            note = "no automatic recovery"
+            note = t("no automatic recovery")
         elif rec.max_attempts:
-            note = f"recovers automatically, up to {rec.max_attempts} attempts"
+            note = t("recovers automatically, up to {count} attempts",
+                     count=rec.max_attempts)
         else:
-            note = "recovers automatically, unlimited attempts"
+            note = t("recovers automatically, unlimited attempts")
         # The machine is the service's source, so it goes on the right as a chip
         # rather than buried in the middle of the secondary line. The category is
         # the heading above it now, so it isn't repeated here.
@@ -199,7 +201,7 @@ class ServicesPage(QWidget):
         machine = cfg_mod.LOCAL_MACHINE
         if len(cfg.machines) > 1:
             # More than one machine exists, so which one has to be asked.
-            dlg = SearchableList("Add services", "On which machine?",
+            dlg = SearchableList(t("Add services"), t("On which machine?"),
                                 [(m.display(), m.name) for m in cfg.machines], self)
             if dlg.exec() != QDialog.Accepted:
                 return
@@ -221,12 +223,12 @@ class ServicesPage(QWidget):
         chosen = self._selected_services()
         if not chosen:
             QMessageBox.information(self, "Service Officer",
-                                    "Select a service in the list first.")
+                                    t("Select a service in the list first."))
             return
         names = [s.display() for s in chosen]
-        msg = (f'Stop monitoring "{names[0]}"?' if len(names) == 1
-               else f"Stop monitoring these {len(names)} services?")
-        if QMessageBox.question(self, "Remove service", msg) != QMessageBox.Yes:
+        msg = (t('Stop monitoring "{name}"?', name=names[0]) if len(names) == 1
+               else t("Stop monitoring these {count} services?", count=len(names)))
+        if QMessageBox.question(self, t("Remove service"), msg) != QMessageBox.Yes:
             return
         keep = [s for s in self.cfg().services if s not in chosen]
         self.cfg().services[:] = keep
@@ -238,12 +240,15 @@ class ServicesPage(QWidget):
         chosen = self._selected_services()
         if not chosen:
             QMessageBox.information(self, "Service Officer",
-                                    "Select one or more services in the list "
-                                    "first.")
+                                    t("Select one or more services in the list first."))
             return
         cfg = self.cfg()
-        new_label = "New category…"
-        options = ([cfg_mod.NO_CATEGORY_TITLE]
+        # Both of these are compared against what comes back out of the dialog, so the
+        # translated label is the one held in a variable — comparing the answer against the
+        # English would never match once the words on screen were Turkish.
+        new_label = t("New category…")
+        none_label = t(cfg_mod.NO_CATEGORY_TITLE)
+        options = ([none_label]
                    + [c.name for c in cfg.categories] + [new_label])
         # Preselect what they already share, so re-filing one service doesn't
         # start from the top of the list.
@@ -253,22 +258,22 @@ class ServicesPage(QWidget):
             only = current.pop()
             start = options.index(only) if only in options else 0
 
-        heading = ("Put this service under:" if len(chosen) == 1
-                   else f"Put these {len(chosen)} services under:")
-        pick, ok = QInputDialog.getItem(self, "Category", heading, options,
+        heading = (t("Put this service under:") if len(chosen) == 1
+                   else t("Put these {count} services under:", count=len(chosen)))
+        pick, ok = QInputDialog.getItem(self, t("Category"), heading, options,
                                         start, False)
         if not ok or not pick:
             return
         if pick == new_label:
-            name, ok = QInputDialog.getText(self, "New category",
-                                            "Category name:")
+            name, ok = QInputDialog.getText(self, t("New category"),
+                                            t("Category name:"))
             name = (name or "").strip()
             if not ok or not name:
                 return
             if not cfg.category(name):
                 cfg.categories.append(cfg_mod.Category(name=name))
             pick = name
-        elif pick == cfg_mod.NO_CATEGORY_TITLE:
+        elif pick == none_label:
             pick = cfg_mod.NO_CATEGORY
 
         for svc in chosen:
@@ -279,7 +284,7 @@ class ServicesPage(QWidget):
         chosen = self._selected_services()
         if len(chosen) != 1:
             QMessageBox.information(self, "Service Officer",
-                                    "Select one service to open.")
+                                    t("Select one service to open."))
             return
         self.detail.load(chosen[0], self.cfg().categories)
         self.stack.setCurrentWidget(self.detail)

@@ -364,9 +364,9 @@ class HubClient:
             return found
         if found != self.fingerprint:
             raise WrongHub(
-                f"the hub's certificate has changed. It was {self.fingerprint} and is "
-                f"now {found}. Either that machine was rebuilt, or this is not the "
-                f"same hub — check before accepting it.")
+                t("the hub's certificate has changed. It was {was} and is now {now}. "
+                  "Either that machine was rebuilt, or this is not the same hub — check "
+                  "before accepting it.", was=self.fingerprint, now=found))
         return found
 
     def check_version(self) -> str:
@@ -421,20 +421,22 @@ class HubClient:
                     # The other token this computer holds. Not a loop: _next_token only
                     # ever moves forward through a list of at most two.
                     return self._ask(method, path, body, timeout)
-                raise Refused(said.get("error") or "the hub refused this token") \
+                raise Refused(said.get("error") or t("the hub refused this token")) \
                     from exc
             if exc.code == 404:
-                raise NotFound(said.get("error") or "the hub has no such thing") from exc
+                raise NotFound(said.get("error") or t("the hub has no such thing")) from exc
             if exc.code == 409:
                 if said.get("actor") is not None:
                     raise Busy(said.get("error", "already being acted on"),
                                actor=said.get("actor", ""),
                                action=said.get("action", "")) from exc
-                raise Conflict(said.get("error") or "somebody else saved first",
+                raise Conflict(said.get("error") or t("somebody else saved first"),
                                etag=said.get("etag", "")) from exc
-            raise RuntimeError(said.get("error") or f"the hub said {exc.code}") from exc
+            raise RuntimeError(said.get("error")
+                               or t("the hub said {code}", code=exc.code)) from exc
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
-            raise Unreachable(f"{self.url} did not answer: {exc}") from exc
+            raise Unreachable(t("{url} did not answer: {why}", url=self.url,
+                                why=exc)) from exc
 
     def _next_token(self) -> bool:
         """Move to the next token this computer holds. True if there was another."""
@@ -493,6 +495,25 @@ class HubClient:
         _status, said = self._ask("POST", "/api/v1/hub/port", {"port": int(port)})
         return said or {}
 
+    def test_machine(self, machine: str) -> dict:
+        """Ask the hub to reach that machine and report what it found.
+
+        The hub, not this computer. A panel on a workstation testing a server proved that desk
+        could reach it, which is a different question from the one the hub answers every five
+        seconds — and the only one that matters. Facts come back; the wording is the panel's.
+        """
+        _status, said = self._ask(
+            "POST", f"/api/v1/machines/{urllib.parse.quote(machine or '')}/test",
+            {}, timeout=90)
+        return said or {}
+
+    def check_health(self, service: str, machine: str = "") -> dict:
+        """Ask the hub to run one service's health checks now."""
+        _status, said = self._ask("POST", "/api/v1/health/check",
+                                  {"service": service, "machine": machine or ""},
+                                  timeout=90)
+        return said or {}
+
     def update_state(self) -> dict:
         """What the hub's daily check found. Costs the hub nothing — it answers from memory."""
         _status, said = self._ask("GET", "/api/v1/update")
@@ -538,12 +559,13 @@ class HubClient:
                     out.write(chunk)
             found = digest.hexdigest()
             if not wanted:
-                raise updates.Refused("the hub sent an installer with no hash to check it "
-                                      "against. Not running it.")
+                raise updates.Refused(t("the hub sent an installer with no hash to check "
+                                        "it against. Not running it."))
             if found != wanted:
                 raise updates.Refused(
-                    f"the installer does not match what the hub said it would be. Expected "
-                    f"{wanted[:16]}…, got {found[:16]}…. Not running it.")
+                    t("the installer does not match what the hub said it would be. "
+                      "Expected {wanted}…, got {found}…. Not running it.",
+                      wanted=wanted[:16], found=found[:16]))
         except urllib.error.HTTPError as exc:
             # The hub explains itself in the body — "this hub has no installer for the release
             # it is running" — and a person shown "HTTP Error 404: Not Found" instead learns
@@ -554,7 +576,7 @@ class HubClient:
                 said = {}
             self._forget(path)
             raise NotFound(said.get("error")
-                           or f"the hub answered {exc.code}") from exc
+                           or t("the hub answered {code}", code=exc.code)) from exc
         except Exception:
             self._forget(path)
             raise
@@ -789,7 +811,7 @@ class HubClient:
         if answer.status != 200:
             conn.close()
             answer.close()
-            raise Refused(f"the hub refused the event stream: {answer.status}")
+            raise Refused(t("the hub refused the event stream: {code}", code=answer.status))
         self._stream = _Stream(answer, sock)
         return self._stream
 

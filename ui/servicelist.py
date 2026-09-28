@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel, QLineEdit,
                                QWidget)
 
 from core import state as st
+from core.i18n import t
+
 from . import theme
 from .rows import BulkBar, SectionBar, ServiceRow, StackRow, is_collapsed
 
@@ -64,7 +66,7 @@ class ServiceListMixin:
         """The search box. The host places it; where it sits differs, what it
         does does not."""
         self.search = QLineEdit()
-        self.search.setPlaceholderText(SEARCH_HINT)
+        self.search.setPlaceholderText(t(SEARCH_HINT))
         self.search.textChanged.connect(self._filter)
         return self.search
 
@@ -78,7 +80,7 @@ class ServiceListMixin:
         lay.setSpacing(10)
         self.tick_all = QCheckBox()
         self.tick_all.setTristate(True)
-        self.tick_all.setToolTip(SELECT_ALL_HINT)
+        self.tick_all.setToolTip(t(SELECT_ALL_HINT))
         self.tick_all.clicked.connect(self._toggle_all)
         lay.addWidget(self.tick_all)
         for text, width, align in COLUMNS:

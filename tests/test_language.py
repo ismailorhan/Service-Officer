@@ -51,6 +51,19 @@ def test_a_template_with_the_wrong_placeholders_still_says_something(monkeypatch
         "Could not stop AppEngine"
 
 
+def test_turkish_capitals_keep_the_dot_on_the_i(monkeypatch):
+    """`str.upper()` follows Unicode's default, where "i" becomes "I" — so a heading read
+    "KATEGORISIZ" where Turkish writes "KATEGORİSİZ". Dotless ı already becomes I."""
+    monkeypatch.setattr(i18n, "_current", "tr")
+    assert i18n.upper("Kategorisiz") == "KATEGORİSİZ"
+    assert i18n.upper("ılık İzmir") == "ILIK İZMİR"
+
+
+def test_english_capitals_are_the_usual_ones(monkeypatch):
+    monkeypatch.setattr(i18n, "_current", "en")
+    assert i18n.upper("No category") == "NO CATEGORY"
+
+
 def test_the_language_is_this_computers_own_not_the_hubs():
     """Like the theme and auto-start. One person's language is not a property of the
     landscape, and adopting a hub's would hand every workstation whatever the server was
@@ -146,7 +159,12 @@ def test_the_conversion_does_not_go_backwards():
     # may be reading in another language ("this hub has no installer for the release it is
     # running", "the download passed 300 MB", "administrator rights were refused"). Every
     # sentence the *panel* composes for this feature was wrapped and translated.
-    STILL_BARE = 691
+    # 691 -> 300 on 2026-09-28: every sentence the panel, the tray and the client compose was
+    # wrapped and translated — confirmations, notifications, the flyout's counts, the words for
+    # a health check, a stack and a trigger, and the state chips. What is left is not on this
+    # screen: the hub's own refusals and console output (see core/i18n.py), log lines, SQL,
+    # PowerShell and shell commands, stylesheets, and what the engine words for history.
+    STILL_BARE = 300
 
     # What will stay English whatever the setting says: bare *and* with no catalogue entry.
     # `bare()` alone overcounts, because a heading translated where it is drawn is bare at its

@@ -49,10 +49,17 @@ _advapi = ctypes.WinDLL("advapi32", use_last_error=True)
 _wts = ctypes.WinDLL("wtsapi32", use_last_error=True)
 _userenv = ctypes.WinDLL("userenv", use_last_error=True)
 
-#: WTS_CONNECTSTATE_CLASS. Only `Active` means a person is signed in and looking at something:
-#: `Connected` is a session that exists with nobody in it, which is what the physical console of
-#: a server looks like all day.
+#: WTS_CONNECTSTATE_CLASS, the two values that matter here.
+#:
+#: `Active` first, because that is somebody looking at a screen right now. But **not only**
+#: Active: a locked screen or a detached RDP session is `Disconnected`, and that person is still
+#: signed in — their desktop exists and a tray icon started there is waiting when they come
+#: back. Asking for Active alone found nothing the moment the screen locked, which on a server
+#: is most of the day. Measured minutes apart on one machine: `[1]`, then `[]`.
+#:
+#: `Listen` is the RDP listener, session 65536 — not a session anybody is in.
 WTS_ACTIVE = 0
+WTS_LISTEN = 6
 #: Session 0 — services. It has no visible desktop, and a process there can only hand work to a
 #: session that does.
 SERVICES_SESSION = 0
@@ -120,12 +127,16 @@ def my_session() -> int:
     return int(answer.value)
 
 
-def active_sessions() -> list:
-    """The sessions somebody is signed into and looking at, in order.
+def sessions_to_try() -> list:
+    """Sessions that might have somebody signed into them, the likeliest first.
 
     Enumerated rather than asking for "the console": on a server the operator is on RDP, and the
-    console session sits there `Connected` with nobody in it. That was the whole of 2.2.12's
-    failure — see the module docstring for the measurement.
+    console session sits there with nobody in it. And *not* filtered down to `Active`, because a
+    locked screen is `Disconnected` and that person is still signed in.
+
+    Which of these actually has a user is not decided here — `WTSQueryUserToken` decides it, by
+    succeeding or answering ERROR_NO_TOKEN. That is Windows' own answer to the question, and it
+    is better than any reading of a state enum.
     """
     array = ctypes.POINTER(_SessionInfo)()
     count = ctypes.wintypes.DWORD()
@@ -134,12 +145,14 @@ def active_sessions() -> list:
         log.warning("could not list the sessions: error %s", ctypes.get_last_error())
         return []
     try:
-        found = [int(array[i].SessionId) for i in range(count.value)
-                 if array[i].State == WTS_ACTIVE
-                 and int(array[i].SessionId) != SERVICES_SESSION]
+        found = [(0 if array[i].State == WTS_ACTIVE else 1, int(array[i].SessionId))
+                 for i in range(count.value)
+                 if int(array[i].SessionId) != SERVICES_SESSION
+                 and array[i].State != WTS_LISTEN]
     finally:
         _wts.WTSFreeMemory(array)
-    return found
+    # Active first: if two people are signed in, the one at a screen sees it appear.
+    return [number for _rank, number in sorted(found)]
 
 
 def _as_the_person(session: int, command: str, folder: str) -> int:
@@ -198,7 +211,7 @@ def start_for_the_person(exe: str, arguments=()) -> list:
 
     started = [pid for pid in
                (_as_the_person(session, command, folder)
-                for session in active_sessions())
+                for session in sessions_to_try())
                if pid]
     if started:
         return started

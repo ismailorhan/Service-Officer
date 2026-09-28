@@ -16,11 +16,25 @@ from PySide6.QtWidgets import (QDialog, QDoubleSpinBox, QFrame, QGridLayout,
                                QVBoxLayout, QWidget)
 
 from core import control
+from core import state as st
 
 from .. import icons, theme
 from core.i18n import t
 
 from ..widgets import Chip, Spin, button as _button, label as _label, InfoDot
+
+#: A state as it reads *inside* a sentence — "AppEngine is stopped", "verified running".
+#:
+#: Spelt out rather than `state.lower()`: a key produced at run time is a key no translator
+#: can find in the source, and the orphan test said so the moment "not found" had an entry
+#: matching no literal anywhere. Here rather than on a page, because two pages word it.
+IN_A_SENTENCE = {st.RUNNING: "running", st.STOPPED: "stopped", st.PAUSED: "paused",
+                 st.NOT_FOUND: "not found", st.UNKNOWN: "unknown"}
+
+
+def _state_word(state: str) -> str:
+    """The state as a word that can sit in a sentence, in the reader's language."""
+    return t(IN_A_SENTENCE.get(state, (state or "").lower()))
 
 
 def _spin(value, lo, hi, width=64, step=1):
@@ -108,8 +122,18 @@ def _fields(*rows, indent: int = 0, fill: bool = False) -> QWidget:
     grid.setVerticalSpacing(theme.SP_10)
     grid.setColumnMinimumWidth(0, max(0, LABEL_WIDTH - indent))
     w.rows = []
+    #: The layout itself, for a test that asks which line a row landed on. Nothing in the app
+    #: reads it: a page names its rows and lets this file decide where they sit.
+    w.grid = grid
+    #: Rows by name, for a page that shows and hides them or rewrites their notes. The Machines
+    #: detail does both — what "User" means on a Windows machine and on a Linux one are different
+    #: sentences — and it kept a second grid of its own for exactly this until the keys arrived.
+    w.by_key = {}
+    #: The dot of each named row, so a note can be rewritten. `InfoDot.setText` is `QLabel`'s
+    #: name on purpose, so a caller that used to hold labels needs no change.
+    w.dots = {}
     for line, row in enumerate(rows):
-        label, value, note, sub = (tuple(row) + ("", False))[:4]
+        label, value, note, sub, key = (tuple(row) + ("", False, ""))[:5]
         # "hint", like the Machines detail's: a label naming a field is not competing with the
         # value beside it for attention.
         name = _label(label, "hint")
@@ -139,16 +163,33 @@ def _fields(*rows, indent: int = 0, fill: bool = False) -> QWidget:
             inner = QHBoxLayout(cell)
             inner.setContentsMargins(0, 0, 0, 0)
             inner.setSpacing(6)
-            for part in (value if isinstance(value, tuple) else (value,)):
-                inner.addWidget(_label(part) if isinstance(part, str) else part)
-            inner.addStretch(1)
+            parts = value if isinstance(value, tuple) else (value,)
+            # Under `fill`, the first thing in the cell takes the spare width and the rest ride
+            # at the end — an address box that stretches with "port 22" beside it, and Forget or
+            # Browse… against the dot column.
+            #
+            # Only when it *can* grow, and asked the same way as above: a stretch factor on a
+            # fixed-width box hands it space it cannot use and it floats in the middle of it. So
+            # "Check every [5] seconds" keeps its trailing stretch and stays at the left.
+            first = parts[0]
+            grows = (fill and isinstance(first, QWidget)
+                     and first.minimumWidth() != first.maximumWidth())
+            for at, part in enumerate(parts):
+                stretch = 1 if grows and at == 0 else 0
+                inner.addWidget(_label(part) if isinstance(part, str) else part, stretch)
+            if not grows:
+                inner.addStretch(1)
             grid.addWidget(cell, line, 1)
         here = [name, cell]
         if note:
             dot = InfoDot(note)
             grid.addWidget(dot, line, 2)
             here.append(dot)
+            if key:
+                w.dots[key] = dot
         w.rows.append(here)
+        if key:
+            w.by_key[key] = here
     if fill:
         # Column 2 holds a 16px dot, not a paragraph: stretch nothing there, so what the value
         # column takes is width the fields keep.
@@ -217,7 +258,7 @@ class ServicePicker(QDialog):
 
     def __init__(self, taken, parent=None, machine="", record=None, hub=None):
         super().__init__(parent)
-        self.setWindowTitle("Add services")
+        self.setWindowTitle(t("Add services"))
         self.resize(520, 560)
         #: Set when this panel reads a hub. Then the hub is asked what exists: it is the
         #: computer the services live on, and asking here would list whichever workstation
@@ -237,9 +278,9 @@ class ServicePicker(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*theme.PAGE_PAD)
         lay.setSpacing(9)
-        lay.addWidget(_label("Pick the services to monitor", "h2"))
-        lay.addWidget(_label("Search by display name or service name. "
-                             "Ctrl/Shift-click to choose several.", "hint", wrap=True))
+        lay.addWidget(_label(t("Pick the services to monitor"), "h2"))
+        lay.addWidget(_label(t("Search by display name or service name. Ctrl/Shift-click to "
+                               "choose several."), "hint", wrap=True))
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search…")
@@ -280,7 +321,7 @@ class ServicePicker(QDialog):
             self._populate()
             return
         where = self._machine
-        self.count.setText(f"Reading the services on {where}…")
+        self.count.setText(t("Reading the services on {machine}…", machine=where))
         self.list.setEnabled(False)
 
         def work():
@@ -317,19 +358,20 @@ class ServicePicker(QDialog):
         what a search engine needs, but it comes after the sentence a person can
         act on.
         """
-        where = self._machine or "this computer"
+        where = self._machine or t("this computer")
         linux = bool(self._record is not None
                      and getattr(self._record, "is_linux", False))
         if linux:
-            hint = (f"{where} did not answer over SSH. Check the account, the "
-                    f"password or key, and that the host key matches.")
+            hint = t("{machine} did not answer over SSH. Check the account, the password or "
+                     "key, and that the host key matches.", machine=where)
         elif self._machine:
-            hint = (f"{where} did not answer. It may be switched off, or its "
-                    f"firewall may be blocking Remote Service Management — the "
-                    f"rule Windows needs for another computer to list services.")
+            hint = t("{machine} did not answer. It may be switched off, or its firewall may "
+                     "be blocking Remote Service Management — the rule Windows needs for "
+                     "another computer to list services.", machine=where)
         else:
-            hint = "This computer's service manager did not answer."
-        return f"Could not list the services on {where}.\n\n{hint}\n\n{exc}"
+            hint = t("This computer's service manager did not answer.")
+        return (t("Could not list the services on {machine}.", machine=where)
+                + f"\n\n{hint}\n\n{exc}")
 
     def _populate(self):
         q = self.search.text().strip().lower()

@@ -6,6 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QListWidgetItem, QMessageBox
 
 from core import config as cfg_mod
+from core.i18n import t
 
 from ..widgets import ReorderList, button as _button, label as _label
 from .base import _ListRow, _Page
@@ -35,16 +36,16 @@ class CategoriesPage(_Page):
 
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        bar.addWidget(_button("Add category…", "primary", self._add))
-        bar.addWidget(_button("Rename…", None, self._rename))
-        bar.addWidget(_button("Remove", "danger", self._remove))
+        bar.addWidget(_button(t("Add category…"), "primary", self._add))
+        bar.addWidget(_button(t("Rename…"), None, self._rename))
+        bar.addWidget(_button(t("Remove"), "danger", self._remove))
         bar.addStretch(1)
         self.root.addSpacing(14)
         self.root.addLayout(bar)
         self.root.addSpacing(10)
         self.root.addWidget(_label(
-            "Services you haven't filed anywhere are listed together under "
-            f"“{cfg_mod.NO_CATEGORY_TITLE}”, so nothing goes missing.",
+            t("Services you haven't filed anywhere are listed together under “{heading}”, "
+              "so nothing goes missing.", heading=t(cfg_mod.NO_CATEGORY_TITLE)),
             "hint", wrap=True))
         self.refresh()
 
@@ -56,10 +57,10 @@ class CategoriesPage(_Page):
             members = [s for s in cfg.services if (s.category or "") == cat.name]
             names = ", ".join(s.display() for s in members[:4])
             if len(members) > 4:
-                names += f", and {len(members) - 4} more"
+                names += t(", and {count} more", count=len(members) - 4)
             item = QListWidgetItem()
             widget = _ListRow(cat.name,
-                              names or "nothing filed here yet",
+                              names or t("nothing filed here yet"),
                               tag=f"{len(members)}", tag_category="none")
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
@@ -69,17 +70,17 @@ class CategoriesPage(_Page):
 
     def _ask(self, title: str, initial: str = "") -> str:
         from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, title, "Category name:",
+        name, ok = QInputDialog.getText(self, title, t("Category name:"),
                                         text=initial)
         return (name or "").strip() if ok else ""
 
     def _add(self):
-        name = self._ask("Add category")
+        name = self._ask(t("Add category"))
         if not name:
             return
         if self.cfg().category(name):
             QMessageBox.information(self, "Service Officer",
-                                    "That category already exists.")
+                                    t("That category already exists."))
             return
         self.cfg().categories.append(cfg_mod.Category(name=name))
         self.refresh()
@@ -90,12 +91,12 @@ class CategoriesPage(_Page):
         if row < 0:
             return
         cat = self.cfg().categories[row]
-        name = self._ask("Rename category", cat.name)
+        name = self._ask(t("Rename category"), cat.name)
         if not name or name == cat.name:
             return
         if self.cfg().category(name):
             QMessageBox.information(self, "Service Officer",
-                                    "That category already exists.")
+                                    t("That category already exists."))
             return
         # Services point at the category by name, so they have to come along.
         for svc in self.cfg().services:
@@ -112,11 +113,12 @@ class CategoriesPage(_Page):
         cfg = self.cfg()
         cat = cfg.categories[row]
         members = [s for s in cfg.services if (s.category or "") == cat.name]
-        message = f'Remove the category "{cat.name}"?'
+        message = t('Remove the category "{name}"?', name=cat.name)
         if members:
-            message += (f"\n\nIts {len(members)} service(s) stay, listed under "
-                        f"“{cfg_mod.NO_CATEGORY_TITLE}”.")
-        if QMessageBox.question(self, "Remove category",
+            message += "\n\n" + t("Its {count} service(s) stay, listed under “{heading}”.",
+                                   count=len(members),
+                                   heading=t(cfg_mod.NO_CATEGORY_TITLE))
+        if QMessageBox.question(self, t("Remove category"),
                                 message) != QMessageBox.Yes:
             return
         for svc in members:

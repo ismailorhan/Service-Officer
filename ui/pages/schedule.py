@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView,
 from core import clock
 from core import config as cfg_mod
 from core import history
+from core.i18n import t
 
 from .. import theme
 from ..widgets import Duration, PadSpin, button as _button, label as _label
@@ -39,9 +40,9 @@ class SchedulePage(QWidget):
         self.list.itemDoubleClicked.connect(lambda _i: self._open())
         self.list_page.root.addWidget(self.list, 1)
         bar = QHBoxLayout()
-        bar.addWidget(_button("New trigger…", "primary", self._new))
-        bar.addWidget(_button("Open", None, self._open))
-        bar.addWidget(_button("Delete", "danger", self._delete))
+        bar.addWidget(_button(t("New trigger…"), "primary", self._new))
+        bar.addWidget(_button(t("Open"), None, self._open))
+        bar.addWidget(_button(t("Delete"), "danger", self._delete))
         bar.addStretch(1)
         self.list_page.root.addSpacing(14)
         self.list_page.root.addLayout(bar)
@@ -50,14 +51,14 @@ class SchedulePage(QWidget):
         # trust blindly.
         self.list_page.root.addSpacing(22)
         exec_head = QHBoxLayout()
-        exec_head.addWidget(_label("RECENT EXECUTIONS", "section"))
+        exec_head.addWidget(_label(t("RECENT EXECUTIONS"), "section"))
         exec_head.addStretch(1)
-        exec_head.addWidget(_button("Refresh", "quiet", self.refresh_executions))
+        exec_head.addWidget(_button(t("Refresh"), "quiet", self.refresh_executions))
         self.list_page.root.addLayout(exec_head)
         self.list_page.root.addSpacing(8)
         self.executions = QTableWidget(0, 5)
         self.executions.setHorizontalHeaderLabels(
-            ["Time", "What", "Name", "Outcome", "Took"])
+            [t("Time"), t("What"), t("Name"), t("Outcome"), t("Took")])
         self.executions.verticalHeader().setVisible(False)
         self.executions.setShowGrid(False)
         self.executions.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -110,12 +111,12 @@ class SchedulePage(QWidget):
         self.refresh_executions()
         self.list.clear()
         services = self.cfg().services
-        for t in self.cfg().triggers:
+        for trigger in self.cfg().triggers:
             item = QListWidgetItem()
-            secondary = t.summary(services)
-            if not t.enabled:
-                secondary += "  ·  off"
-            widget = _ListRow(t.name, secondary)
+            secondary = trigger.summary(services)
+            if not trigger.enabled:
+                secondary += "  ·  " + t("off")
+            widget = _ListRow(trigger.name, secondary)
             item.setSizeHint(widget.sizeHint())
             self.list.addItem(item)
             self.list.setItemWidget(item, widget)
@@ -126,13 +127,13 @@ class SchedulePage(QWidget):
 
     def _new(self):
         from PySide6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "New trigger", "Name:")
+        name, ok = QInputDialog.getText(self, t("New trigger"), t("Name:"))
         name = (name or "").strip()
         if not ok or not name:
             return
         if self.cfg().trigger(name):
             QMessageBox.information(self, "Service Officer",
-                                    "A trigger with that name already exists.")
+                                    t("A trigger with that name already exists."))
             return
         stacks = self.cfg().stacks
         self.cfg().triggers.append(cfg_mod.Trigger(
@@ -144,8 +145,9 @@ class SchedulePage(QWidget):
         if row < 0:
             return
         trigger = self.cfg().triggers[row]
-        if QMessageBox.question(self, "Delete trigger",
-                                f'Delete "{trigger.name}"?') != QMessageBox.Yes:
+        if QMessageBox.question(self, t("Delete trigger"),
+                                t('Delete "{name}"?',
+                                  name=trigger.name)) != QMessageBox.Yes:
             return
         del self.cfg().triggers[row]
         self._refresh_and_signal()
@@ -195,24 +197,28 @@ class TriggerDetail(_Page):
         body = QVBoxLayout()
         body.setSpacing(0)
 
-        self.enabled = QCheckBox("Enabled")
+        self.enabled = QCheckBox(t("Enabled"))
         self.enabled.toggled.connect(self._commit)
         body.addWidget(self.enabled)
         body.addSpacing(22)
 
         # -- when ----------------------------------------------------------
-        body.addWidget(_label("WHEN", "section"))
+        body.addWidget(_label(t("WHEN"), "section"))
         body.addSpacing(10)
         # When, and its parameters, on one line — the choice and its detail
         # belong together.
         self.when = QComboBox()
-        self.when.addItems(["Windows starts", "At a time of day"])
+        # The index picks the value out of WHENS, so translating the words is safe.
+        self.when.addItems([t("Windows starts"), t("At a time of day")])
         self.when.setFixedWidth(170)
         self.when.currentIndexChanged.connect(self._when_changed)
 
         self.startup_delay = Duration(30)
         self.startup_delay.changed.connect(self._commit)
-        self.startup_row = _sentence("after", self.startup_delay)
+        # "Wait [30s]", not "after [30s]": Turkish puts "sonra" *after* the duration, and a
+        # sentence assembled from fragments has no way to reorder them. A verb both languages
+        # put first says the same thing. Same lesson as the Recovery rows.
+        self.startup_row = _sentence(t("Wait"), self.startup_delay)
 
         self.hour = PadSpin(3, 0, 23, 48)
         self.minute = PadSpin(0, 0, 59, 48)
@@ -220,9 +226,9 @@ class TriggerDetail(_Page):
         self.minute.valueChanged.connect(self._commit)
         self.repeat = Duration(0)
         self.repeat.changed.connect(self._commit)
-        self.time_inline = _sentence("at", self.hour, ":", self.minute,
-                                     "· then every", self.repeat,
-                                     "(leave 0 for once a day)")
+        self.time_inline = _sentence(t("at"), self.hour, ":", self.minute,
+                                     t("· then every"), self.repeat,
+                                     t("(leave 0 for once a day)"))
 
         when_line = QWidget()
         wl = QHBoxLayout(when_line)
@@ -243,27 +249,27 @@ class TriggerDetail(_Page):
         dl = QHBoxLayout(days)
         dl.setContentsMargins(0, 0, 0, 0)
         dl.setSpacing(6)
-        dl.addWidget(_label("on", "hint"))
+        dl.addWidget(_label(t("on"), "hint"))
         self.day_boxes = []
         for index, name in enumerate(self.DAYS):
-            box = QCheckBox(name)
+            box = QCheckBox(t(name))          # a class constant; translated where drawn
             box.toggled.connect(self._commit)
             self.day_boxes.append(box)
             dl.addWidget(box)
         dl.addStretch(1)
         tl.addWidget(days)
-        tl.addWidget(_label("Leave every day unticked to mean every day. A trigger "
-                            "missed while the machine was asleep runs when it wakes, "
-                            "if it is less than half an hour late.", "hint", wrap=True))
+        tl.addWidget(_label(t("Leave every day unticked to mean every day. A trigger missed "
+                              "while the machine was asleep runs when it wakes, if it is less "
+                              "than half an hour late."), "hint", wrap=True))
         body.addWidget(self.time_row)
         body.addSpacing(24)
 
         # -- action --------------------------------------------------------
-        body.addWidget(_label("ACTION", "section"))
+        body.addWidget(_label(t("ACTION"), "section"))
         body.addSpacing(10)
         # Action and its parameters on one line too.
         self.action = QComboBox()
-        self.action.addItems(["Run a stack", "Act on one service"])
+        self.action.addItems([t("Run a stack"), t("Act on one service")])
         self.action.setFixedWidth(170)
         self.action.currentIndexChanged.connect(self._action_changed)
 
@@ -292,24 +298,25 @@ class TriggerDetail(_Page):
         self.service_row = self.service_pick
         body.addSpacing(20)
 
-        body.addWidget(_label("TELL ME", "section"))
+        body.addWidget(_label(t("TELL ME"), "section"))
         body.addSpacing(9)
         self.notify = QComboBox()
-        self.notify.addItems(["Never", "On success", "On failure",
-                              "When skipped", "On failure or skipped",
-                              "On success or failure", "Every run, even skipped"])
+        # The index picks the value out of NOTIFY, so these are only words on screen.
+        self.notify.addItems([t("Never"), t("On success"), t("On failure"),
+                              t("When skipped"), t("On failure or skipped"),
+                              t("On success or failure"), t("Every run, even skipped")])
         self.notify.setFixedWidth(240)
         self.notify.currentIndexChanged.connect(self._commit)
         body.addWidget(self.notify)
-        body.addWidget(_label("Skipped means there was nothing to do — asking a "
-                              "service to start when it is already running.",
+        body.addWidget(_label(t("Skipped means there was nothing to do — asking a service "
+                                "to start when it is already running."),
                               "hint", wrap=True))
         body.addSpacing(20)
         self.summary = _label("", "hint", wrap=True)
         body.addWidget(self.summary)
         body.addSpacing(12)
         run = QHBoxLayout()
-        run.addWidget(_button(f"Run now {theme.GLYPH_FOLDED}", None,
+        run.addWidget(_button(f"{t('Run now')} {theme.GLYPH_FOLDED}", None,
                               lambda: self.run_now.emit(self.trigger)))
         run.addStretch(1)
         body.addLayout(run)
@@ -383,18 +390,18 @@ class TriggerDetail(_Page):
     def _commit(self, *_):
         if self.trigger is None:
             return
-        t = self.trigger
-        t.enabled = self.enabled.isChecked()
-        t.when = self.WHENS[self.when.currentIndex()]
-        t.delay_seconds = self.startup_delay.seconds()
-        t.time_of_day = f"{self.hour.value():02d}:{self.minute.value():02d}"
-        t.days = [i for i, box in enumerate(self.day_boxes) if box.isChecked()]
-        t.repeat_seconds = self.repeat.seconds()
-        t.notify = self.NOTIFY[self.notify.currentIndex()]
-        t.action = "stack" if self.action.currentIndex() == 0 else "service"
-        t.stack = self.stack_pick.currentData() or ""
-        t.service = self.service_pick.currentData() or ""
-        t.service_action = ["start", "stop", "restart"][
+        trigger = self.trigger
+        trigger.enabled = self.enabled.isChecked()
+        trigger.when = self.WHENS[self.when.currentIndex()]
+        trigger.delay_seconds = self.startup_delay.seconds()
+        trigger.time_of_day = f"{self.hour.value():02d}:{self.minute.value():02d}"
+        trigger.days = [i for i, box in enumerate(self.day_boxes) if box.isChecked()]
+        trigger.repeat_seconds = self.repeat.seconds()
+        trigger.notify = self.NOTIFY[self.notify.currentIndex()]
+        trigger.action = "stack" if self.action.currentIndex() == 0 else "service"
+        trigger.stack = self.stack_pick.currentData() or ""
+        trigger.service = self.service_pick.currentData() or ""
+        trigger.service_action = ["start", "stop", "restart"][
             self.service_action.currentIndex()]
         self._update_summary()
         self.changed.emit()
@@ -402,16 +409,18 @@ class TriggerDetail(_Page):
     def _update_summary(self):
         if self.trigger is None:
             return
-        text = "In words: " + self.trigger.summary(self.cfg().services)
+        text = t("In words: {summary}",
+                 summary=self.trigger.summary(self.cfg().services))
         # Say when it will actually happen — the schedule is easy to get wrong
         # and there is no way to tell by looking at the fields.
         from core.schedule import Scheduler
         probe = Scheduler(self.cfg, lambda _t: None)
         when = probe.next_run_at(self.trigger)
         if when is not None:
-            text += f"\nNext run: {when.strftime('%a %d %b, %H:%M')}"
+            text += "\n" + t("Next run: {when}",
+                             when=when.strftime(t("%a %d %b, %H:%M")))
         elif self.trigger.when == "startup":
-            text += "\nNext run: the next time Windows starts"
+            text += "\n" + t("Next run: the next time Windows starts")
         elif not self.trigger.enabled:
-            text += "\nNext run: never — this trigger is switched off"
+            text += "\n" + t("Next run: never — this trigger is switched off")
         self.summary.setText(text)

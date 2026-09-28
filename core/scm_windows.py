@@ -65,7 +65,15 @@ def query_status(service_name: str, machine: str = "") -> str:
         return st.NOT_FOUND
 
 
-def start_service(service_name: str, machine: str = "") -> None:
+#: Windows' answer when a service did not tell it "started" within its 30 seconds
+#: (ServicesPipeTimeout). Windows gives up on that attempt and the service is Stopped.
+START_TIMED_OUT = 1053
+
+#: How long to let Windows finish giving up on a timed-out start before trying again.
+SETTLE_WAIT = 15.0
+
+
+def _ask_to_start(service_name: str, machine: str = "") -> None:
     def work(scm):
         handle = win32service.OpenService(scm, service_name,
                                           win32service.SERVICE_START)
@@ -74,6 +82,39 @@ def start_service(service_name: str, machine: str = "") -> None:
         finally:
             win32service.CloseServiceHandle(handle)
     held_for(machine).do(work)
+
+
+def _wait_until_settled(service_name: str, machine: str, seconds: float) -> str:
+    """The state it reached. Returns as soon as it is Stopped or Running."""
+    deadline = time.monotonic() + seconds
+    state = query_status(service_name, machine)
+    while state not in (st.STOPPED, st.RUNNING) and time.monotonic() < deadline:
+        time.sleep(0.5)
+        state = query_status(service_name, machine)
+    return state
+
+
+def start_service(service_name: str, machine: str = "") -> None:
+    """Start it, and try once more if it missed Windows' 30 seconds.
+
+    CompuTec AppEngine takes 22 to 32 seconds to tell Windows it has started,
+    measured, so about every other start failed with 1053 — and the same start from
+    services.msc a moment later worked, because the first attempt had warmed the
+    files and the runtime up. The retry is what a person did by hand. Once: a service
+    that misses twice has a problem worth reporting, not waiting out.
+    """
+    try:
+        _ask_to_start(service_name, machine)
+    except pywintypes.error as exc:
+        if getattr(exc, "winerror", None) != START_TIMED_OUT:
+            raise
+        log.info("%s did not answer Windows within 30s; trying once more", service_name)
+        state = _wait_until_settled(service_name, machine, SETTLE_WAIT)
+        if state == st.RUNNING:
+            return
+        if state != st.STOPPED:
+            raise
+        _ask_to_start(service_name, machine)
 
 
 #: How long to wait for a service to admit it has stopped, before starting it again.
