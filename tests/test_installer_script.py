@@ -415,3 +415,46 @@ def test_the_panel_is_put_back_after_a_silent_install(script):
     assert "function WeClosedThePanel" in script
     assert "ClosedThePanel := (ResultCode = 0)" in script, \
         "the answer is taskkill's exit code, not a guess"
+
+
+def test_the_address_checked_is_the_address_the_client_is_given(script):
+    """The [Run] entry hands the client `{code:GetHubUrl}` and `{code:GetHubToken}` — the
+    command line first, the fields after. `AddressIsUsable` read only the fields, so a silent
+    `/TYPE=client /HUBURL=… /HUBTOKEN=…` was checked against whatever the host field had been
+    filled with and an empty token box. Measured 2026-10-11 on 2.2.14: the hub on sc-sap-sql
+    answered, the check said "a token is needed", nobody was there to read it, and the log
+    had only "Failed to proceed to next wizard page; aborting." Exit code 1, every time.
+    """
+    routines = _routines(script)
+    body = routines.get("AddressIsUsable", "")
+    assert body, "AddressIsUsable is gone"
+    reached = _reachable_from("AddressIsUsable", routines)
+    assert any("ParamValue('HUBURL')" in routines[name] for name in reached), (
+        "the check never looks at /HUBURL, so a silent install checks a different address "
+        "from the one the client is given")
+    assert "TokenEdit.Text" not in body, (
+        "the token is read from the box, which a silent install never fills — use "
+        "GetHubToken, the same thing the [Run] entry passes")
+    assert "GetHubToken(" in body
+
+
+def test_a_given_address_without_a_port_is_checked_on_the_default_port(script):
+    """The client connects to 8797 when the address names no port (core/hub_client.py), so
+    the check has to ask the same place — `https://ctl052` asked on 443 is a hub that "does
+    not answer" when it is answering fine one port over."""
+    routines = _routines(script)
+    reached = _reachable_from("AddressIsUsable", routines)
+    given = [name for name in reached if "ParamValue('HUBURL')" in routines[name]]
+    assert given, "nothing reachable from AddressIsUsable reads /HUBURL"
+    assert any("{#MyHubPort}" in routines[name] for name in given), (
+        "an address from the command line without a port is checked on whatever https "
+        "defaults to, not on the port the client will use")
+
+
+def test_a_silent_refusal_is_written_to_the_log(script):
+    """The box is not shown when silent — rightly — and that left the reason nowhere at all.
+    Inno's own line is "Failed to proceed to next wizard page; aborting.", which says that it
+    stopped and not why."""
+    body = _routines(script).get("NextButtonClick", "")
+    assert re.search(r"Log\([^;]*Complaint", body), (
+        "a silent install that refuses an address does not say why in its log")

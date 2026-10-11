@@ -201,10 +201,11 @@ def test_pair_local_keeps_a_token_that_still_works(tmp_path, monkeypatch, capsys
     issued = []
     monkeypatch.setattr(hub_auth, "add_client",
                         lambda name, description="": issued.append(name) or "first-token")
-    # The hub accepts exactly the token it issued, for that name.
+    # The hub accepts exactly the token it issued, for that name — the name it was issued
+    # for, not one rebuilt from gethostname(): that is "sc-dev" where COMPUTERNAME is
+    # "SC-DEV", and the test failed on such a machine while the code was right.
     monkeypatch.setattr(hub_auth, "check",
-                        lambda token: ("%s-local" % __import__("socket").gethostname())
-                        if token == "first-token" else "")
+                        lambda token: issued[0] if issued and token == "first-token" else "")
 
     assert hub._client_command(["hub.exe", "client", "pair", "--local"]) == 0
     assert len(issued) == 1, "the first install has to issue one"

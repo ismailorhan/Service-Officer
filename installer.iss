@@ -28,7 +28,7 @@
 ; before ISCC runs, so stamp_version.py leaves it in a file. Without this the installer said
 ; "2.2.7 will be upgraded to 2.2.7" — true about the release and useless about the build,
 ; which is the only thing that differed.
-#define MyRelease        "2.2.14"
+#define MyRelease        "2.2.15"
 #if FileExists("installer-version.txt")
   #define VersionFile    FileOpen("installer-version.txt")
   #define MyAppVersion   Trim(FileRead(VersionFile))
@@ -575,22 +575,47 @@ begin
     Result := '{#MyHubPort}';
 end;
 
+// The address from /HUBURL as one URL, or '' when none was given or it names no host. A
+// port inside it is taken as given; without one it is the default, because that is where the
+// client connects (core/hub_client.py) and the check has to ask the same place.
+function GivenHubUrl(): String;
+var
+  Scheme, Rest: String;
+  HasPort: Boolean;
+begin
+  Result := '';
+  Rest := Trim(ParamValue('HUBURL'));
+  if Rest = '' then
+    Exit;
+  Scheme := 'https';
+  if Pos('://', Rest) > 0 then
+  begin
+    Scheme := Copy(Rest, 1, Pos('://', Rest) - 1);
+    Rest := Copy(Rest, Pos('://', Rest) + 3, Length(Rest));
+  end;
+  if Pos('/', Rest) > 0 then
+    Rest := Copy(Rest, 1, Pos('/', Rest) - 1);
+  if HostOfUrl(Rest) = '' then
+    Exit;
+  if Copy(Rest, 1, 1) = '[' then
+    HasPort := Pos(']:', Rest) > 0
+  else
+    HasPort := Pos(':', Rest) > 0;
+  if not HasPort then
+    Rest := Rest + ':{#MyHubPort}';
+  Result := Scheme + '://' + Rest;
+end;
+
 function GetHubUrl(Param: String): String;
 begin
-  Result := ParamValue('HUBURL');
-  if Result <> '' then
-  begin
-    // A command line may carry the port inside the address; take it as given.
-    if Pos('://', Result) = 0 then
-      Result := 'https://' + Result;
-    Exit;
-  end;
-  Result := CheckedHubUrl;
+  Result := GivenHubUrl();
+  if Result = '' then
+    Result := CheckedHubUrl;
 end;
 
 function GetHubToken(Param: String): String;
 begin
-  Result := ParamValue('HUBTOKEN');
+  Result := Trim(ParamValue('HUBTOKEN'));
   if (Result = '') and (TokenEdit <> nil) then
     Result := Trim(TokenEdit.Text);
 end;
@@ -878,6 +903,10 @@ end;
 // Everything that has to be true before an address is accepted. False keeps the person on
 // the page; `Complaint` is shown when it is set, and left empty when this has already said
 // something itself.
+//
+// It checks what the [Run] entry will hand the client — GetHubUrl and GetHubToken, the command
+// line before the fields — and not the fields alone. A silent install never fills them, so
+// reading only them refused every `/TYPE=client /HUBURL=… /HUBTOKEN=…` whose hub answered.
 function AddressIsUsable(var Complaint: String): Boolean;
 var
   Url, Host, HubName, HubVersion, Question: String;
@@ -888,12 +917,17 @@ begin
   HubIsLocal := False;
   CheckedHubUrl := '';
 
-  if AsPort(PortEdit.Text) = '' then
+  if ParamValue('HUBURL') <> '' then
+    Url := GivenHubUrl()
+  else
   begin
-    Complaint := ExpandConstant('{cm:PortBad}');
-    Exit;
+    if AsPort(PortEdit.Text) = '' then
+    begin
+      Complaint := ExpandConstant('{cm:PortBad}');
+      Exit;
+    end;
+    Url := AddressFromFields();
   end;
-  Url := AddressFromFields();
   if Url = '' then
   begin
     Complaint := ExpandConstant('{cm:HubNeedAddress}');
@@ -924,7 +958,7 @@ begin
     end;
     if not Confirmed(FmtMessage(ExpandConstant('{cm:HubSilent}'), [Host])) then
       Exit;
-    if Trim(TokenEdit.Text) = '' then
+    if GetHubToken('') = '' then
     begin
       Complaint := ExpandConstant('{cm:HubNeedToken}');
       Exit;
@@ -971,7 +1005,7 @@ begin
     Exit;
   end;
 
-  if Trim(TokenEdit.Text) = '' then
+  if GetHubToken('') = '' then
   begin
     Complaint := ExpandConstant('{cm:HubNeedToken}');
     Exit;
@@ -1073,8 +1107,14 @@ begin
   if (HubPage <> nil) and (CurPageID = HubPage.ID) then
   begin
     Result := AddressIsUsable(Complaint);
-    if (not Result) and (Complaint <> '') and (not WizardSilent()) then
-      MsgBox(Complaint, mbError, MB_OK);
+    // Logged always: silent, the box is not shown, and Inno's own line — "Failed to proceed
+    // to next wizard page; aborting." — says that it stopped and not why.
+    if (not Result) and (Complaint <> '') then
+    begin
+      Log('Hub address refused: ' + Complaint);
+      if not WizardSilent() then
+        MsgBox(Complaint, mbError, MB_OK);
+    end;
     Exit;
   end;
 end;
