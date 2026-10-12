@@ -20,6 +20,7 @@
 ;       /HUBURL=https://ctl052:8797 /HUBTOKEN=xxxxxxxx
 ;   ServiceOfficerSetup.exe /SILENT /NORESTART /TYPE=full
 ; An upgrade needs no /TYPE: Inno preselects whatever is already installed.
+; /TYPE=client over an installed hub is refused — uninstall first (docs/HUB.md).
 ; -----------------------------------------------------------------------------
 
 #define MyAppName        "Service Officer"
@@ -28,7 +29,7 @@
 ; before ISCC runs, so stamp_version.py leaves it in a file. Without this the installer said
 ; "2.2.7 will be upgraded to 2.2.7" — true about the release and useless about the build,
 ; which is the only thing that differed.
-#define MyRelease        "2.2.15"
+#define MyRelease        "2.2.16"
 #if FileExists("installer-version.txt")
   #define VersionFile    FileOpen("installer-version.txt")
   #define MyAppVersion   Trim(FileRead(VersionFile))
@@ -113,6 +114,7 @@ english.HubIsThisPC=That address is this computer. The Hub here is version %1 an
 english.HubNotHere=That address is this computer, but no Hub is installed here.%n%nThe Client will be installed and will have nothing to read until a Hub exists at that address. You can change the address later in Settings %+ General.%n%nInstall anyway?
 english.HubVersionClash=That hub is version %1 and this installer is version %2.%n%nA client and its hub have to be the same version — the connection would succeed and then refuse everything. Upgrade that hub first, or install the matching version here.
 english.HubSilent=%1 did not answer.%n%nNothing about it can be checked — its version, or whether it is this computer. The address and the token will be stored and used on the first launch, and can be changed in Settings %+ General.%n%nInstall anyway?
+english.ClientOverHub=A Hub is installed on this computer. Making it a Client only would leave that Hub service running and never upgrade it again.%n%nTo change this computer's part, uninstall Service Officer first — that stops and removes the Hub — and then install it again as a Client.
 english.ReadyHubUpgrade=Hub (service): %1 will be upgraded to %2, keeping port %3
 english.ReadyHubSame=Hub (service): %1 reinstalled, keeping port %2
 english.ReadyHubKept=Hub (service): upgraded to %1, keeping port %2
@@ -776,7 +778,7 @@ end;
 
 procedure InitializeWizard();
 var
-  Remembered, Host, Port: String;
+  Remembered, Host, Port, Given: String;
 begin
   ExistingPort := '';
   ExistingPortKnown := False;
@@ -828,6 +830,14 @@ begin
     TypePage.SelectedValueIndex := TypeBoth;
     HostEdit.Text := GetComputerNameString;
   end;
+  // An explicit /TYPE is somebody's answer, and it beats the guess above. This page is our
+  // own, so Inno's handling of /TYPE never reached it: `/TYPE=client` on a fresh workstation
+  // installed a hub as well. Whether that answer is allowed here is NextButtonClick's to say.
+  Given := LowerCase(Trim(ParamValue('TYPE')));
+  if Given = 'client' then
+    TypePage.SelectedValueIndex := TypeClientOnly
+  else if Given = 'full' then
+    TypePage.SelectedValueIndex := TypeBoth;
   ShowTokenOnlyIfNeeded();
   DescribeChosenType();
 end;
@@ -1095,6 +1105,17 @@ begin
 
   if CurPageID = TypePage.ID then
   begin
+    // Inno does not uninstall a component that is no longer selected, so Client on a hub
+    // machine would leave that hub running and never upgrade it again. The way out is the
+    // uninstaller, which stops and removes the service.
+    if (TypePage.SelectedValueIndex = TypeClientOnly) and HubInstalledHere() then
+    begin
+      Log('Setup type refused: ' + ExpandConstant('{cm:ClientOverHub}'));
+      if not WizardSilent() then
+        MsgBox(ExpandConstant('{cm:ClientOverHub}'), mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
     // The components are decided here, once, from the answer — there is no components page
     // left to tick.
     if TypePage.SelectedValueIndex = TypeBoth then

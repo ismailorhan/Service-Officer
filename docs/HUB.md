@@ -108,6 +108,13 @@ An **upgrade needs no `/TYPE`** — Inno Setup preselects whatever is already in
 `ServiceOfficerSetup.exe /SILENT /NORESTART` upgrades a hub as a hub and a client as a
 client.
 
+**Changing a computer's part needs an uninstall.** Installing over a hub machine as a
+Client — `/TYPE=client`, or *Client* on the first page — is refused, with the reason in the
+installer's log when it is silent: Inno Setup does not remove a component that is no longer
+selected, so the hub service would stay, running, and never be upgraded again. Uninstall
+Service Officer first (that stops and removes the hub service and its firewall rule), then
+install as a Client. The other way round, Client to Hub and Client, is an ordinary install.
+
 A token on an installer command line is visible in the process list while the installer
 runs, and in whatever log a deployment tool keeps. The alternative is to install without
 it and type it into **Settings → General** afterwards. Neither is worse than the other;

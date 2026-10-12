@@ -458,3 +458,29 @@ def test_a_silent_refusal_is_written_to_the_log(script):
     body = _routines(script).get("NextButtonClick", "")
     assert re.search(r"Log\([^;]*Complaint", body), (
         "a silent install that refuses an address does not say why in its log")
+
+
+def test_the_setup_type_on_the_command_line_is_the_one_used(script):
+    """The type page is a custom page, so Inno's own /TYPE never reached it: the answer was
+    taken from the machine — a hub service means both, a remembered address means a client,
+    anything else means both. So `/TYPE=client` on a fresh workstation installed a hub as
+    well, and on a hub machine it installed the hub again."""
+    routines = _routines(script)
+    reached = _reachable_from("InitializeWizard", routines)
+    assert any("ParamValue('TYPE')" in routines[name] for name in reached), (
+        "nothing the wizard starts from reads /TYPE, so the setup type comes from the "
+        "machine and not from whoever asked for this install")
+
+
+def test_a_hub_machine_is_not_quietly_made_a_client(script):
+    """Inno does not uninstall a component that is no longer selected. Choosing Client on a
+    computer whose hub is installed would leave that hub service running and never upgrade
+    it again — a stale hub nobody chose. Refused instead, with the way out in the reason:
+    uninstall first, which stops and removes the service ([UninstallRun])."""
+    body = _routines(script).get("NextButtonClick", "")
+    type_branch = body[body.index("TypePage.ID"):body.index("HubPage.ID")]
+    assert "HubInstalledHere()" in type_branch, (
+        "the type page lets a hub machine become client-only")
+    assert "{cm:ClientOverHub}" in type_branch
+    assert "Result := False" in type_branch
+    assert re.search(r"Log\(", type_branch), "the refusal is not written to the log"
