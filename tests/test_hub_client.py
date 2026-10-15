@@ -373,3 +373,53 @@ def test_one_token_as_a_string_still_works(pair):
         assert single.ping()["protocol"] >= 1
     finally:
         single.stop()
+
+
+def test_a_hub_that_goes_silent_is_noticed_and_read_again(pair, monkeypatch, caplog):
+    """A stream that says nothing at all — not even the keepalive — is a dead one.
+
+    Measured 2026-10-15: sc-sap-sql restarted twice for Windows updates, 12:08 to 12:17, and
+    did not close its connections on the way down. The client on sc-dev went on reading a
+    socket whose other end no longer existed: its connection, opened at 10:19:11, was still
+    ESTABLISHED at 23:10, it never logged "hub disconnected", and it showed the "Not Found"
+    the hub had sent while its own service manager was shutting down — for nine hours, as
+    connected, while the hub reported all seventeen services Running. A socket with no read
+    timeout and no TCP keepalive waits for ever, and the hub's keepalive was being sent for
+    exactly this and checked by nobody.
+
+    Simulated by a hub that stops sending keepalives: from the client's side that is the
+    same silence.
+    """
+    import logging
+
+    client, _engine, _server, _holder = pair
+    monkeypatch.setattr(hub_server, "KEEPALIVE_SECONDS", 3600)
+    monkeypatch.setattr(hub_client, "STREAM_SILENCE", 0.5, raising=False)
+    # The pair's stream was opened before the patches; start again so the one under test
+    # is opened with them.
+    client.stop()
+    opened = []
+    real = client._open_stream
+
+    def counting():
+        opened.append(time.monotonic())
+        return real()
+
+    client._open_stream = counting
+    with caplog.at_level(logging.INFO, logger="serviceofficer.hubclient"):
+        client.start()
+        assert client.wait_for(lambda: len(opened) >= 2, timeout=10), (
+            "the client went on waiting on a stream that had said nothing at all")
+
+    failures = [r.getMessage() for r in caplog.records
+                if r.name == "serviceofficer.hubclient" and r.levelno >= logging.ERROR]
+    assert failures == [], (
+        f"a silent hub is an ordinary thing to recover from, not a traceback: {failures}")
+
+
+def test_the_client_waits_longer_than_the_hub_is_ever_quiet():
+    """The hub sends a keepalive every KEEPALIVE_SECONDS. A client that gave up sooner than a
+    couple of those would drop healthy connections on an ordinary quiet minute."""
+    silence = getattr(hub_client, "STREAM_SILENCE", None)
+    assert silence is not None, "nothing bounds how long the client waits on a silent stream"
+    assert silence >= 2 * hub_server.KEEPALIVE_SECONDS

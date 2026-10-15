@@ -49,6 +49,12 @@ BACKOFF = (1, 2, 4, 8, 15, 30)
 #: How long a normal request may take. The hub answers in under a millisecond on an open
 #: connection; anything near this means the network, not the hub.
 TIMEOUT = 15
+#: How long the event stream may say nothing at all before it is taken for dead. The hub
+#: sends a keepalive every hub_server.KEEPALIVE_SECONDS (20), so this is three of them missed.
+#: Without it a hub that went down without closing its connections — a Windows update restart,
+#: measured on 2026-10-15 — left this client reading a socket with nobody on the other end for
+#: nine hours, showing as connected and showing whatever it heard last.
+STREAM_SILENCE = 60
 
 
 class _Stream:
@@ -760,6 +766,13 @@ class HubClient:
                 self._mark(False)
                 if attempt == 0:
                     log.info("hub unavailable: %s", exc)
+            except TimeoutError:
+                # Not even a keepalive for STREAM_SILENCE seconds: the other end is gone,
+                # whatever the socket says. An ordinary thing to recover from — reconnecting
+                # reads a fresh snapshot, which is the whole repair.
+                self._mark(False)
+                log.info("the hub has said nothing for %ss, not even its keepalive; "
+                         "reconnecting", STREAM_SILENCE)
             except Exception:
                 self._mark(False)
                 if self._stop.is_set():
@@ -803,10 +816,12 @@ class HubClient:
                               "X-Client-Host": socket.gethostname()})
         # Taken before getresponse(), which gives the socket away — see _Stream.
         sock = conn.sock
-        # No socket timeout while reading: a stream is meant to say nothing for long
-        # stretches, and the keepalive is what proves it is alive.
+        # A stream is meant to say nothing for long stretches, and the keepalive is what
+        # proves it is alive — so the timeout is what *checks* that proof. It used to be none
+        # at all, and a hub that vanished without closing the connection was waited on for
+        # ever. See STREAM_SILENCE.
         if sock is not None:
-            sock.settimeout(None)
+            sock.settimeout(STREAM_SILENCE)
         answer = conn.getresponse()
         if answer.status != 200:
             conn.close()
