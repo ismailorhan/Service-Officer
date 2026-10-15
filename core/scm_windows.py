@@ -58,11 +58,26 @@ def _admin_share_path(host: str, path: str) -> str:
     return rf"\\{host}\{drive}$\{rest}"
 
 
+#: The one service-manager error that means "not installed". Every other one — a shutdown in
+#: progress (1115), access denied (5), an RPC failure — says the question could not be
+#: answered, not that the service is gone. They were all reported as Not Found, and on
+#: 2026-10-15 a hub restarting for Windows updates told its clients that all seventeen of its
+#: services had been uninstalled.
+SERVICE_DOES_NOT_EXIST = 1060
+
+
+def _unanswered(exc) -> str:
+    """The status for a service-manager error: Not Found only when it says so."""
+    if getattr(exc, "winerror", None) == SERVICE_DOES_NOT_EXIST:
+        return st.NOT_FOUND
+    return st.UNKNOWN
+
+
 def query_status(service_name: str, machine: str = "") -> str:
     try:
         return held_for(machine).do(lambda scm: state_on(scm, service_name)[0])
-    except pywintypes.error:
-        return st.NOT_FOUND
+    except pywintypes.error as exc:
+        return _unanswered(exc)
 
 
 #: Windows' answer when a service did not tell it "started" within its 30 seconds
@@ -642,9 +657,12 @@ class WindowsConnector:
                 except pywintypes.error as exc:
                     if getattr(exc, "winerror", None) in _STALE:
                         raise           # the connection, not the service: retry it
-                    # 1060 is "the service does not exist", which is about this one
-                    # service and must not sink the whole batch.
-                    out[name] = Status(state=st.NOT_FOUND, installed=False,
+                    # About this one service, so it must not sink the whole batch. Only
+                    # 1060 says it is not installed; anything else is an unanswered
+                    # question, and its reason is kept.
+                    state = _unanswered(exc)
+                    out[name] = Status(state=state,
+                                       installed=state != st.NOT_FOUND,
                                        detail=getattr(exc, "strerror", str(exc)))
             return out
         return held_for(self.host).do(work)

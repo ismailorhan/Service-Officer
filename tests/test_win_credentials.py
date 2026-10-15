@@ -15,6 +15,7 @@ pytest.importorskip("win32wnet")
 from core import config as cfg_mod            # noqa: E402
 from core import connectors                   # noqa: E402
 from core import scm_windows                  # noqa: E402
+from core import state as st                  # noqa: E402
 from core import win_session                  # noqa: E402
 
 
@@ -521,3 +522,40 @@ def test_a_machine_that_answers_has_nothing_to_diagnose(monkeypatch):
     monkeypatch.setattr(scm_windows, "reachable", lambda host: True)
     assert scm_windows.diagnose("10.77.3.112",
                                 port_open=lambda host, port: True) == ""
+
+
+def _scm_refuses_with(monkeypatch, code, text):
+    """The service manager answers every question with one error."""
+    def per_service(_scm, _name):
+        raise FakeError(code, text)
+
+    monkeypatch.setattr(scm_windows, "pywintypes", type("m", (), {"error": FakeError}))
+    _fake_scm(monkeypatch, per_service)
+
+
+def test_a_service_manager_shutting_down_is_not_a_missing_service(wnet, monkeypatch):
+    """Measured 2026-10-15: sc-sap-sql restarting for Windows updates. Its service manager
+    stopped answering — 1115, "a system shutdown is in progress" — and every one of the
+    seventeen services it watches went out to the clients as "Not Found", because every
+    error from the service manager was. Not Found means uninstalled: it is the one answer
+    that is certainly wrong about a service the machine still has. Unknown is the truth."""
+    monkeypatch.setattr("core.secrets.get", lambda _ref: "s3cret")
+    _scm_refuses_with(monkeypatch, 1115, "A system shutdown is in progress.")
+    conn = scm_windows.WindowsConnector("ctl053", _machine())
+
+    found = conn.statuses(["AppEngine"])["AppEngine"]
+
+    assert found.state == st.UNKNOWN, f"reported as {found.state!r}"
+    assert found.installed is not False, "a shutdown says nothing about what is installed"
+    assert "shutdown" in found.detail, "the reason was thrown away"
+
+
+def test_only_does_not_exist_is_reported_as_not_found(monkeypatch):
+    """The single-service path the engine primes from had the same blanket mapping."""
+    monkeypatch.setattr(scm_windows, "pywintypes", type("m", (), {"error": FakeError}))
+
+    _scm_refuses_with(monkeypatch, 1115, "A system shutdown is in progress.")
+    assert scm_windows.query_status("AppEngine") == st.UNKNOWN
+
+    _scm_refuses_with(monkeypatch, 1060, "The specified service does not exist")
+    assert scm_windows.query_status("AppEngine") == st.NOT_FOUND
