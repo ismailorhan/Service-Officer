@@ -265,6 +265,12 @@ Filename: "{app}\{#MyHubService}\{#MyHubExeName}"; Parameters: "panel"; \
   Components: client and hub; Check: WeClosedThePanel; \
   Flags: runhidden waituntilterminated
 
+; A computer with no hub has no hub exe to go through, and that entry never ran there: the
+; panel's own "Update this computer" closed it and nothing opened it again. Started directly,
+; as the person who ran the installer — that is who the panel's update hands it to.
+Filename: "{app}\{#MyAppExeName}"; Components: client and not hub; Check: PutThePanelBackHere; \
+  Flags: runasoriginaluser nowait
+
 [UninstallRun]
 Filename: "{app}\{#MyHubService}\{#MyHubExeName}"; Parameters: "stop"; Flags: runhidden waituntilterminated; RunOnceId: "stophub"
 Filename: "{app}\{#MyHubService}\{#MyHubExeName}"; Parameters: "remove"; Flags: runhidden waituntilterminated; RunOnceId: "removehub"
@@ -577,16 +583,16 @@ begin
     Result := '{#MyHubPort}';
 end;
 
-// The address from /HUBURL as one URL, or '' when none was given or it names no host. A
-// port inside it is taken as given; without one it is the default, because that is where the
-// client connects (core/hub_client.py) and the check has to ask the same place.
-function GivenHubUrl(): String;
+// An address as one URL, or '' when it names no host. A port inside it is taken as given;
+// without one it is the default, because that is where the client connects
+// (core/hub_client.py) and the check has to ask the same place.
+function NormalHubUrl(Given: String): String;
 var
   Scheme, Rest: String;
   HasPort: Boolean;
 begin
   Result := '';
-  Rest := Trim(ParamValue('HUBURL'));
+  Rest := Trim(Given);
   if Rest = '' then
     Exit;
   Scheme := 'https';
@@ -608,6 +614,12 @@ begin
   Result := Scheme + '://' + Rest;
 end;
 
+// The address from /HUBURL, or '' when none was given.
+function GivenHubUrl(): String;
+begin
+  Result := NormalHubUrl(ParamValue('HUBURL'));
+end;
+
 function GetHubUrl(Param: String): String;
 begin
   Result := GivenHubUrl();
@@ -620,6 +632,24 @@ begin
   Result := Trim(ParamValue('HUBTOKEN'));
   if (Result = '') and (TokenEdit <> nil) then
     Result := Trim(TokenEdit.Text);
+end;
+
+// This computer is already paired with that hub, so its token is stored and an upgrade does
+// not need it carried again. The panel's own "Update this computer" runs the hub's installer
+// /SILENT with no /HUBTOKEN — the hub shows a token once, and nobody upgrading has it to hand —
+// and it was refused for that on sc-dev, 2026-10-21. An empty token on the command line leaves
+// the stored one alone (app.py, _pair).
+function AlreadyPairedWith(Url: String): Boolean;
+var
+  Stored: String;
+begin
+  Stored := NormalHubUrl(StoredHubUrl());
+  Result := (Stored <> '') and (CompareText(Stored, NormalHubUrl(Url)) = 0);
+end;
+
+function HaveTokenFor(Url: String): Boolean;
+begin
+  Result := (GetHubToken('') <> '') or AlreadyPairedWith(Url);
 end;
 
 // Only when the hub is somewhere else. A hub on this computer pairs its own client with
@@ -968,7 +998,7 @@ begin
     end;
     if not Confirmed(FmtMessage(ExpandConstant('{cm:HubSilent}'), [Host])) then
       Exit;
-    if GetHubToken('') = '' then
+    if not HaveTokenFor(Url) then
     begin
       Complaint := ExpandConstant('{cm:HubNeedToken}');
       Exit;
@@ -1015,7 +1045,7 @@ begin
     Exit;
   end;
 
-  if GetHubToken('') = '' then
+  if not HaveTokenFor(Url) then
   begin
     Complaint := ExpandConstant('{cm:HubNeedToken}');
     Exit;
@@ -1072,25 +1102,30 @@ begin
   Result := ClosedThePanel;
 end;
 
-function InitializeSetup(): Boolean;
-var
-  ResultCode: Integer;
+// The same, for a computer with no hub exe to go through: the panel is started here, as the
+// person who ran this installer. Not as SYSTEM — a deployment tool's install would put the
+// panel on session 0, a desktop nobody can see; that person gets it back at their next sign-in
+// from the Run key.
+function PutThePanelBackHere(): Boolean;
 begin
-  // Kill a running instance so we can overwrite the exe.
-  Exec('taskkill.exe', '/F /IM ServiceOfficer.exe', '', SW_HIDE,
-       ewWaitUntilTerminated, ResultCode);
-  ClosedThePanel := (ResultCode = 0);
-  Log('Closed a running panel? taskkill said ' + IntToStr(ResultCode));
-  Result := True;
+  Result := ClosedThePanel and (CompareText(GetUserNameString, 'SYSTEM') <> 0);
 end;
 
 // An installer that copies over a running service exe fails with "file in use", and this is
 // the ordinary case: every upgrade of a hub.
+//
+// The tray application is closed here too, and not earlier. It was closed in InitializeSetup —
+// before the address had been checked — so an install that was then refused left the person
+// with no panel and nothing to put it back (sc-dev, 2026-10-21).
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
   Hub: String;
 begin
+  Exec('taskkill.exe', '/F /IM ServiceOfficer.exe', '', SW_HIDE,
+       ewWaitUntilTerminated, ResultCode);
+  ClosedThePanel := (ResultCode = 0);
+  Log('Closed a running panel? taskkill said ' + IntToStr(ResultCode));
   Hub := ExpandConstant('{app}\{#MyHubService}\{#MyHubExeName}');
   if FileExists(Hub) then
     Exec(Hub, 'stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);

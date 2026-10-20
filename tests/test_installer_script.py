@@ -435,7 +435,7 @@ def test_the_address_checked_is_the_address_the_client_is_given(script):
     assert "TokenEdit.Text" not in body, (
         "the token is read from the box, which a silent install never fills — use "
         "GetHubToken, the same thing the [Run] entry passes")
-    assert "GetHubToken(" in body
+    assert "GetHubToken" in reached
 
 
 def test_a_given_address_without_a_port_is_checked_on_the_default_port(script):
@@ -446,7 +446,8 @@ def test_a_given_address_without_a_port_is_checked_on_the_default_port(script):
     reached = _reachable_from("AddressIsUsable", routines)
     given = [name for name in reached if "ParamValue('HUBURL')" in routines[name]]
     assert given, "nothing reachable from AddressIsUsable reads /HUBURL"
-    assert any("{#MyHubPort}" in routines[name] for name in given), (
+    behind = set().union(*(_reachable_from(name, routines) for name in given))
+    assert any("{#MyHubPort}" in routines[name] for name in behind), (
         "an address from the command line without a port is checked on whatever https "
         "defaults to, not on the port the client will use")
 
@@ -484,3 +485,53 @@ def test_a_hub_machine_is_not_quietly_made_a_client(script):
     assert "{cm:ClientOverHub}" in type_branch
     assert "Result := False" in type_branch
     assert re.search(r"Log\(", type_branch), "the refusal is not written to the log"
+
+
+def test_an_upgrade_of_a_paired_client_needs_no_token_again(script):
+    """"Update this computer" on sc-dev, 2026-10-21: the panel fetched the 2.2.17 installer
+    from its hub and ran it /SILENT, as an upgrade, with no /HUBTOKEN — the token was stored
+    when the machine was paired. The installer knew nothing of that and refused:
+
+        Hub address refused: Enter the token the hub printed for this computer. …
+        Failed to proceed to next wizard page; aborting.
+
+    A computer already paired with this very hub has its token. Asking for it again is
+    asking for something nobody upgrading has to hand — the hub shows a token once.
+    """
+    routines = _routines(script)
+    reached = _reachable_from("AddressIsUsable", routines)
+    assert "StoredHubUrl" in reached, (
+        "the token check never asks whether this computer is already paired with that hub")
+
+
+def test_a_refused_install_does_not_close_the_panel(script):
+    """The tray application was killed in InitializeSetup — before the address was checked —
+    so an install that was then refused left the person with no panel at all, and nothing
+    put it back. It is closed where the files are about to be replaced, and not before."""
+    routines = _routines(script)
+    assert "taskkill" not in routines.get("InitializeSetup", ""), (
+        "the panel is closed before anything has been checked")
+    assert "taskkill" in routines.get("PrepareToInstall", ""), (
+        "nothing closes the panel before its files are replaced")
+
+
+def test_a_client_only_silent_install_puts_the_panel_back(script):
+    """The entry that reopens the panel after a silent install was `Components: client and
+    hub` — it goes through the hub exe, which a workstation does not have — and the ordinary
+    launch entry is `skipifsilent`. So on a client-only computer the panel's own "Update this
+    computer" closed it and nothing ever opened it again, while the panel had just said "This
+    app closes and reopens on the new release"."""
+    lines = [line for line in script.splitlines()
+             if "{#MyAppExeName}" in line or "Components: client and not hub" in line]
+    entry = " ".join(lines)
+    assert "Components: client and not hub" in entry, (
+        "nothing reopens the panel on a computer without a hub")
+    # Inno's line continuation is a trailing backslash; the file has CRLF line ends.
+    joined = re.sub(r"\\\r?\n", " ", script)
+    match = re.search(r'Filename: "\{app\}\\{#MyAppExeName\}";[^\n]*client and not hub[^\n]*',
+                      joined)
+    assert match, "the client-only entry is not one that starts the panel"
+    assert "runasoriginaluser" in match.group(0)
+    assert "skipifsilent" not in match.group(0)
+    assert "WeClosedThePanel" in match.group(0) or "PutThePanelBack" in match.group(0), (
+        "it would start a panel nobody had open")
