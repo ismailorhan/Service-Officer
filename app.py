@@ -736,9 +736,20 @@ class Application(QObject):
         import subprocess
         program = sys.executable
         arguments = [] if getattr(sys, "frozen", False) else [sys.argv[0]]
+        # Let go of the one-per-session claim *first*. It is otherwise released when this
+        # process ends, and the new copy is up before that: it found the claim taken, poked
+        # this copy — which was leaving — and left as well, so "Apply and restart" closed the
+        # panel and nothing came back (sc-dev, 2026-10-21).
+        claim = getattr(self, "claim", None)
+        if claim is not None:
+            claim.release()
         try:
             subprocess.Popen([program, *arguments], close_fds=True)
         except OSError as exc:
+            # Staying, so take the claim back: without it the next double-click would start a
+            # second copy beside this one.
+            if claim is not None:
+                self.claim = one_instance.claim()
             QMessageBox.warning(self.panel, "Service Officer",
                                 f"Could not start it again: {exc}\n\n"
                                 "Close it and open it yourself.")

@@ -587,3 +587,43 @@ def test_a_client_that_cannot_write_the_machines_log_keeps_its_own(tmp_path,
         if getattr(handler, "baseFilename", None) == str(mine):
             handler.close()
             log.removeHandler(handler)
+
+
+def test_restarting_lets_go_of_the_single_instance_claim_before_starting_again(monkeypatch):
+    """"Apply and restart" closed the panel and nothing came back.
+
+    Measured 2026-10-21 on sc-dev, three lines of its log:
+
+        00:13:14,867  restarting to read https://sc-sap-sql:8797
+        00:13:14,894  quitting
+        00:13:16,261  already running in this session — asked that copy to show itself
+
+    The new copy was started while the old one still held the one-per-session mutex — it is
+    released when the process ends, and the process had not ended — so the new copy found it
+    taken, poked the copy that was on its way out, and left. Then that one left too.
+    """
+    import subprocess
+    import types
+
+    from PySide6.QtWidgets import QMessageBox
+
+    order = []
+
+    class Claim:
+        def release(self):
+            order.append("released")
+
+    monkeypatch.setattr(app_mod.QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.Yes)
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda *a, **k: order.append("started the new copy"))
+    fake = types.SimpleNamespace(panel=None, claim=Claim(),
+                                 quit=lambda: order.append("quit"))
+
+    app_mod.Application._hub_changed(fake, "https://sc-sap-sql:8797")
+
+    assert "started the new copy" in order, order
+    assert "released" in order and order.index("released") < order.index(
+        "started the new copy"), (
+        f"the new copy starts while this one still holds the claim, so it gives way to a "
+        f"copy that is leaving: {order}")
